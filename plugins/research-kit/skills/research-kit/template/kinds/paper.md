@@ -23,7 +23,7 @@ ARS = default tool for every literature and writing stage. Use it, don't reinven
 5. Appendix lines for this kind: working title + venue + length; authors (first/main, co-authors, supervisor); reference manager + repo tag; paper topic (3 lines, for scoping literature work).
 6. Existing material (thesis, draft, reference list)? -> open a seed stage (row 1, P3). Else -> open the goal + lit-scan stage (row 2). First ARS deliverable either way = `pm/living/GOALS.md`, agreed with user before any scan starts.
 
-Roles for this kind: user = first/main author; co-authors and supervisors get neutral wording in text. `pm/living/paper_ledger.md` is a teammate file: the lead never edits it. Why: one writer per ledger keeps it in sync with the library.
+Roles for this kind: user = first/main author; co-authors and supervisors get neutral wording in text. `pm/living/paper_ledger.md` is a teammate file: the lead never edits it. Why: one writer per paper_ledger keeps it in sync with the library.
 
 ## P2. Stage table
 
@@ -31,10 +31,10 @@ Column `#` = order, not stage number (NN is the next free number, core 3.1). Ada
 
 | # | stage | ARS skill (mode) | consumes | driver | deliverable | Done when |
 |---|-------|------------------|----------|--------|-------------|-----------|
-| 1 | seed existing material (optional, P3) | none (import teammates, P5.1-P5.3, P5.8) | existing refs, PDFs, bib | jr/sr | ledger, PDFs, tagged library entries, corpus passport | sync check passes (P5.1); passport validator exits 0; both critics YES |
+| 1 | seed existing material (optional, P3) | none (import teammates, P5.1-P5.3, P5.8) | existing refs, PDFs, bib | jr/sr | paper_ledger, PDFs, tagged library entries, corpus passport | sync check passes (P5.1); passport validator exits 0; both critics YES |
 | 2 | goal + lit-scan | `deep-research` (`three-way-scan` / `lit-review` for scan; `socratic` optional for GOALS dialogue, skip if user has concrete goals) | passport if seeded | lead: GOALS dialogue, writes `pm/living/GOALS.md`, user confirms. exp/sr: scan | `pm/living/GOALS.md`, scan files ending in `## Candidates for paper_ledger.md` | user's GOALS sign-off logged as a user decision (`rk add decision ... --owner user`) before the scan starts; cross-audit file (P5.6) exists with every conflict resolved |
-| 3 | source sync | none (import teammates, P5.1-P5.3) | candidates | jr/sr | ledger = PDFs = tagged library entries, passport rebuilt | sync check passes; passport fresh (P5.8) |
-| 4 | scan update | `deep-research` (`three-way-scan` / `lit-review` / `fact-check`, full-text re-read) | ledger, passport | exp read, sr audit | updated scans | cross-audit file exists, every conflict resolved |
+| 3 | source sync | none (import teammates, P5.1-P5.3) | candidates | jr/sr | paper_ledger = PDFs = tagged library entries, passport rebuilt | sync check passes; passport fresh (P5.8) |
+| 4 | scan update | `deep-research` (`three-way-scan` / `lit-review` / `fact-check`, full-text re-read) | paper_ledger, passport | exp read, sr audit | updated scans | cross-audit file exists, every conflict resolved |
 | 5 | experiments / benchmarks (only if new runs needed) | none (core 6 + software kind "Benchmarks"; add that kind first). `deep-research` `fact-check` only for literature claims | GOALS | sr/exp | `deliverables/bench/` | run sheet commands reproduce the outputs; both critics YES |
 | 6 | code / prep, reruns `NNb` (only if experiments need a rerun) | none (core 6 + software kind "Benchmarks") | experiments | sr/exp | code, run sheet, numbers | quality gate exits 0; numbers stamped at a clean commit; both critics YES |
 | 7 | plan | `academic-paper` (`plan`), session model | GOALS, scans, numbers | lead session (Socratic user dialogue) | `chapter_plan.md`, `insight_collection.md` | both files exist; both critics YES; user decisions logged verbatim |
@@ -50,7 +50,7 @@ Freeze step at close (core 3.4 step 7): from the draft stage on, freeze `paper/m
 
 ## P3. Existing material to adopt
 
-Thesis, draft or reference list: row 1, no ARS. Ledger metadata comes from retrieved records (Crossref/DataCite), never copied from the adopted bib (it may carry errors). Each adopted PDF gets an identity check (title + first author + year) and a provenance note. An existing draft goes to `paper/archive/` as input for GOALS dialogue and outline, never into ARS mid-entry. Ledger -> ARS corpus passport (P5.8), otherwise ARS ignores the seed. First ARS stage = row 2, after the passport exists.
+Thesis, draft or reference list: row 1, no ARS. paper_ledger metadata comes from retrieved records (Crossref/DataCite), never copied from the adopted bib (it may carry errors). Each adopted PDF gets an identity check (title + first author + year) and a provenance note. An existing draft goes to `paper/archive/` as input for GOALS dialogue and outline, never into ARS mid-entry. paper_ledger -> ARS corpus passport (P5.8), otherwise ARS ignores the seed. First ARS stage = row 2, after the passport exists.
 
 ## P4. Paper folders, brief appends, claims
 
@@ -78,18 +78,18 @@ Claims (in addition to core 5.1-5.2):
 
 ## P5. Literature and sources
 
-### P5.1 Ledger
+### P5.1 paper_ledger
 
 `pm/living/paper_ledger.md` = single list of every source. One row per source:
 `| key | authors (year) | title | venue | DOI | role | pdf | reference-manager key/tag | status |`
 - role in `core | method | standard | software | related-work | optional`.
 - status in `ok` (row + PDF + manager) / `no-pdf` / `manager-only-metadata` / `failed:<reason>`.
-- DOIs verified via Crossref (DataCite for theses/datasets) before entering ledger. Else `DOI unverified`.
+- DOIs verified via Crossref (DataCite for theses/datasets) before entering paper_ledger. Else `DOI unverified`.
 - PDF naming: `Author et al. - YEAR - Title.pdf`, in `paper/library/pdfs/`.
-- First line of ledger = `Repo tag: <tag>` (P1 step 4). Every source filed in the reference manager and tagged with it. Tag = only link library entry <-> repo. Teammate adding an item sets the tag in the same call; item without tag = sync-check failure. Item already in library (other repo's tag): ADD this repo's tag (items carry several repo tags). Never remove or rename another repo's tag, never create a duplicate item.
-- Ledger row, PDF, reference-manager entry stay in sync. Each import pass appends `## Sync check (<date>)` (PDFs <-> `ok` rows 1:1; manager tag set = ledger set; counts asserted by per-key checks, never from a capped search result). The checker is a script frozen in the stage's `code/`; it checks per key via the manager's local API across all libraries, accepts a PDF or EPUB child, and exempts group items from the file-child test.
-- Single writer on ledger at any time (import teammate). Scans end with `## Candidates for paper_ledger.md` in row format. Import teammate merges them.
-- Open-access substitutes: separate ledger row + separate manager item, cross-referenced. Cite original, read and quote substitute.
+- First line of paper_ledger = `Repo tag: <tag>` (P1 step 4). Every source filed in the reference manager and tagged with it. Tag = only link library entry <-> repo. Teammate adding an item sets the tag in the same call; item without tag = sync-check failure. Item already in library (other repo's tag): ADD this repo's tag (items carry several repo tags). Never remove or rename another repo's tag, never create a duplicate item.
+- paper_ledger row, PDF, reference-manager entry stay in sync. Each import pass appends `## Sync check (<date>)` (PDFs <-> `ok` rows 1:1; manager tag set = paper_ledger set; counts asserted by per-key checks, never from a capped search result). The checker is a script frozen in the stage's `code/`; it checks per key via the manager's local API across all libraries, accepts a PDF or EPUB child, and exempts group items from the file-child test.
+- Single writer on paper_ledger at any time (import teammate). Scans end with `## Candidates for paper_ledger.md` in row format. Import teammate merges them.
+- Open-access substitutes: separate paper_ledger row + separate manager item, cross-referenced. Cite original, read and quote substitute.
 
 ### P5.2 Reference manager (Zotero)
 
@@ -97,7 +97,7 @@ Zotero writes follow the `research-kit-lit:zotero` skill: load it before any wri
 Rules to paste into every brief that touches the manager (the skill has the procedure):
 - Attach files only through the desktop client's own storage sync (WebDAV), never vendor cloud (quota). Write mode hybrid/web: do NOT attach; the tool may silently upload to cloud while its reply claims WebDAV.
 - New batch: attach ONE file first, verify it is not on the cloud (skill's `/file` check). Any error mentioning quota or cloud storage: stop, report exact text.
-- Group libraries: no attachments on group items (their files always sync through the vendor cloud). Tag only, file stays in `paper/library/pdfs/`, ledger manager cell `KEY (group <id>) / <tag>`.
+- Group libraries: no attachments on group items (their files always sync through the vendor cloud). Tag only, file stays in `paper/library/pdfs/`, paper_ledger manager cell `KEY (group <id>) / <tag>`.
 - Writes (add, update, attach, collection edit) allow-listed in settings; anything else needs a user ask.
 - Tag search caps at 100 results: verify sync by per-key metadata or the local HTTP API.
 - Titles go in as plain text (strip `<i>`, `<scp>`, `&amp;`). Soft file-size limit ~28 MB: shrink with ghostscript, attach the small copy, keep the original.
@@ -105,10 +105,10 @@ Rules to paste into every brief that touches the manager (the skill has the proc
 
 ### P5.3 Retrieval ladder (every fetch brief)
 
-1. Reference manager first (children check on ledger key; if a PDF child exists, copy it from manager storage, never fetch). Reads never gated, writes are.
+1. Reference manager first (children check on paper_ledger key; if a PDF child exists, copy it from manager storage, never fetch). Reads never gated, writes are.
 2. Unpaywall / publisher OA link via curl.
 3. Browser automation (downloads land in `~/Downloads`; move into `paper/library/pdfs/`).
-4. On failure: `rk add fetch "<key>: <title>" --note "DOI ...; URL ...; file <target filename>; manager <key>" --link <task id> --who <name>`. Open fetch entries are what the user still fetches by hand (STATUS.md "Open fetches"). When the PDF arrives, the import teammate attaches it, flips the ledger status, and runs `rk close F-<n> --note "attached"`. No pointer row anywhere else.
+4. On failure: `rk add fetch "<key>: <title>" --note "DOI ...; URL ...; file <target filename>; manager <key>" --link <task id> --who <name>`. Open fetch entries are what the user still fetches by hand (STATUS.md "Open fetches"). When the PDF arrives, the import teammate attaches it, flips the paper_ledger status, and runs `rk close F-<n> --note "attached"`. No pointer row anywhere else.
 Never use paywall-circumvention sites. Fetcher reporting `FAILED` for a PDF already in the manager = brief error.
 
 ### P5.4 PDF reading mode (every read / audit / scan brief states it)
@@ -121,7 +121,7 @@ Give BOTH PDF page index and printed page (`PDF p. 7 / printed p. 569`). State c
 
 ### P5.6 Literature scan pipeline
 
-Scan -> cross-audit by a teammate on a DIFFERENT model (expert read -> senior audit; senior scan -> full expert sweep, then senior audit). Audit written to a side file. Audit wins on conflict -> user check -> import teammate (ledger + manager) -> sync check. No expert edits a deliverable without that cross-audit. Why: one model's blind spots repeat across its own passes.
+Scan -> cross-audit by a teammate on a DIFFERENT model (expert read -> senior audit; senior scan -> full expert sweep, then senior audit). Audit written to a side file. Audit wins on conflict -> user check -> import teammate (paper_ledger + manager) -> sync check. No expert edits a deliverable without that cross-audit. Why: one model's blind spots repeat across its own passes.
 
 ### P5.7 Corpus saturation
 
@@ -129,11 +129,11 @@ Declare literature saturated explicitly (user decision entry, dated by the ledge
 
 ### P5.8 ARS corpus passport
 
-ARS reads our sources only as `literature_corpus[]` in a Material Passport (`passport.yaml`); no adapter reads `paper_ledger.md`. Without a passport ARS searches external databases only and ignores the ledger. Needed in EVERY ARS literature / writing run after a source sync, not only adopted repos: `deep-research` (`lit-review`, `three-way-scan`, `full`, `systematic-review`), `academic-paper` (`outline-only`, `full`). `socratic` and `plan` never read it.
-- Build with a converter script in the stage's `code/`: ledger -> passport, `obtained_via: other`, one entry per ledger row, unfillable rows to `rejection_log.yaml`. Write `HANDOFF_ars_corpus.md` for it (goal, inputs, converter, validator, how the run locates the passport).
+ARS reads our sources only as `literature_corpus[]` in a Material Passport (`passport.yaml`); no adapter reads `paper_ledger.md`. Without a passport ARS searches external databases only and ignores paper_ledger. Needed in EVERY ARS literature / writing run after a source sync, not only adopted repos: `deep-research` (`lit-review`, `three-way-scan`, `full`, `systematic-review`), `academic-paper` (`outline-only`, `full`). `socratic` and `plan` never read it.
+- Build with a converter script in the stage's `code/`: paper_ledger -> passport, `obtained_via: other`, one entry per paper_ledger row, unfillable rows to `rejection_log.yaml`. Write `HANDOFF_ars_corpus.md` for it (goal, inputs, converter, validator, how the run locates the passport).
 - Validate with the plugin's `scripts/check_literature_corpus_schema.py --passport <file>`.
 - Adapter dependencies (`requirements-dev.txt`): user installs, agents never do.
-- Rebuild after every ledger change (any edit, not only a source sync); fresh iff passport `obtained_at` == ledger mtime. The converter asserts the expected row count (bump it with each ledger change) and has a selfcheck; full author lists live in a side file the converter reads (the ledger row keeps "X et al."). First ARS run on a new passport: check the "PRE-SCREENED FROM USER CORPUS:" block sums to the entry count (a wrong path fails silently).
+- Rebuild after every paper_ledger change (any edit, not only a source sync); fresh iff passport `obtained_at` == paper_ledger mtime. The converter asserts the expected row count (bump it with each paper_ledger change) and has a selfcheck; full author lists live in a side file the converter reads (the paper_ledger row keeps "X et al."). First ARS run on a new passport: check the "PRE-SCREENED FROM USER CORPUS:" block sums to the entry count (a wrong path fails silently).
 - GOALS / research question first: corpus entries are screened against it like any search hit.
 - How a skill invocation locates `passport.yaml` is not documented: record the answer in the `BRIEF.md` of the first stage that uses it.
 
