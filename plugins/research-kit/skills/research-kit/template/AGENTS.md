@@ -9,14 +9,14 @@ Generic working method for every project kind (paper, software, reverse engineer
 
 1. Read every kind file named in the appendix kinds block. Why: kind rules are not loaded automatically.
 2. Read `pm/living/GOALS.md`, then `pm/README.md` "Load-bearing numbers" and "Do not quote / known traps". Why: facts established in later stages override earlier ones.
-3. Check `pm/DEFERRED.md` open items and `pm/handoffs/open/`; after a compaction also the newest `pm/handoffs/compact/handoff-*.md`. Note the appendix `Mode:` and `Git policy:` values: sections 3, 7 and 9 branch on them.
+3. Read the open list (4.2): the research-kit SessionStart hook prints it; else `rk list`; full view `pm/STATUS.md` (generated). After a compaction also the newest `pm/handoffs/compact/handoff-*.md`. Note the appendix `Mode:` and `Git policy:` values: sections 3, 7 and 9 branch on them.
 
 ### 0.2 First session in a new repo
 
 1. `/rk-init` asks kinds, mode and git policy, then creates the `pm/` tree, the appendix fields, the kinds block and the `.gitignore` block. Verify they exist; never hand-build a second tree.
 2. Root `CLAUDE.md` = two-line pointer: "read AGENTS.md and pm/README.md; AGENTS.md is the agent file, not CLAUDE.md". Add `**/.cache/` and credential files to `.gitignore` before the first fetch or import. Why: API keys land in caches and transcripts.
-3. Skeleton files, headings only (lead): `pm/living/GOALS.md`, `pm/living/NEXT_STEPS.md`, `pm/living/TASKS.md`.
-4. Fill the rest of the appendix with the user via AskUserQuestion; open questions (title) stay plain text. No silent defaults: an unanswered item goes to `pm/DEFERRED.md` as OPEN. Why: a guessed default becomes an unrecorded decision.
+3. Skeleton file, headings only (lead): `pm/living/GOALS.md`.
+4. Fill the rest of the appendix with the user via AskUserQuestion; open questions (title) stay plain text. No silent defaults: an unanswered item -> `rk add deferred "<item>" --owner user`. Why: a guessed default becomes an unrecorded decision.
 5. Run the first-session steps of each active kind file.
 6. `pm/living/GOALS.md` (goal, scope, claims or targets, open decisions) is agreed with the user before any scan, build or run starts; the kind's stage table says which stage writes it (paper: after an optional seed). Why: work is screened against the goals.
 
@@ -24,10 +24,10 @@ Generic working method for every project kind (paper, software, reverse engineer
 
 - **User** = project owner. Decides scope, claims, targets, what is quotable, what touches hardware or costs money. All work is the user's work.
 - **Teamlead** = main session. Plans, sizes team, writes briefs, routes messages, integrates, reports. Discusses goals/targets/issues with user. Session model not Opus or Fable: say so in one line, continue.
-  Does NOT do teammates' work: no code, no diagnostics, no fetching, no ledger edits, no file moves (except waste moves, section 7), no codebase search, no verification re-runs. Reading a deliverable to judge it is fine. Re-running tools to check it is not.
-  Lead writes only: `AGENTS.md` appendix, `pm/README.md`, `pm/living/*` (except files a kind file assigns to teammates), `pm/DECISIONS.md`, `pm/DEFERRED.md`, handoffs, stage `BRIEF.md`, memory. Everything else = teammate deliverable.
-- **Team** = named teammates spawned per task (section 2). One team per stage or work package.
-  Why the split: lead's context is scarce. Execution inside it crowds out judgement.
+  Does NOT do teammates' work: no code, no diagnostics, no fetching, no edits of teammate-owned files, no file moves (except waste moves, section 7), no codebase search, no verification re-runs. Reading a deliverable to judge it is fine. Re-running tools to check it is not.
+  Lead writes only: `AGENTS.md` appendix, `pm/README.md`, `pm/living/*` (except files a kind file assigns to teammates), handoffs, stage `BRIEF.md`, memory. Everything else = teammate deliverable.
+  Ledger entries (4.2) are written only through `rk`, by anyone; the tool's lock and `who` replace one writer per ledger. The lead logs decisions and opens and closes tasks.
+- **Team** = named teammates spawned per task (section 2). One team per stage or work package. Why the split: lead's context is scarce. Execution inside it crowds out judgement.
 
 ## 2. Teams (replaces ad-hoc subagents)
 
@@ -42,7 +42,7 @@ Team implicit: no `TeamCreate`. Teammates spawned in ONE parallel message, each 
 | Expert | `exp1..expM` | opus | critical, open-ended, subtle-error-prone | hard/contested question, method choice, weighing conflicting evidence |
 | Critic | `crit1`, `crit2` | opus | review only, never implement | review only, never write the report |
 
-Spawn call: `Agent(name=<name>, model=<model column>, subagent_type="research-kit:worker-high")` for every teammate. User names effort level: use `subagent_type="research-kit:worker-<effort>"` instead (low/medium/high/xhigh). Model still from roster. Names unique per session. Name already taken (earlier team, setup helper): suffix the round (`jr1-2`) and record mapping in `pm/living/TASKS.md`; `SendMessage` routes a reused name to the newest agent.
+Spawn call: `Agent(name=<name>, model=<model column>, subagent_type="research-kit:worker-high")` for every teammate. User names effort level: use `subagent_type="research-kit:worker-<effort>"` instead (low/medium/high/xhigh). Model still from roster. Names unique per session. Name already taken (earlier team, setup helper): suffix the round (`jr1-2`) and record the mapping in the task entry (`rk set T-<n> --owner jr1-2`); `SendMessage` routes a reused name to the newest agent.
 
 Tiering: by how defined item is. Between two tiers take higher. Anything where subtle error wouldn't surface as test failure goes to expert. Typing/format passes: senior, never junior. Min team: 2 jr, 2 sr, 1 exp, plus 2 critics at review time. Sizes user types = final.
 
@@ -54,7 +54,7 @@ Critic lenses (always exactly two, always opus):
 
 1. **Goal statement** (lead): problem or question, intended outcome, how to check (metric / test / observable behaviour; or question answered + decision it informs). Decompose into work items, tag each jr/sr/exp.
 2. **Size + confirm**: propose sizes via AskUserQuestion (first option = proposal, recommended, with work-item split; plus one smaller, one larger). Confirmation also authorizes team to read user's code and files for this task. No further ask inside task.
-3. **Spawn** all workers in one message with brief template (2.3).
+3. **Spawn**: first one task per work item, `rk add task "<item>" --owner <name> [--stage S-<n>]`; the brief's `TASK:` line names it. Then all workers in one message with brief template (2.3). A hook refuses a brief (a message with a `DELIVERABLE:` line, spawn or SendMessage) without an open task, and marks the task running.
 4. **Work**: teammates talk via `SendMessage` only when their work touches another's. One writer per shared file. Concurrency cap: <= 7 sonnet + <= 5 opus at once.
 5. **Review**: when workers report, spawn `crit1` + `crit2` in one message. They get user's original request verbatim, goal statement, worker report paths. Each writes ONE review file:
    ```
@@ -64,10 +64,9 @@ Critic lenses (always exactly two, always opus):
    - what was intended, or a neighbouring problem instead?
    FINDINGS: location (file:line or section), problem, severity, concrete fix, owner (teammate name)
    ```
-   Evidence = command run or number measured (engineering). Source opened and passage checked (research). YES without evidence counts as PARTIAL.
-   The review file (stage `notes/` in full mode, `pm/reviews/` in light mode; 4.4) IS the critic's report file: no second copy in `pm/waste/team/`. Then SendMessage to lead, max ~1k chars: verdict lines, blocking findings (location, owner), review path. Final text = single line "Reported to lead (report file: <path>)."
+   Evidence = command run or number measured (engineering). Source opened and passage checked (research). YES without evidence counts as PARTIAL. The review file (stage `notes/` in full mode, `pm/reviews/` in light mode; 4.4) IS the critic's report file: no second copy in `pm/waste/team/`. Then SendMessage to lead, max ~1k chars: verdict lines, blocking findings (location, owner), review path. Final text = single line "Reported to lead (report file: <path>)."
 6. **Fix loop**: any NO/PARTIAL -> lead re-plans work items (not just patches). Findings go to owner via `SendMessage`. Critics never fix. Re-run both critics. Max 2 fix rounds, then escalate leftovers to user (5.3). Resume same critic via `SendMessage` for v2/v3 rounds (keeps its context). Done = every verdict line YES from both critics.
-7. **Integrate + verify**: named teammate (jr for run-and-report, exp for judgment) runs checks and pastes tail. Lead reads it: an agent's success report is not evidence, the pasted output is. Teammate runs, not lead: deliberate, because of the lead rule in section 1. Research: lead spot-checks key claims by reading cited passage. Report: what built/found, verification, critic verdicts, open findings, roster used.
+7. **Integrate + verify**: named teammate (jr for run-and-report, exp for judgment) runs checks and pastes tail. Lead reads it: an agent's success report is not evidence, the pasted output is. Teammate runs, not lead: deliberate, because of the lead rule in section 1. Research: lead spot-checks key claims by reading cited passage. Report: what built/found, verification, critic verdicts, open findings, roster used. The lead closes each task from its report: `rk close T-<n> --note "<outcome>" --ref <report path>`.
 
 Why two critics + owner-fixes: one critic anchors on author's framing. Critic that also fixes marks own homework. In the source project critics found real errors every stage (e.g. 26 findings in one plan review). Rows a prior pass marked "verified unchanged" were refuted ~1 time in 5 on re-read.
 
@@ -78,31 +77,24 @@ Lead with deliverable, fence off rest. Rich context invites solving interesting 
 ```
 You are <name>, <role> on a team. Lead = main session.
 DELIVERABLE: <artifact> at <exact path>.            <- second line, right after the role line
+TASK: T-<n>                                   <- open task; a brief without it is refused
 NOT IN SCOPE: <what to leave alone, e.g. "do not investigate WHY the data looks like this">.
 DONE WHEN: <mechanical check from the stage BRIEF.md>.
-Team: <name: one-line task>, for every teammate.
-Coordinate via SendMessage only when your work touches a teammate's.
-Full report -> write to pm/waste/team/<run>/<name>-r<round>.md (required
-deliverable): what you produced (absolute paths), how verified, open points,
-every claim tagged CONFIRMED / LIKELY / GUESS with its cite, and one line
-per file to discard, at column 0, nothing before it (never move or delete it yourself):
+Team: <name: one-line task>, for every teammate. Coordinate via SendMessage only when your work touches a teammate's.
+Full report -> write to pm/waste/team/<run>/<name>-r<round>.md (required deliverable): what you produced (absolute paths), how verified, open points, every claim tagged CONFIRMED / LIKELY / GUESS with its cite, and one line per file to discard, at column 0, nothing before it (never move or delete it yourself):
 TO-WASTE: <repo-relative path> -- <reason>
-Then SendMessage to lead, max ~500 chars: DONE / BLOCKED, report path,
-blocking items only. Final text = single line
-"Reported to lead (report file: <path>)." (it reaches the lead too; never repeat the report).
-Subagents you start: research-kit:fetcher for lookups, else a type that can Write; in
-the foreground, full result to pm/waste/team/<run>/<name>-r<round>-sub<k>.md. The file is the
-result (the Agent call may return only "no report delivered"); read it yourself.
+Then SendMessage to lead, max ~500 chars: DONE / BLOCKED, report path, blocking items only. Final text = single line "Reported to lead (report file: <path>)." (it reaches the lead too; never repeat the report).
+Subagents you start: research-kit:fetcher for lookups, else a type that can Write; in the foreground, full result to pm/waste/team/<run>/<name>-r<round>-sub<k>.md. The file is the result (the Agent call may return only "no report delivered"); read it yourself.
 ```
 
-Reusing an idle teammate via `SendMessage`: restate DELIVERABLE, NOT IN SCOPE and the report lines with the new `<round>` (its first brief may predate them). Lead reads a report file only when a decision needs it. Report files are team comms, not deliverables: anything worth keeping is copied into the stage folder.
+Reusing an idle teammate via `SendMessage`: restate DELIVERABLE, TASK, NOT IN SCOPE and the report lines with the new `<round>` (its first brief may predate them). Lead reads a report file only when a decision needs it. Report files are team comms, not deliverables: anything worth keeping is copied into the stage folder.
 
 Append what applies:
 - One task per brief. Announce any bundling to user. Escalate with the ESCALATE block (5.3); no status narration.
 - Research: every claim carries its source (DOI, URL or file:page) and an evidence tag (5.1). Unsourced claims stay out of deliverable.
 - Code: simple Bash calls only. One command per call, no pipes / `&&` / heredocs (composed commands deadlock agents on permission prompts). Edits via Edit/Write, never `sed`/heredoc.
-- Code: typing + quality bar of repo (appendix) and "run the check, paste the tail".
-- Code navigation: symbol tools (serena or equivalent) before reading whole files, if repo has them.
+- Code: typing + quality bar of repo (appendix) and "run the check, paste the tail". Navigation: symbol tools (serena or equivalent) before reading whole files, if repo has them.
+- A teammate that writes ledger entries (e.g. a fetch failure): the full tool path (4.2) and `--who <name>`.
 - Kind files list their own brief appends; paste the ones that apply.
 
 ### 2.4 Permission denials
@@ -119,7 +111,8 @@ Every step producing deliverables (scan, build, run, draft) is its OWN stage wit
 - Session name `<ID>_NN_<kind>_<topic>` (`/rename`), matching folder.
 - At most one open stage per kind; stages of different kinds may run in parallel. `/rk-close` names the stage it closes.
 - Stage sequence: the stage table in each kind file. Adapt the stage set per project; keep each row's Done when.
-- **Done when**: every stage opens with a mechanical exit check, written in `BRIEF.md` (file exists, check exits 0, counts match, both critics YES, user sign-off logged in `pm/DECISIONS.md`). Why: completion by judgment call cannot be verified by the lead.
+- **Done when**: every stage opens with a mechanical exit check, written in `BRIEF.md` (file exists, check exits 0, counts match, both critics YES, user sign-off = a user decision linked to the stage: `rk add decision "<sign-off>" --owner user --link S-<n>`). Why: completion by judgment call cannot be verified by the lead.
+- Opening a stage = `rk add stage "NN-<kind>-<topic>"` plus the folder. The stage entry is the only record of its state.
 - Legacy stage paths (appendix `Legacy stages:`) are frozen and read-only; new stages go to `pm/stages/`. Why: closed stages are cited by path.
 
 ### 3.2 Stage folder
@@ -135,22 +128,22 @@ pm/stages/NN-<kind>-<topic>/
 ```
 
 - Deliverable vs note decided when file is created, not later.
-- Stage frozen when closed (README status `closed`). Later corrections go into CURRENT stage with pointer back. Why: cited paths must keep meaning what they meant.
-- Each stage README starts with: scope + user decisions with date, provenance table (file | sha256 | role), run log (step | command | log path | start | end | status), results, caveats, file index. Teammate drafts README skeleton (junior enough); lead updates decisions.
+- Stage frozen when its stage entry is `done` (`rk stage-close`, 3.4). Later corrections go into CURRENT stage with pointer back. Why: cited paths must keep meaning what they meant.
+- Each stage README starts with: scope + the ids of its decisions, provenance table (file | sha256 | role), run log (step | command | log path | start | end | status), results, caveats, file index; no status line. Teammate drafts README skeleton (junior enough); lead updates decision ids.
 
 ### 3.3 Briefing a stage
 
-`BRIEF.md` (lead) = decisions at stage start (dated), inputs, work packages, Done when, rules, kind skill + mode if the kind file names one. Update in place with dated "update" sections. Decisions made in conversation go into it or `pm/DECISIONS.md` the same day, with date + stage. Why: conversation is lost at compaction; the brief is not.
+`BRIEF.md` (lead) = the ids of its decisions and tasks, inputs, Done when, rules, kind skill + mode if the kind file names one; decisions and work packages live in the ledger (4.2). Update in place with dated "update" sections. Decisions made in conversation: `rk add decision` at once, and show the user the receipt line. Why: conversation is lost at compaction; the ledger is not.
 
 ### 3.4 Stage close (user says "close stage"; `/rk-close`)
 
 Checklist, this order, each step with owner. Chat archive LAST: session JSONL is snapshot at copy time, anything after it is missing from archive.
-1. Done when check run, output tail pasted into stage README (teammate runs, lead reads). Not met -> stage stays open, or user accepts the gap, logged in `pm/DECISIONS.md`.
-2. Stage README status -> `closed`, deliverables listed (lead).
-3. `pm/README.md`: stage row -> `closed` + key deliverables. Every quotable number stage produced or refuted gets row in "Load-bearing numbers". Update "Do not quote / known traps". New decisions -> `pm/DECISIONS.md` (lead).
-4. `pm/living/NEXT_STEPS.md` rewritten. Old copy -> `notes/NEXT_STEPS_at_close_<date>.md` (lead).
-5. Executed handoffs -> `pm/handoffs/done/`, their row deleted from open-handoffs table (jr moves files, lead edits table).
-6. `pm/living/TASKS.md` section for stage marked closed (lead).
+1. Done when check run, output tail pasted into stage README (teammate runs, lead reads). Not met -> stage stays open, or user accepts the gap, logged as a user decision (`rk add decision ... --owner user --link S-<n>`).
+2. Every task of the stage done, dropped, re-staged or deferred: `rk list --stage S-<n>` shows no open task (lead).
+3. `pm/README.md`: every quotable number stage produced or refuted gets row in "Load-bearing numbers". Update "Do not quote / known traps" (lead).
+4. Executed handoffs -> `pm/handoffs/done/` (jr moves files), `rk close H-<n> --note "<outcome>"` (lead).
+5. User sign-off: a user decision linked to the stage, `rk add decision "<sign-off>" --owner user --link S-<n>` (user decides, lead logs).
+6. `rk stage-close S-<n> --sign-off D-<m>` (lead). Refused -> fix what it names, rerun. Stage table, open list and task view are generated from the ledger; nothing to rewrite by hand.
 7. Kind-specific freeze steps named in the kind file (owner as named there).
 8. Chat archive into the stage's `chat/` (sr, copy only, never digest in `notes/`):
    - raw session JSONL `~/.claude/projects/<sanitized-cwd>/<session-id>.jsonl`;
@@ -164,18 +157,14 @@ Checklist, this order, each step with owner. Chat archive LAST: session JSONL is
 
 ```
 pm/
-  README.md          finding aid: stage table + "Load-bearing numbers" + "Do not quote / known traps"
-                     + "Open handoffs" + "Where is what". Updated by the lead at stage close.
-  DECISIONS.md       decision log (5.3)
-  DEFERRED.md        parked items (5.4)
+  README.md          finding aid: "Load-bearing numbers" + "Do not quote / known traps" + "Where is what"; lead updates it at stage close
+  ledger.jsonl       the store: tasks, decisions, deferred, stages, ... (4.2); written only through `rk`, committed
+  STATUS.md          generated open view; gitignored, never edited
   living/            one current version each, edited in place, never copied into stages
     GOALS.md         goal, scope, claims or targets, open decisions
-    NEXT_STEPS.md    open items for the user, rewritten at every stage close
-    TASKS.md         task ledger: running / queued / done, owner + files per task
   kinds/             active kind files (replaced on sync; never edit locally)
   stages/            section 3 (full mode only)
-  handoffs/open/     work packages for later sessions (HANDOFF_<topic>.md), committed
-  handoffs/done/     moved here when the stage that executed them closes, committed
+  handoffs/open/     work packages for later sessions (HANDOFF_<topic>.md), committed; handoffs/done/ when the executing stage closes
   handoffs/compact/  compaction handoffs (handoff-YYYY-MM-DD.md), gitignored
   logs/              run and impl logs, committed
   reviews/           critic reviews made outside stages (light mode), gitignored
@@ -189,23 +178,35 @@ Kind-specific folders (e.g. a paper's library and manuscript) are named in the k
 
 - "Load-bearing numbers" names, per number, the OWNER FILE (quote from there, never from table or stage row), what each timer/metric covers, refuted claims, and traps. Why: several facts were only established in a later stage than the one that first produced them (a "~10 s" figure was refuted later).
 - "Do not quote / known traps": refuted claims, superseded first looks, results that carry flags ("never quote the row bare"), bench bugs, dry-run output. Refuted material stays listed so nobody re-derives it.
-- Every quoted number lists protocol caveats next to it (what is timed, N, seed, hardware, versions).
-- Name the harness when quoting a number. Two experiments that land near each other are a consistency check, not a repeated measurement.
-- Quote a number only from an output stamped at a clean commit. Stale stamp = re-run first.
-- Once a rerun of all experiments is decided, every older number is a placeholder until the rerun.
+- Every quoted number lists protocol caveats next to it (what is timed, N, seed, hardware, versions) and names the harness. Two experiments that land near each other are a consistency check, not a repeated measurement.
+- Quote a number only from an output stamped at a clean commit. Stale stamp = re-run first. Once a rerun of all experiments is decided, every older number is a placeholder until the rerun.
 
-### 4.2 TASKS.md
+### 4.2 The ledger (pm/ledger.jsonl)
 
-One section per stage (light mode: per work package). Table: `id | task | owner (teammate name + model) | files | status`. One task per brief. Status values: queued / running / done + one clause of outcome. Announce bundling.
+- `rk` = `python3 -I <path>/rk.py`, run from the repo root; the path is in the SessionStart line `[research-kit] Ledger tool ...` (skills spell it in full). Teammates add `--who <name>`. Every write prints a receipt line (`logged D-4: ...`): show it to the user.
+- Types (id prefix): task T, decision D, deferred DF, fetch F, debt DB, handoff H, stage S; a kind file may declare more with `<!-- rk:type <name> <PREFIX> -->`. Statuses: open, running, done, dropped, superseded. `imported` entries are unverified.
+- Granularity: an entry is a unit of work or a ruling; a file edit, a one-line fix or a test rerun is not. The user's own work: `rk add task "<what>" --owner user --status done --note ...`. Never hand-edit `ledger.jsonl` or `STATUS.md` (a hook blocks it); corrections are new events. `ledger.jsonl` is committed together with the work; the tool never runs git.
+- `rk add <type> "<title>" [--owner N] [--stage S-<n>] [--note T] [--link ID]... [--ref PATH]... [--status S]`: new entry
+- `rk start ID`: open -> running (the brief hook does it for the brief's `TASK:` ids)
+- `rk close ID --note "<outcome>" [--ref PATH]`: done; not for stages (`stage-close`) or decisions (`supersede` / `drop`)
+- `rk drop ID --note "<why>"`: dropped
+- `rk reopen ID --note "<why>"`: done / dropped -> open
+- `rk set ID [--title T] [--owner N] [--stage S-<n>] [--note T] [--link ID] [--ref PATH]`: change fields, status kept
+- `rk supersede D-<n> "<new>" --owner N [--note T]`: replaces a decision in one call
+- `rk list [--type T] [--owner N] [--stage S-<n>] [--all]`: open entries, short (`--all` adds closed ones)
+- `rk show ID`: fields and history
+- `rk search TEXT`: titles and notes, every status
+- `rk recent [-n N]`: entries with the newest events
+- `rk stage-close S-<n> --sign-off D-<m>`: the only way to close a stage (3.4)
 
 ### 4.3 Handoffs
 
-- Work package `HANDOFF_<topic>.md` in `pm/handoffs/open/`: self-contained package for a later or side session. Goal, inputs (exact paths), spec of deliverable, Done when, what is out of scope, what feeds it. `pm/README.md` keeps the open-handoffs table (undone work only; delete row on move to `done/`). Park (don't delete) handoffs user declined, with decision and date in row.
+- Work package `HANDOFF_<topic>.md` in `pm/handoffs/open/`: self-contained package for a later or side session. Goal, inputs (exact paths), spec of deliverable, Done when, what is out of scope, what feeds it. One `handoff` entry per open handoff: `rk add handoff "<topic>" --ref pm/handoffs/open/HANDOFF_<topic>.md`, closed when executed. Declined by the user: `rk drop H-<n> --note "<user decision>"` (file stays parked, never deleted).
 - Compaction handoff `pm/handoffs/compact/handoff-YYYY-MM-DD.md`: session state for the next context, written by the `research-kit:surviving-compaction` skill and hooks. Gitignored; never cite it. Why: it is a memory aid, not a record.
 
 ### 4.4 Notes, critic reviews, logs
 
-- Filenames carry a date: `critic_review_<what>_v2_<date>.md`, `run_log_<date>.md`, `impl_log_<date>.md`, `NEXT_STEPS_at_close_<date>.md`.
+- Filenames carry a date: `critic_review_<what>_v2_<date>.md`, `run_log_<date>.md`, `impl_log_<date>.md`.
 - Critic reviews kept in stage `notes/` (light mode: `pm/reviews/`) with version suffix. Owner's fix log sits beside them (`fix_round_<what>_<date>.md`). Run and impl logs outside a stage go to `pm/logs/`.
 - Labels must match what code computes. Critics check every table column and legend name against code (two experiments in the source project needed 9 and 10 label/provenance fixes after results).
 - Docs ASCII-only if repo has pre-commit transliteration hook (appendix). Write `->`, `<=`, `x`, `Delta`, `+/-`, `[x]` directly. Unmapped character blocks commit.
@@ -225,10 +226,10 @@ Every claim in a report, note, README or brief carries one tag and a cite. Why: 
 - Disclose provenance honestly (measured vs model-as-supplied hardware, simulated vs real data, dry run vs real run). Largest case run = demonstrated value, never ceiling.
 - Every constant, threshold or setting in a deliverable cites where it came from (source, run, or user decision).
 
-### 5.3 pm/DECISIONS.md and escalation
+### 5.3 Decisions and escalation
 
-- One row per decision: `date | stage | decision | by (user / agent) | why | where recorded`. Includes "decisions already taken (do not reopen without the user)". Why: later sessions must tell user calls from agent calls.
-- Scope test: escalate only if a choice changes output, public surface, claims, or files named in the brief; otherwise decide, log one row. Clusters of agent rows against one stage signal a bad brief.
+- One `decision` entry per decision: `rk add decision "<what>" --owner <user / lead / name> --note "<why>" [--stage S-<n>]`; `--owner` = who decided. Includes decisions already taken (do not reopen without the user). A change = `rk supersede D-<n> "<new>" --owner ...`, never a re-add. Why: later sessions must tell user calls from agent calls.
+- Scope test: escalate only if a choice changes output, public surface, claims, or files named in the brief; otherwise decide, log one entry. Clusters of agent rows against one stage signal a bad brief.
 - Escalation (teammate -> lead, lead -> user) is one ESCALATE block, nothing around it:
   ```
   ESCALATE <BLOCKED | NEEDS-SOURCE | AMBIGUOUS | SPEND>: <one line>
@@ -237,16 +238,15 @@ Every claim in a report, note, README or brief carries one tag and a cite. Why: 
   State: <files touched, what is safe to keep, what is half-done>
   ```
 
-### 5.4 pm/DEFERRED.md and the stop rule
+### 5.4 Deferred items and the stop rule
 
-- Anything that needs approval, hardware, money, a hand fetch or an unanswered question is parked: `date | item | needs | blocks what | status (OPEN / done / dropped)`. Other work continues. Why: one waiting item must not stall a team. Items leave only as done (with pointer) or dropped (with user decision), never silently: absence looks like a result.
-- Stop rule: a session or teammate stops or refuses mid-task -> lead logs it here (what, exact refusal text, state left) and asks the user. No rephrase/retry loop. Why: rephrasing around a refusal hides the problem and burns budget.
+- Anything that needs approval, hardware, money, a hand fetch or an unanswered question is parked: `rk add deferred "<item>" --note "needs: ...; blocks: ..."` (`--owner user` when it waits on them). Other work continues. Why: one waiting item must not stall a team. Items leave only via `rk close` (with pointer) or `rk drop` (with the user's decision), never silently: absence looks like a result.
+- Stop rule: a session or teammate stops or refuses mid-task -> lead logs it as a deferred entry (what, exact refusal text, state left) and asks the user. No rephrase/retry loop. Why: rephrasing around a refusal hides the problem and burns budget.
 
 ## 6. Code and computation
 
 - Repo code read-only for lead and research teammates. Code edited only when the brief names file and change (software stages name them by design). Brief quotes that decision with its date. User's own scripts = sandbox: stage using one keeps own frozen copy in its `code/` (sha256 at copy time in README), runs import copy, never original.
-- No-go dirs (appendix) never read, grepped, edited, imported unless user names file.
-- Agents never install packages. User owns environment.
+- No-go dirs (appendix) never read, grepped, edited, imported unless user names file. Agents never install packages. User owns environment.
 - Any change to shared code re-runs checks of its dependents (appendix lists them).
 - Long runs persist everything first: curves, meta, argv, git stamp, sha256 of inputs/outputs go to disk before any multi-hour run. Re-render paths never overwrite main outputs without explicit gate. Never launch multi-hour run unless brief says so. Report command, user launches it.
 - Each stage rerun carries run sheet in its README: ordered commands, expected outputs, pass criteria. Commands run from repo root with explicit output dirs (never rely on defaults pointing at old stage). Frozen older stages keep old commands, valid at pinned commits.
@@ -272,7 +272,7 @@ The appendix `Git policy:` line decides; never infer it from habit.
 ## 9. Light vs full mode
 
 The appendix `Mode:` line decides; `full` = everything above.
-- `light`: no stage folders, no stage tables, no close checklist (3.1-3.4 skipped; a kind file's stage table is a checklist only). Kept: roles, teams and both critics, Done when per work package (written in its handoff or TASKS row), evidence tags, `pm/DECISIONS.md`, `pm/DEFERRED.md`, `pm/logs/`, handoffs, waste, git policy. Critic reviews go to `pm/reviews/`. Why: small repos need the discipline, not the paperwork.
+- `light`: no stage folders, no stage tables, no close checklist (3.1-3.4 skipped; a kind file's stage table is a checklist only). Kept: roles, teams and both critics, Done when per work package (written in its handoff or task note), evidence tags, the ledger (no stage entries), `pm/logs/`, handoffs, waste, git policy. Critic reviews go to `pm/reviews/`. Why: small repos need the discipline, not the paperwork.
 - Upgrade with `/rk-upgrade` (adds `pm/stages/`, switches `Mode:` to full); first full stage takes the next free NN. Never downgrade a repo with closed stages.
 
 ## Project appendix (repo-specific; kept on sync)

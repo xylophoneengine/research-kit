@@ -346,11 +346,23 @@ def test_template_core() -> None:
         "Git policy:",
         "CONFIRMED",
         "Done when",
-        "pm/DEFERRED.md",
+        "pm/ledger.jsonl",
+        "rk stage-close",
+        "TASK: T-",
         "research-kit:worker-high",
     )
     missing: list[str] = [s for s in need if s not in text]
     assert not missing, f"core template lacks: {missing}"
+    for gone in (
+        "DECISIONS.md",
+        "DEFERRED.md",
+        "NEXT_STEPS",
+        "TASKS.md",
+        "FETCH_FAILED",
+        "Open handoffs",
+        "open-handoffs",
+    ):
+        assert gone not in text, gone
     assert "paper-playbook" not in text, "core template mentions paper-playbook"
 
 
