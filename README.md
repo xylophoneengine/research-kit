@@ -301,6 +301,8 @@ rk brief-check              the brief gate the hook calls
 `rk-init` also appends a marked block to `.gitignore` (`pm/waste/`,
 `pm/handoffs/compact/`, `pm/scratch/`, `pm/reviews/`, `pm/stages/*/chat/`,
 `pm/STATUS.md`, `_dry/`); rerunning it never duplicates the block or touches your lines.
+It also writes a marked block into `.gitattributes` with `pm/ledger.jsonl merge=union`,
+so branch merges of the append-only ledger do not conflict.
 
 ## Commands
 
