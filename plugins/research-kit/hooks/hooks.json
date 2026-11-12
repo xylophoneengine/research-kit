@@ -1,0 +1,46 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r \".prompt // empty | select(length < 300)\" | grep -qiE \"get ready for (a |the )?compact|ready for compaction|prepare (for )?(a |the )?compact|i.?m stopping here\" && echo \"[surviving-compaction] The user announced a compact. Before anything else, invoke the Skill tool with skill \\\"research-kit:surviving-compaction\\\" and run its Prepare steps.\" || true"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/handoff-hook.sh\" pre"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/handoff-hook.sh\" post"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-delete.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

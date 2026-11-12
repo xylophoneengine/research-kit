@@ -1,0 +1,21 @@
+{
+  "name": "research-kit",
+  "metadata": {
+    "description": "Research working method for Claude Code: a core plugin (AGENTS.md template, kind files, team orchestration, waste folder, compaction handoff) and a literature add-on (Zotero safety)."
+  },
+  "owner": {
+    "name": "xylophoneengine"
+  },
+  "plugins": [
+    {
+      "name": "research-kit",
+      "source": "./plugins/research-kit",
+      "description": "Research working method for Claude Code: AGENTS.md template and sync, kind files, /team orchestration, worker agents, waste folder, compaction handoff."
+    },
+    {
+      "name": "research-kit-lit",
+      "source": "./plugins/research-kit-lit",
+      "description": "Literature add-on for research-kit: Zotero safety skill and zotero-worker agent."
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "research-kit",
+  "version": "0.1.0",
+  "description": "Research working method for Claude Code: AGENTS.md template and sync, kind files, /team orchestration, worker agents, waste folder, compaction handoff.",
+  "author": {
+    "name": "xylophoneengine"
+  },
+  "keywords": [
+    "research",
+    "paper",
+    "team",
+    "agents"
+  ],
+  "license": "MIT"
+}

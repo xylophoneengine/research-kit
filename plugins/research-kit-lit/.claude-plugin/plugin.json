@@ -1,0 +1,14 @@
+{
+  "name": "research-kit-lit",
+  "version": "0.1.0",
+  "description": "Literature add-on for research-kit: Zotero safety skill and zotero-worker agent.",
+  "author": {
+    "name": "xylophoneengine"
+  },
+  "keywords": [
+    "research",
+    "zotero",
+    "literature"
+  ],
+  "license": "MIT"
+}
