@@ -231,6 +231,120 @@ def test_link_and_stage_validation() -> None:
         assert lrun(repo, "add", "task", "d", "--stage", "T-1")[0] == 1
 
 
+def test_status_cycle() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "task", "Loader", "--owner", "sr1")
+        assert lrun(repo, "start", "T-1")[1] == "started T-1: Loader\n"
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "start", "T-1")
+        assert code == 0 and "already running" in out, out
+        assert len(jl(repo)) == n
+        assert lrun(repo, "close", "T-1")[0] == 1  # needs --note
+        code, out = lrun(
+            repo, "close", "T-1", "--note", "loader works",
+            "--ref", "a.md", "--ref", "b.md",
+        )
+        e: Any = L.load(repo)["T-1"]
+        assert out == "closed T-1: loader works\n", out
+        assert e.status == "done" and e.refs == ["a.md", "b.md"], e
+        assert lrun(repo, "close", "T-1", "--note", "again")[0] == 1
+        assert lrun(repo, "start", "T-1")[0] == 1  # use reopen
+        lrun(repo, "add", "task", "B")
+        lrun(repo, "drop", "T-2", "--note", "not needed")
+        assert L.load(repo)["T-2"].status == "dropped"
+        lrun(repo, "reopen", "T-2", "--note", "needed after all")
+        e = L.load(repo)["T-2"]
+        assert e.status == "open" and e.note == "needed after all", e
+        assert lrun(repo, "reopen", "T-2", "--note", "x")[0] == 1  # already open
+        code, out = lrun(repo, "start", "T-2", "--owner", "sr2")
+        assert code == 0 and L.load(repo)["T-2"].owner == "sr2", out
+        long: str = "x" * 70 + "\nsecond line"
+        out = lrun(repo, "close", "T-2", "--note", long)[1]
+        assert out == f"closed T-2: {'x' * 60}\n", out
+        assert lrun(repo, "close", "T-9", "--note", "x")[0] == 1  # unknown id
+
+
+def test_close_refuses_stage_and_decision() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "03-software-x")
+        code, out = lrun(repo, "close", "S-1", "--note", "x")
+        assert code == 1 and "stage-close" in out, out
+        assert lrun(repo, "drop", "S-1", "--note", "x")[0] == 1
+        assert lrun(repo, "reopen", "S-1", "--note", "x")[0] == 1
+        lrun(repo, "add", "decision", "use dE00", "--owner", "user")
+        code, out = lrun(repo, "close", "D-1", "--note", "x")
+        assert code == 1 and "supersede" in out, out
+        assert lrun(repo, "drop", "D-1", "--note", "revoked")[0] == 0
+        assert L.load(repo)["D-1"].status == "dropped"
+
+
+def test_supersede() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "decision", "metric dE76", "--owner", "user")
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "supersede", "D-1", "metric dE00", "--owner", "user")
+        s: dict[str, Any] = L.load(repo)
+        assert out == "logged D-2: metric dE00 (supersedes D-1)\n", out
+        assert len(jl(repo)) == n + 2
+        assert s["D-1"].status == "superseded"
+        assert s["D-1"].extra["superseded_by"] == "D-2"
+        assert s["D-2"].extra["supersedes"] == "D-1" and "D-1" in s["D-2"].links
+        assert s["D-2"].status == "done"
+        assert lrun(repo, "reopen", "D-1", "--note", "x")[0] == 1  # superseded
+        assert lrun(repo, "supersede", "D-1", "again", "--owner", "user")[0] == 1
+        lrun(repo, "add", "task", "t")
+        assert lrun(repo, "supersede", "T-1", "x", "--owner", "user")[0] == 1
+        assert lrun(repo, "supersede", "D-2", "x")[0] == 1  # --owner required
+        assert len(jl(repo)) == n + 3
+
+
+def test_set_appends_lists() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "task", "t", "--ref", "a.md", "--ref", "b.md")
+        code, out = lrun(
+            repo, "set", "T-1", "--ref", "a.md", "--ref", "c.md", "--owner", "sr2"
+        )
+        e: Any = L.load(repo)["T-1"]
+        assert code == 0 and out == "updated T-1: owner, refs\n", out
+        assert e.refs == ["a.md", "b.md", "c.md"] and e.owner == "sr2", e
+        assert e.status == "open"
+        lrun(repo, "add", "task", "u")
+        lrun(repo, "set", "T-2", "--link", "T-1", "--link", "T-1", "--title", "v")
+        e = L.load(repo)["T-2"]
+        assert e.links == ["T-1"] and e.title == "v", e
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "set", "T-1")
+        assert code == 1 and "nothing to set" in out, out
+        assert lrun(repo, "set", "T-1", "--stage", "S-9")[0] == 1
+        assert lrun(repo, "set", "T-1", "--link", "X-9")[0] == 1
+        assert lrun(repo, "set", "T-1", "--title", "a\nb")[0] == 1
+        assert len(jl(repo)) == n
+
+
+def test_append_only() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        steps: list[tuple[str, ...]] = [
+            ("add", "task", "a"),
+            ("start", "T-1"),
+            ("set", "T-1", "--note", "n"),
+            ("close", "T-1", "--note", "done"),
+            ("reopen", "T-1", "--note", "again"),
+            ("drop", "T-1", "--note", "no"),
+            ("add", "decision", "x", "--owner", "user"),
+            ("supersede", "D-1", "y", "--owner", "user"),
+        ]
+        for cmd in steps:
+            old: bytes = (repo / L.LEDGER_REL).read_bytes()
+            code, out = lrun(repo, *cmd)
+            assert code == 0, (cmd, out)
+            assert (repo / L.LEDGER_REL).read_bytes().startswith(old), cmd
+
+
 def main() -> int:
     tests: list[tuple[str, Callable[[], None]]] = [
         (n, f) for n, f in globals().items() if n.startswith("test_") and callable(f)

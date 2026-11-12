@@ -16,6 +16,14 @@ and --who NAME):
   python3 -I rk.py add <type> <title> [--owner NAME] [--stage S] [--note TEXT]
       [--link ID]... [--ref PATH]... [--status STATUS]
       [--imported --source FILE:LINE [--legacy-id OLD] [--date YYYY-MM-DD]]
+  python3 -I rk.py start ID [--owner NAME]
+  python3 -I rk.py close ID --note TEXT [--ref PATH]...
+  python3 -I rk.py drop ID --note TEXT
+  python3 -I rk.py reopen ID --note TEXT
+  python3 -I rk.py set ID [--title T] [--owner N] [--stage S] [--note T]
+      [--link ID]... [--ref PATH]...
+  python3 -I rk.py supersede ID TITLE --owner NAME [--note T] [--link ID]...
+      [--ref PATH]...
 """
 
 from __future__ import annotations

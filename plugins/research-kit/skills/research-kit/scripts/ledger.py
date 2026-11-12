@@ -36,7 +36,9 @@ TYPE_DECL_RE: re.Pattern[str] = re.compile(
     r"^<!-- rk:type ([a-z][a-z0-9-]*) ([A-Z]{1,3}) -->$"
 )
 NAME_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_.-]+$")
-COMMANDS: frozenset[str] = frozenset({"add"})
+COMMANDS: frozenset[str] = frozenset(
+    {"add", "start", "close", "drop", "reopen", "set", "supersede"}
+)
 HINT: str = (
     "fix the line by hand outside Claude (agents' edits of the ledger are blocked)"
 )
@@ -368,6 +370,175 @@ def _cmd_add(a: argparse.Namespace) -> int:
     return 0
 
 
+def _entry(state: dict[str, Entry], eid: str) -> Entry:
+    e: Entry | None = state.get(eid)
+    if e is None:
+        raise LedgerError(f"no such entry {eid}")
+    return e
+
+
+def _need_note(a: argparse.Namespace) -> str:
+    note: str = (a.note or "").strip()
+    if not note:
+        raise LedgerError(f"{a.cmd} needs --note")
+    return note
+
+
+def _cut(note: str) -> str:
+    return note.splitlines()[0][:60]
+
+
+def _union(old: list[str], new: list[str]) -> list[str]:
+    return list(dict.fromkeys([*old, *new]))
+
+
+def _cmd_start(a: argparse.Namespace) -> int:
+    repo: Path = _repo(a)
+    who: str = _name(a.who, "--who")
+    owner: str | None = _name(a.owner, "--owner") if a.owner else None
+    out: list[str] = []
+
+    def build(state: dict[str, Entry]) -> list[dict[str, object]]:
+        e: Entry = _entry(state, a.id)
+        if e.status == "running":
+            out.append(f"{e.id} already running")
+            return []
+        if e.status != "open":
+            raise LedgerError(f"{e.id} is {e.status}: use reopen first")
+        f: dict[str, object] = {"status": "running"}
+        if owner is not None:
+            f["owner"] = owner
+        out.append(f"started {e.id}: {e.title}")
+        return [make_event(who, "set", e.id, f)]
+
+    append(repo, build)
+    print(out[0])
+    return 0
+
+
+def _close_drop_reopen(a: argparse.Namespace) -> int:
+    repo: Path = _repo(a)
+    who: str = _name(a.who, "--who")
+    note: str = _need_note(a)
+    cmd: str = a.cmd
+    new: str = {"close": "done", "drop": "dropped", "reopen": "open"}[cmd]
+
+    def build(state: dict[str, Entry]) -> list[dict[str, object]]:
+        e: Entry = _entry(state, a.id)
+        if e.type == "stage":
+            raise LedgerError(f"{e.id} is a stage: use stage-close")
+        if cmd == "close" and e.type == "decision":
+            raise LedgerError(
+                f"{e.id} is a decision; decisions are in force when logged: "
+                "supersede or drop"
+            )
+        allowed: tuple[str, ...] = {
+            "close": OPEN_STATUSES,
+            "drop": OPEN_STATUSES + (("done",) if e.type == "decision" else ()),
+            "reopen": ("done", "dropped"),
+        }[cmd]
+        if e.status not in allowed:
+            raise LedgerError(f"cannot {cmd} {e.id}: it is {e.status}")
+        f: dict[str, object] = {"status": new, "note": note}
+        if cmd == "close" and a.ref:
+            f["refs"] = _union(e.refs, a.ref)
+        return [make_event(who, "set", e.id, f)]
+
+    append(repo, build)
+    verb: str = {"close": "closed", "drop": "dropped", "reopen": "reopened"}[cmd]
+    print(f"{verb} {a.id}: {_cut(note)}")
+    return 0
+
+
+def _cmd_set(a: argparse.Namespace) -> int:
+    repo: Path = _repo(a)
+    who: str = _name(a.who, "--who")
+    title: str | None = _title(a.title) if a.title is not None else None
+    owner: str | None = _name(a.owner, "--owner") if a.owner is not None else None
+    if not (
+        title is not None
+        or owner is not None
+        or a.stage is not None
+        or a.note is not None
+        or a.link
+        or a.ref
+    ):
+        raise LedgerError(
+            "nothing to set (give --title, --owner, --stage, --note, --link or --ref)"
+        )
+    keys: list[str] = []
+
+    def build(state: dict[str, Entry]) -> list[dict[str, object]]:
+        e: Entry = _entry(state, a.id)
+        f: dict[str, object] = {}
+        if title is not None:
+            f["title"] = title
+        if owner is not None:
+            f["owner"] = owner
+        if a.stage is not None:
+            f["stage"] = resolve_stage(state, a.stage)
+        if a.note is not None:
+            f["note"] = a.note
+        for link in a.link:
+            if link not in state:
+                raise LedgerError(f"--link {link}: no such entry")
+        if a.link:
+            f["links"] = _union(e.links, a.link)
+        if a.ref:
+            f["refs"] = _union(e.refs, a.ref)
+        keys.extend(f)
+        return [make_event(who, "set", e.id, f)]
+
+    append(repo, build)
+    print(f"updated {a.id}: {', '.join(keys)}")
+    return 0
+
+
+def _cmd_supersede(a: argparse.Namespace) -> int:
+    repo: Path = _repo(a)
+    who: str = _name(a.who, "--who")
+    title: str = _title(a.title)
+    if a.owner is None:
+        raise LedgerError(
+            "supersede needs --owner (who decided: user, lead or a teammate name)"
+        )
+    owner: str = _name(a.owner, "--owner")
+    made: list[str] = []
+
+    def build(state: dict[str, Entry]) -> list[dict[str, object]]:
+        old: Entry = _entry(state, a.id)
+        if old.type != "decision":
+            raise LedgerError(f"{old.id} is a {old.type}, not a decision")
+        if old.status != "done":
+            raise LedgerError(f"{old.id} is {old.status}, not in force")
+        for link in a.link:
+            if link not in state:
+                raise LedgerError(f"--link {link}: no such entry")
+        eid: str = next_id(state, BUILTIN_TYPES["decision"])
+        f: dict[str, object] = {
+            "type": "decision",
+            "title": title,
+            "status": "done",
+            "owner": owner,
+            "stage": _default_stage(state, "decision", False),
+            "note": a.note or "",
+            "links": _union([old.id], a.link),
+            "refs": _union([], a.ref),
+            "supersedes": old.id,
+        }
+        made.append(eid)
+        return [
+            make_event(who, "add", eid, f),
+            make_event(
+                who, "set", old.id, {"status": "superseded", "superseded_by": eid}
+            ),
+        ]
+
+    append(repo, build)
+    print(f"logged {made[0]}: {title} (supersedes {a.id})")
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     common: argparse.ArgumentParser = argparse.ArgumentParser(add_help=False)
     common.add_argument("--repo", type=Path, default=None)
@@ -387,10 +558,42 @@ def _parser() -> argparse.ArgumentParser:
     pa.add_argument("--source", default=None)
     pa.add_argument("--legacy-id", default=None)
     pa.add_argument("--date", default=None)
+    ps: argparse.ArgumentParser = sub.add_parser("start", parents=[common])
+    ps.add_argument("id")
+    ps.add_argument("--owner", default=None)
+    for name in ("close", "drop", "reopen"):
+        pc: argparse.ArgumentParser = sub.add_parser(name, parents=[common])
+        pc.add_argument("id")
+        pc.add_argument("--note", default=None)
+        if name == "close":
+            pc.add_argument("--ref", action="append", default=[])
+    pt: argparse.ArgumentParser = sub.add_parser("set", parents=[common])
+    pt.add_argument("id")
+    pt.add_argument("--title", default=None)
+    pt.add_argument("--owner", default=None)
+    pt.add_argument("--stage", default=None)
+    pt.add_argument("--note", default=None)
+    pt.add_argument("--link", action="append", default=[])
+    pt.add_argument("--ref", action="append", default=[])
+    pu: argparse.ArgumentParser = sub.add_parser("supersede", parents=[common])
+    pu.add_argument("id")
+    pu.add_argument("title")
+    pu.add_argument("--owner", default=None)
+    pu.add_argument("--note", default="")
+    pu.add_argument("--link", action="append", default=[])
+    pu.add_argument("--ref", action="append", default=[])
     return p
 
 
-HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {"add": _cmd_add}
+HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
+    "add": _cmd_add,
+    "start": _cmd_start,
+    "close": _close_drop_reopen,
+    "drop": _close_drop_reopen,
+    "reopen": _close_drop_reopen,
+    "set": _cmd_set,
+    "supersede": _cmd_supersede,
+}
 
 
 def main(argv: list[str]) -> int:
