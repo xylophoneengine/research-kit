@@ -17,7 +17,7 @@ ledger=""
 ledger_block() {
   [ -n "$ledger" ] || return 0
   echo "[research-kit] Ledger tool (AGENTS.md calls it rk): python3 -I \"$rk\" <command>, run from the repo root; teammates add --who <name>."
-  python3 -I "$rk" list --repo "$root" 2>&1
+  (cd "$root" && python3 -I "$rk" list 2>&1)  # no --repo: a worktree reads the main ledger
 }
 
 newest=""
@@ -66,7 +66,7 @@ case "$mode" in
     if [ -n "$ledger" ]; then
       ledger_block
       echo "Compare the summary's \"Decisions and done work\" section with these newest entries; log what is missing (rk add decision ... / rk close ...) and show the user each receipt:"
-      python3 -I "$rk" recent -n 15 --repo "$root" 2>&1
+      (cd "$root" && python3 -I "$rk" recent -n 15 2>&1)
     fi
     ;;
   start)

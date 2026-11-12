@@ -92,6 +92,21 @@ case "$(CLAUDE_PROJECT_DIR="$C" reason Agent prompt $'DELIVERABLE: x\nTASK: T-1'
   "refused:"*"pm/ledger.jsonl:1"*) ;; *) echo "FAIL corrupt ledger brief"; fail=1;; esac
 CLAUDE_PROJECT_DIR="$C" t deny Edit file_path "$C/pm/ledger.jsonl"
 
+# session in a git worktree (.git file -> <main>/.git/worktrees/wt): the tool and the
+# hook use the main checkout's ledger, not the worktree's stale copy
+M="$(mktemp -d)"; W="$(mktemp -d)"
+mkdir -p "$M/pm" "$M/.git/worktrees/wt" "$W/pm"
+: > "$M/pm/ledger.jsonl"; : > "$W/pm/ledger.jsonl"
+printf 'gitdir: %s/.git/worktrees/wt\n' "$M" > "$W/.git"
+(cd "$W" && python3 -I "$RK" add task "fresh in main" >/dev/null)
+CLAUDE_PROJECT_DIR="$W" t none Agent prompt $'DELIVERABLE: x\nTASK: T-1'
+python3 -I "$RK" show T-1 --repo "$M" | grep -q '^status: running' ||
+  { echo "FAIL worktree brief did not run T-1 in the main ledger"; fail=1; }
+[ -s "$W/pm/ledger.jsonl" ] && { echo "FAIL worktree ledger copy was written"; fail=1; }
+CLAUDE_PROJECT_DIR="$W" t deny Edit file_path "$M/pm/ledger.jsonl"
+CLAUDE_PROJECT_DIR="$W" t deny Write file_path "$M/pm/STATUS.md"
+CLAUDE_PROJECT_DIR="$W" t deny Edit file_path "$W/pm/ledger.jsonl"
+
 # CLAUDE_PROJECT_DIR unset: the payload's cwd is the root
 got="$(env -u CLAUDE_PROJECT_DIR bash -c "jq -n --arg c '$R' '{tool_name:\"Agent\",tool_input:{prompt:\"DELIVERABLE: x\"},cwd:\$c}' | bash '$G'" |
   jq -r '.hookSpecificOutput.permissionDecision // empty')"

@@ -42,7 +42,8 @@ case "$tool" in
     text="$(jq -r "$q" <<<"$in" 2>/dev/null)" || exit 0
     # cheap pre-filter; rk.py brief-check applies the exact rule (line start)
     case "$text" in *DELIVERABLE:*) ;; *) exit 0 ;; esac
-    out="$(printf '%s\n' "$text" | python3 -I "$rk" brief-check --repo "$root" --who hook 2>&1)"
+    # run from the root without --repo: the tool's own lookup (a worktree -> main ledger)
+    out="$(cd "$root" && printf '%s\n' "$text" | python3 -I "$rk" brief-check --who hook 2>&1)"
     rc=$?
     [ "$rc" = 0 ] && exit 0
     [ -n "$out" ] || out="ledger brief check failed (rk.py brief-check exit $rc)"

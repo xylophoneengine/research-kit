@@ -26,6 +26,15 @@ out="$(bash "$H" start)"; has start "Ledger tool" "$out"; has start "$RK" "$out"
 out="$(bash "$H" post)"; has post "[surviving-compaction]" "$out"; has post "Decisions and done work" "$out"
 has post "T-1" "$out"; has post "Ledger tool" "$out"
 out="$(bash "$H" pre)"; has pre "Decisions and done work" "$out"; last pre "5. End with the single next step." "$out"
+# session in a git worktree: the open list and recent entries come from the main ledger
+M="$(mktemp -d)"; W="$(mktemp -d)"
+mkdir -p "$M/pm" "$M/.git/worktrees/wt" "$W/pm"
+: > "$M/pm/ledger.jsonl"; : > "$W/pm/ledger.jsonl"
+printf 'gitdir: %s/.git/worktrees/wt\n' "$M" > "$W/.git"
+python3 -I "$RK" add task "fresh in main" --repo "$M" >/dev/null
+out="$(CLAUDE_PROJECT_DIR="$W" bash "$H" start)"; has wt-start "fresh in main" "$out"
+out="$(CLAUDE_PROJECT_DIR="$W" bash "$H" post)"
+has wt-post "fresh in main" "$out"; has wt-post "Decisions and done work" "$out"
 bash "$H" bogus >/dev/null 2>&1 && { echo "FAIL unknown mode exits 0"; fail=1; }
 
 [ "$fail" = 0 ] && echo "handoff hook tests ok"
