@@ -13,6 +13,7 @@ import sys
 import tempfile
 import traceback
 from collections.abc import Callable
+from datetime import datetime, timedelta
 from importlib.machinery import ModuleSpec
 from pathlib import Path
 from types import ModuleType
@@ -590,6 +591,45 @@ def test_brief_check() -> None:
             fh.write("{bad\n")
         code, out = bcheck(repo, "DELIVERABLE: x\nTASK: T-2\n")
         assert code == 2 and f"{L.LEDGER_REL}:{m + 1}" in out, out
+
+
+def test_running_age_counts_from_start() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        now: datetime = datetime.now().astimezone()
+
+        def row(ev: str, eid: str, days: int, hours: int, f: dict[str, Any]) -> str:
+            ts: str = (now - timedelta(days=days, hours=hours)).isoformat(
+                timespec="seconds"
+            )
+            return json.dumps(
+                {"ts": ts, "who": "lead", "ev": ev, "id": eid, "f": f}
+            ) + "\n"
+
+        base: dict[str, Any] = {
+            "type": "task", "title": "Slow", "status": "open", "owner": "sr1",
+            "stage": "", "note": "", "links": [], "refs": [],
+        }
+        (repo / L.LEDGER_REL).write_text(
+            row("add", "T-1", 10, 0, base)  # created 10d ago
+            + row("set", "T-1", 0, 2, {"status": "running"})  # started 2h ago
+            + row("add", "T-2", 10, 0, {**base, "title": "Waiting"})
+        )
+        st: dict[str, Any] = L.load(repo)
+        assert L.age(st["T-1"].started, now) == "2h", st["T-1"].started
+        lrun(repo, "render")
+        sec: dict[str, str] = sections((repo / L.STATUS_REL).read_text())
+        assert "(sr1, 2h) Slow" in sec["## Running"], sec["## Running"]
+        assert "(sr1, 10d) Waiting" in sec["## Open tasks"]  # open: from created
+        row1: str = [ln for ln in lrun(repo, "list")[1].splitlines() if "Slow" in ln][0]
+        assert "  2h  Slow" in row1, row1
+        # reopened and started again: counts from the latest start
+        lrun(repo, "close", "T-1", "--note", "x")
+        lrun(repo, "reopen", "T-1", "--note", "y")
+        lrun(repo, "start", "T-1")
+        assert L.age(L.load(repo)["T-1"].started, now) == "0m"
+        sec = sections((repo / L.STATUS_REL).read_text())
+        assert "(sr1, 0m) Slow" in sec["## Running"], sec["## Running"]
 
 
 def main() -> int:

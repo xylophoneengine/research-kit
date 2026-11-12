@@ -77,6 +77,7 @@ class Entry:
     updated: str
     extra: dict[str, str | bool]
     lines: list[int]
+    started: str = ""  # ts of the newest event that set status running
 
 
 # ---- reading and folding ----------------------------------------------------
@@ -208,6 +209,8 @@ def fold(events: list[tuple[int, dict[str, object]]]) -> dict[str, Entry]:
                 raise _bad(n, f"set on unknown id {eid}")
             entry = found
         _apply(entry, f, n)
+        if status == "running":
+            entry.started = ts
         entry.updated = ts
         entry.lines.append(n)
     return state
@@ -329,6 +332,11 @@ def age(ts: str, now: datetime) -> str:
     return f"{secs // 86400}d"
 
 
+def _since(e: Entry) -> str:
+    """Age base: a running entry counts from its latest start, others from creation."""
+    return e.started if e.status == "running" and e.started else e.created
+
+
 def _num(eid: str) -> int:
     return int(eid.rsplit("-", 1)[1])
 
@@ -355,7 +363,7 @@ def _clip(line: str, width: int = LINE_MAX) -> str:
 
 def _item(e: Entry, now: datetime) -> str:
     return (
-        f"- {e.id} ({e.owner}, {age(e.created, now)}) {e.title}"
+        f"- {e.id} ({e.owner}, {age(_since(e), now)}) {e.title}"
         + (" [imported]" if _imported(e) else "")
     )
 
@@ -370,7 +378,7 @@ def _stage_line(e: Entry, state: dict[str, Entry], now: datetime) -> str:
         if (n := sum(1 for x in mine if x.status == s))
     ]
     tasks: str = ", ".join(parts) or "none"
-    return f"- {e.id} {e.title} ({e.status} {age(e.created, now)}; tasks: {tasks})"
+    return f"- {e.id} {e.title} ({e.status} {age(_since(e), now)}; tasks: {tasks})"
 
 
 def render_status(state: dict[str, Entry], now: datetime) -> str:
@@ -479,7 +487,7 @@ def format_list(
         lines.append(
             _clip(
                 f"{e.id:<6}{e.status:<8}{e.owner[:8]:<9}"
-                f"{age(e.created, now):>4}  {title}"
+                f"{age(_since(e), now):>4}  {title}"
             )
         )
     if len(cap) < len(shown):
