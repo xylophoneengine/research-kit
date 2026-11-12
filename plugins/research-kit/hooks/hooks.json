@@ -29,6 +29,15 @@
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/handoff-hook.sh\" post"
           }
         ]
+      },
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/handoff-hook.sh\" start"
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -38,6 +47,15 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-delete.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|SendMessage|Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/ledger-guard.sh\""
           }
         ]
       }
