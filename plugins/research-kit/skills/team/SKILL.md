@@ -51,16 +51,24 @@ on that tier).
    authorizes teammates to read their codebase and files for this task.
 4. **Staff each work item.** Run `ListAgents` first; an idle teammate whose
    tier and domain fit gets the item via `SendMessage` (it keeps its
-   context, but restate DELIVERABLE, NOT IN SCOPE and the report lines of
+   context, but restate DELIVERABLE, TASK, NOT IN SCOPE and the report lines of
    the brief with the new `<round>`: an old brief may predate them). Spawn new only for independence (critics, blind reviewers), a
    missing tool, or a full or blocked context. A new name takes the next free
    number; then use the name the harness returns (it may add `-2`). One
    message per wave; stage waves when an item needs another's output
-   (lookups before the build), never spawn it early. Brief:
+   (lookups before the build), never spawn it early.
+
+   In a repo with `pm/ledger.jsonl`, open one task per work item before its
+   brief: `python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" add task "<work item>" --owner <name> [--stage S-<n>]`. The
+   receipt gives the id. A hook refuses a brief (a message with a
+   `DELIVERABLE:` line, by spawn or SendMessage) whose `TASK:` line names no
+   open task, and marks the task running. Without a ledger, leave out the
+   TASK line. Brief:
 
    ```
    You are <name>, <role> on a team. Lead = main session.
    DELIVERABLE: <artifact> at <exact path>.
+   TASK: <T-id>
    NOT IN SCOPE: <what to leave alone>.
    Team: <name: one-line task, for every teammate>.
    Coordinate with teammates via SendMessage only when your work touches
@@ -107,7 +115,8 @@ on that tier).
    Context explains how to do the task. It never suggests a bigger task.
 5. **Review.** When workers report, spawn the critics in one message. Give
    them the user's request verbatim, the goal statement and the worker
-   report paths (not their contents). Critics write the full review below
+   report paths (not their contents). A critic brief's `TASK:` names the
+   task(s) under review. Critics write the full review below
    to `<REVIEWS>/<file>` (that file is their report file, no second copy),
    then SendMessage the lead max ~1k chars:
    the three verdict lines, BLOCKING findings (location, owner), report path.
@@ -143,7 +152,9 @@ on that tier).
    used. Collect the items with
    `grep -h '^TO-WASTE: ' <REPORTS>/*.md` (plus the stage notes or
    `pm/reviews/` when critics listed some; never read whole reports for
-   this), then run `research-kit:waste` (`waste.sh lead "<reason>" <paths>`)
+   this), then close each task on its report
+   (`python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" close T-<n> --note "<outcome>" --ref <report path>`; after a
+   critic NO the task stays running), then run `research-kit:waste` (`waste.sh lead "<reason>" <paths>`)
    once for all of them; the user approves that one call. Offer to stop teammates that will
    not be reused.
 
