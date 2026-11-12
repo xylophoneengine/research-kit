@@ -29,6 +29,8 @@ and --who NAME):
   python3 -I rk.py search TEXT [--type T] [--limit N]
   python3 -I rk.py recent [-n N]
   python3 -I rk.py render
+  python3 -I rk.py stage-close S-n --sign-off D-m
+  python3 -I rk.py brief-check < message.txt    (hook gate: rc 0 pass, 2 refuse)
 """
 
 from __future__ import annotations

@@ -13,6 +13,7 @@ import fcntl
 import json
 import os
 import re
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -39,9 +40,12 @@ NAME_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_.-]+$")
 COMMANDS: frozenset[str] = frozenset(
     {
         "add", "start", "close", "drop", "reopen", "set", "supersede",
-        "list", "show", "search", "recent", "render",
+        "list", "show", "search", "recent", "render", "stage-close", "brief-check",
     }
 )
+BRIEF_RE: re.Pattern[str] = re.compile(r"^[ \t]*DELIVERABLE:", re.M)
+TASK_LINE_RE: re.Pattern[str] = re.compile(r"^[ \t]*TASK:(.*)$", re.M)
+ANY_ID_RE: re.Pattern[str] = re.compile(r"\b[A-Z]{1,3}-[1-9][0-9]*\b")
 HINT: str = (
     "fix the line by hand outside Claude (agents' edits of the ledger are blocked)"
 )
@@ -836,6 +840,130 @@ def _cmd_render(a: argparse.Namespace) -> int:
     return 0
 
 
+def _sign_off_problems(
+    state: dict[str, Entry], sid: str, sign: str | None
+) -> list[str]:
+    """Why `sign` is not a valid sign-off for stage `sid` (empty = valid)."""
+    fix: str = (
+        f'log one: add decision "sign-off: {state[sid].title}" --owner user '
+        f"--link {sid}"
+    )
+    if not sign:
+        return [f"needs --sign-off D-<m>, a user decision linked to {sid}; {fix}"]
+    d: Entry | None = state.get(sign)
+    if d is None or d.type != "decision":
+        return [f"{sign} is not a decision; {fix}"]
+    out: list[str] = []
+    if d.owner != "user":
+        out.append(f"{sign} has owner {d.owner}; the sign-off needs owner user")
+    if d.status != "done":
+        out.append(f"{sign} is {d.status}, not in force")
+    if sid not in d.links:
+        out.append(f"{sign} does not link {sid}; {fix}")
+    return out
+
+
+def _cmd_stage_close(a: argparse.Namespace) -> int:
+    repo: Path = _repo(a)
+    who: str = _name(a.who, "--who")
+    out: list[str] = []
+
+    def build(state: dict[str, Entry]) -> list[dict[str, object]]:
+        sid: str = resolve_stage(state, a.id)
+        stage: Entry = state[sid]
+        problems: list[str] = []
+        if stage.status != "open":
+            problems.append(f"{sid} is {stage.status}, not open")
+        busy: list[Entry] = sorted(
+            (
+                e
+                for e in state.values()
+                if e.type == "task" and e.stage == sid and _is_open(e)
+            ),
+            key=lambda e: _num(e.id),
+        )
+        if busy:
+            t: str = busy[0].id
+            problems.append(
+                ", ".join(f"{e.id} {e.status}" for e in busy)
+                + f": close, drop, re-stage (set {t} --stage S-<x>) or defer them"
+                f" (add deferred ... --link {t}, then drop {t} --note"
+                ' "deferred as DF-<k>")'
+            )
+        problems += _sign_off_problems(state, sid, a.sign_off)
+        if problems:
+            raise LedgerError(f"stage-close {sid} refused: " + "; ".join(problems))
+        f: dict[str, object] = {
+            "status": "done",
+            "note": f"closed; sign-off {a.sign_off}",
+            "links": _union(stage.links, [a.sign_off]),
+        }
+        out.append(f"closed {sid}: sign-off {a.sign_off}")
+        return [make_event(who, "set", sid, f)]
+
+    append(repo, build)
+    print(out[0])
+    return 0
+
+
+def _cmd_brief_check(a: argparse.Namespace) -> int:
+    """Hook gate: rc 0 pass (open tasks named on TASK: lines -> running), 2 refuse.
+
+    Only a brief (a line starting with DELIVERABLE:) is checked; no ledger = pass.
+    """
+    text: str = sys.stdin.read()
+    if not BRIEF_RE.search(text):
+        return 0
+    try:
+        repo: Path = _repo(a)
+    except LedgerError:
+        return 0
+    who: str = _name(a.who, "--who")
+    ids: list[str] = list(
+        dict.fromkeys(
+            eid
+            for m in TASK_LINE_RE.finditer(text)
+            for eid in ANY_ID_RE.findall(m.group(1))
+        )
+    )
+    problems: list[str] = [] if ids else ["no TASK: line naming a task"]
+    out: list[str] = []
+
+    def build(state: dict[str, Entry]) -> list[dict[str, object]]:
+        for eid in ids:
+            e: Entry | None = state.get(eid)
+            if e is None:
+                problems.append(f"{eid} unknown")
+            elif e.type != "task":
+                problems.append(f"{eid} is not a task")
+            elif not _is_open(e):
+                problems.append(f"{eid} is {e.status}")
+        if problems:
+            return []
+        started: list[Entry] = [state[i] for i in ids if state[i].status == "open"]
+        out.extend(f"started {e.id}: {e.title}" for e in started)
+        return [make_event(who, "set", e.id, {"status": "running"}) for e in started]
+
+    try:
+        append(repo, build)
+    except LedgerError as e:
+        print(f"refused: {e}")
+        return 2
+    if problems:
+        rk_py: Path = Path(__file__).resolve().with_name("rk.py")
+        print(
+            f"refused: {'; '.join(problems)}. A brief (a message with a "
+            'DELIVERABLE: line) needs a line "TASK: T-<n>" naming an open task. '
+            f'Open one first: python3 -I {rk_py} add task "<work item>" '
+            "--owner <teammate> [--stage S-n], then put \"TASK: T-<n>\" in the "
+            "brief. Messages without a DELIVERABLE: line are not checked."
+        )
+        return 2
+    for line in out:
+        print(line)
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     common: argparse.ArgumentParser = argparse.ArgumentParser(add_help=False)
     common.add_argument("--repo", type=Path, default=None)
@@ -894,6 +1022,10 @@ def _parser() -> argparse.ArgumentParser:
     pr: argparse.ArgumentParser = sub.add_parser("recent", parents=[common])
     pr.add_argument("-n", type=int, default=10)
     sub.add_parser("render", parents=[common])
+    pz: argparse.ArgumentParser = sub.add_parser("stage-close", parents=[common])
+    pz.add_argument("id")
+    pz.add_argument("--sign-off", default=None)
+    sub.add_parser("brief-check", parents=[common])
     return p
 
 
@@ -910,6 +1042,8 @@ HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "search": _cmd_search,
     "recent": _cmd_recent,
     "render": _cmd_render,
+    "stage-close": _cmd_stage_close,
+    "brief-check": _cmd_brief_check,
 }
 
 

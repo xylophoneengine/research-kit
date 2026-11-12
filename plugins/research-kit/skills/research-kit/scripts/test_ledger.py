@@ -506,6 +506,92 @@ def test_recent() -> None:
         assert " T-3 " in out[1] and " T-2 " in out[2], out
 
 
+def bcheck(repo: Path, text: str) -> tuple[int, str]:
+    """brief-check with `text` on stdin, as the hook runs it."""
+    old: Any = sys.stdin
+    sys.stdin = io.StringIO(text)
+    buf: io.StringIO = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            code: int = L.main(["brief-check", "--repo", str(repo), "--who", "hook"])
+    finally:
+        sys.stdin = old
+    return code, buf.getvalue()
+
+
+def test_stage_close_refusals() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "03-software-x")
+        lrun(repo, "add", "task", "a", "--owner", "sr1")
+        lrun(repo, "start", "T-1")
+        lrun(repo, "add", "task", "b")
+        lrun(repo, "add", "decision", "sign-off", "--owner", "user", "--link", "S-1")
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 1 and "T-1 running" in out and "T-2 open" in out, out
+        assert len(jl(repo)) == n
+        lrun(repo, "close", "T-1", "--note", "ok")
+        lrun(repo, "add", "stage", "04-x")
+        lrun(repo, "set", "T-2", "--stage", "S-2")
+        lrun(repo, "add", "decision", "lead ok", "--owner", "lead", "--link", "S-1")
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-2")
+        assert code == 1 and "owner user" in out, out
+        lrun(repo, "add", "decision", "unlinked", "--owner", "user")
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-3")
+        assert code == 1 and "--link S-1" in out, out
+        code, out = lrun(repo, "stage-close", "S-1")
+        assert code == 1 and "--sign-off" in out, out
+        lrun(repo, "add", "decision", "old ok", "--owner", "user", "--link", "S-1")
+        lrun(repo, "supersede", "D-4", "new ok", "--owner", "user")
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-4")
+        assert code == 1 and "superseded" in out, out
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 0 and out == "closed S-1: sign-off D-1\n", out
+        s: Any = L.load(repo)["S-1"]
+        assert s.status == "done" and "D-1" in s.links, s
+        assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 1
+        assert lrun(repo, "stage-close", "T-1", "--sign-off", "D-1")[0] == 1
+
+
+def test_brief_check() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "task", "old")
+        lrun(repo, "close", "T-1", "--note", "done")
+        lrun(repo, "add", "task", "work")
+        lrun(repo, "add", "decision", "x", "--owner", "user")
+        n: int = len(jl(repo))
+        assert bcheck(repo, "hi lead, DONE, report at x") == (0, "")
+        assert bcheck(repo, "quoting: the DELIVERABLE: line was clear")[0] == 0
+        assert len(jl(repo)) == n
+        code, out = bcheck(repo, "You are sr1\nDELIVERABLE: x at y\n")
+        assert code == 2 and out.startswith("refused:"), out
+        assert str(RK_PY.resolve()) in out, out
+        code, out = bcheck(repo, "  DELIVERABLE: x\nTASK: T-9\n")
+        assert code == 2 and "T-9 unknown" in out, out
+        code, out = bcheck(repo, "DELIVERABLE: x\nTASK: T-1\n")
+        assert code == 2 and "T-1 is done" in out, out
+        code, out = bcheck(repo, "DELIVERABLE: x\nTASK: D-1\n")
+        assert code == 2 and "D-1 is not a task" in out, out
+        assert bcheck(repo, "DELIVERABLE: x\nTASK: T-2, T-9\n")[0] == 2
+        assert len(jl(repo)) == n
+        code, out = bcheck(repo, "DELIVERABLE: x\nTASK: T-2\n")
+        assert code == 0 and out == "started T-2: work\n", out
+        e: Any = L.load(repo)["T-2"]
+        assert e.status == "running" and jl(repo)[-1]["who"] == "hook", e
+        m: int = len(jl(repo))
+        assert bcheck(repo, "DELIVERABLE: x\nTASK: T-2\n")[0] == 0
+        assert len(jl(repo)) == m
+        bare: Path = Path(d) / "bare"
+        bare.mkdir()
+        assert bcheck(bare, "DELIVERABLE: x\n") == (0, "")
+        with (repo / L.LEDGER_REL).open("a") as fh:
+            fh.write("{bad\n")
+        code, out = bcheck(repo, "DELIVERABLE: x\nTASK: T-2\n")
+        assert code == 2 and f"{L.LEDGER_REL}:{m + 1}" in out, out
+
+
 def main() -> int:
     tests: list[tuple[str, Callable[[], None]]] = [
         (n, f) for n, f in globals().items() if n.startswith("test_") and callable(f)
