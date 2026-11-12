@@ -15,7 +15,7 @@ One file per session, named `handoff-<YYYY-MM-DD>.md`, in `pm/handoffs/compact/`
 
 ```markdown
 # Handoff <date>
-## User decisions and rules   (verbatim quotes, safety rules first)
+## User rules (verbatim, safety rules first) and the ids of decisions logged this session
 ## Done                       (each line: what + commit hash or log file path)
 ## In flight                  (per agent: name, worktree/branch, brief file path,
                                last commit hash, uncommitted file count, last known state)
@@ -29,7 +29,8 @@ One file per session, named `handoff-<YYYY-MM-DD>.md`, in `pm/handoffs/compact/`
 | When | Do |
 |---|---|
 | Spawning an agent | Save its brief to a file first; append every later clarification to that file |
-| User decides something or sets a rule | Quote it into the handoff file |
+| User decides something | In a repo with `pm/ledger.jsonl`, log it at once (`python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" add decision <title> --owner user`, call it `rk.py` below) and show the receipt. Without a ledger, quote it into the handoff file |
+| User sets a rule | Quote it into the handoff file |
 | A run proves something (tests, build) | Redirect output to a log file; put the path under Done |
 | You give the user steps to follow | Write them to a file; chat only points at it |
 | A question for the user comes up | Add it to Open questions |
@@ -40,13 +41,14 @@ One file per session, named `handoff-<YYYY-MM-DD>.md`, in `pm/handoffs/compact/`
 2. If an agent does not answer in time, record its worktree, `git status --short` file count and the word "uncommitted" under In flight. Never commit, stash or reset in a worktree an agent may still be using.
 3. Re-read the handoff file against the template and fill every slot that is stale.
 4. Tell the user the handoff file path and anything that could not be saved.
-5. End with the line the user must type, since only they can start a compact: `/compact Read <handoff file path> first.`
+5. With a ledger: list the decisions and the work reported done this session that have no receipt, log them now (`... rk.py add decision ...`, `... rk.py close ...`) and show each receipt. Ask the user only where the wording is unclear.
+6. End with the line the user must type, since only they can start a compact: `/compact Read <handoff file path> first.`
 
 ## Resume (session starts from a summary, or after a break)
 
 Do these before answering "where did we leave off" and before any next step:
 
-1. Read the handoff file.
+1. With a ledger: start from the open list (the SessionStart hook prints it; else `... rk.py list`), compare the summary's "Decisions and done work" section with `... rk.py recent`, and log what is missing with receipts. Then read the handoff file. Without a ledger: read the handoff file.
 2. Check each claim against the repo: `git log`, `git status` per worktree, tags, the files the handoff names.
 3. For each agent under In flight, look at the live agent list:
    - listed: message it and ask for its state;
