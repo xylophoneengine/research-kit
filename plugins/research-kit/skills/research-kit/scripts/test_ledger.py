@@ -684,16 +684,20 @@ def test_stage_close_refusals() -> None:
         assert lrun(repo, "stage-close", "T-1", "--sign-off", "D-1")[0] == 1
 
 
-def test_stage_close_accepts_stage_field() -> None:
+def test_stage_close_sign_off_needs_link() -> None:
     with tempfile.TemporaryDirectory() as d:
         repo: Path = new_repo(Path(d))
         lrun(repo, "add", "stage", "01-a")
-        lrun(repo, "add", "stage", "02-b")
-        lrun(repo, "add", "decision", "01 done", "--owner", "user", "--stage", "S-1")
-        code, out = lrun(repo, "stage-close", "S-2", "--sign-off", "D-1")
-        assert code == 1 and "does not link S-2" in out, out
+        lrun(repo, "add", "decision", "use dE00", "--owner", "user")  # stage S-1
+        assert L.load(repo)["D-1"].stage == "S-1"
+        n: int = len(jl(repo))
         code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
-        assert code == 0 and out == "closed S-1: sign-off D-1\n", out
+        assert code == 1 and "does not link S-1" in out, out
+        assert "ask the user" in out and "--link S-1" in out, out
+        assert len(jl(repo)) == n and L.load(repo)["S-1"].status == "open"
+        lrun(repo, "add", "decision", "01 done", "--owner", "user", "--link", "S-1")
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-2")
+        assert code == 0 and out == "closed S-1: sign-off D-2\n", out
 
 
 def test_brief_check() -> None:

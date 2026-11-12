@@ -939,10 +939,7 @@ def _sign_off_problems(
         f"{sid}) and pass its id. Never log a sign-off the user has not given"
     )
     if not sign:
-        return [
-            f"needs --sign-off D-<m>, a user decision that links {sid} or has "
-            f"stage {sid}; {fix}"
-        ]
+        return [f"needs --sign-off D-<m>, a user decision with --link {sid}; {fix}"]
     d: Entry | None = state.get(sign)
     if d is None or d.type != "decision":
         return [f"{sign} is not a decision; {fix}"]
@@ -951,8 +948,9 @@ def _sign_off_problems(
         out.append(f"{sign} has owner {d.owner}; the sign-off needs owner user")
     if d.status != "done":
         out.append(f"{sign} is {d.status}, not in force")
-    if sid not in d.links and d.stage != sid:
-        out.append(f"{sign} does not link {sid} and has another stage; {fix}")
+    if sid not in d.links:  # its stage field alone is not enough: decisions
+        # default to the single open stage, so any user decision would pass
+        out.append(f"{sign} does not link {sid} (--link {sid}); {fix}")
     return out
 
 
