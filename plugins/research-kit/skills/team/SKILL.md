@@ -120,7 +120,7 @@ on that tier).
 5. **Review.** When workers report, spawn the critics in one message. Give
    them the user's request verbatim, the goal statement and the worker
    report paths (not their contents). Each review round is one `task`
-   entry: open it before briefing (`python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" add task "review round <n>: <what>" --owner <critic names>`); both critic briefs carry its `TASK: T-<n>`, never the
+   entry: open it before briefing (`python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" add task "review round <n>: <what>" --owner lead`); both critic briefs carry its `TASK: T-<n>`, never the
    work task under review. Critics write the full review below
    to `<REVIEWS>/<file>` (that file is their report file, no second copy),
    then SendMessage the lead max ~1k chars:

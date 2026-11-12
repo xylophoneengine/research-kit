@@ -39,7 +39,9 @@ The command argument says the mode: init, add-kind, upgrade, sync or close.
    says what to ask), then the appendix lines (project name, repo tag).
 4. `init` also writes a marked `## Compact Instructions` block into the repo's
    `CLAUDE.md` (created if missing; existing text kept), creates an empty
-   `pm/ledger.jsonl` and ignores `pm/STATUS.md`.
+   `pm/ledger.jsonl`, ignores `pm/STATUS.md` and writes a marked block into
+   `.gitattributes` with `pm/ledger.jsonl merge=union` (branch merges of the
+   append-only ledger then do not conflict).
 5. Only on yes to the global note: run `global-rules --write` (marked block in
    `~/.claude/CLAUDE.md`; text outside kept). Never run without that yes.
 6. Tell the user: new session needed to load the rules; commits follow the
