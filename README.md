@@ -30,8 +30,22 @@ uses it. Agents only answer to the `research-kit:` name.
 /plugin install research-kit-lit@research-kit     # optional, Zotero users
 ```
 
+From a local clone instead: `/plugin marketplace add /path/to/research-kit`.
+
 Then restart Claude Code (or `/reload-plugins`). Requirements: `bash`, `jq`,
-`python3` (stdlib only).
+`python3` (stdlib only), `git`.
+
+### Quick start
+
+1. Enable agent teams (below), restart.
+2. In your project repo (must be a git repo): `/rk-init`. Pick kinds, light or
+   full, and who commits.
+3. Start work: `/team <task>` (or `/team juniors=1 critics=1 <task>` for a
+   small one). In full mode, open a stage first (see Stage lifecycle).
+4. Before a compact say `get ready for compact`; after it the session resumes
+   from the handoff file.
+5. When the plugin updates: `/rk-sync` (dry run), sort DROPPED lines, then
+   `/rk-sync --write`.
 
 ### Enable agent teams (needed by `/team`)
 
@@ -85,6 +99,113 @@ flowchart LR
 
 Every kind file stays under about 150 lines and is read once per session; the
 appendix of `AGENTS.md` lists the active kinds.
+
+## ARS integration (`paper`, `thesis`)
+
+The `paper` kind runs its literature and writing stages on the
+[academic-research-skills](https://github.com/Imbad0202/academic-research-skills)
+plugin (ARS). Full rules: `pm/kinds/paper.md` sections P0, P2 and P5.8.
+
+- First session in a paper repo: the lead checks ARS is installed and stops if not.
+- ARS runs inside the team model, not beside it: interactive modes (plan,
+  Socratic dialogue) run in the lead session; modes that write a deliverable run
+  in a named teammate; critics review every ARS deliverable like any other.
+- Invoke the parent skill with a mode argument on the session model (most light
+  `/ars-*` commands pin a smaller model). Outputs go to the stage folder; the
+  stage README records skill + mode + version.
+- ARS reads your sources only through a Material Passport (`passport.yaml`)
+  built from the ledger by a converter script and rebuilt after every ledger
+  change; without it ARS searches external databases instead.
+
+| Paper stage | ARS skill (mode) |
+|---|---|
+| goal + lit-scan | `deep-research` (`three-way-scan` / `lit-review`; `socratic` optional) |
+| scan update | `deep-research` (`three-way-scan` / `lit-review` / `fact-check`) |
+| plan | `academic-paper` (`plan`), lead session |
+| outline | `academic-paper` (`outline-only`) |
+| full draft | `academic-paper` (`full`); `academic-pipeline` only phase by phase |
+| review | `academic-paper-reviewer` (`full` / `methodology-focus`) |
+| revision | `academic-paper` (`revision` / `revision-coach` / `rebuttal-audit`), then reviewer `re-review` |
+| finalize | `academic-paper` (`abstract-only`, `citation-check`, `disclosure`, `format-convert`) |
+| systematic reviews only | `sr-screener` (ARS >= 3.23.0), on user request |
+
+Seed, source-sync and benchmark stages use no ARS. The `thesis` kind reuses
+the paper pipeline.
+
+## Example: a paper with a code part, end to end
+
+One repo, kinds `paper` + `software`, full mode. One stage per session; each
+stage opens in a fresh session named after its folder (`/rename`).
+
+| Session | You type | What happens |
+|---|---|---|
+| setup | `/rk-init` (kinds: paper; full; user commits) | `pm/` tree, appendix, `.gitignore` block. Paper first-session steps: ARS check, library tag asked (e.g. `mypaper`), appendix lines (title, venue, authors, topic) |
+| 01 | `/rename MYP_01_paper_goal-scan`, then "open stage: goal + lit-scan" | Lead writes `BRIEF.md` with a `Done when`. Lead runs the GOALS dialogue (`deep-research`, `socratic`) and writes `pm/living/GOALS.md`; you confirm. `/team`: a teammate runs `deep-research` `three-way-scan` into `deliverables/`; crit1 + crit2 review into `notes/` |
+| | "close stage" (or `/rk-close 01`) | Close checklist: stage README marked closed, `pm/README.md` rows, NEXT_STEPS, handoffs, chat archive last. Stage is frozen |
+| 02 | "open stage: source sync" | `/team` with `research-kit-lit:zotero-worker` teammates: preflight, import, tag, ledger = PDFs = library entries; corpus passport rebuilt for ARS |
+| 03 | `/rk-add-kind software`, "open stage: software solver" | Software kind in parallel (one open stage per kind): design via `superpowers:brainstorming` or grilling, plan via `writing-plans`, build via `/team`; numbers stamped at a clean commit go to "Load-bearing numbers" in `pm/README.md` |
+| 04 | "open stage: plan" | `academic-paper` `plan` in the lead session (dialogue with you): `chapter_plan.md`, `insight_collection.md`; your decisions logged verbatim in `pm/DECISIONS.md` |
+| 05-06 | "open stage: outline", then "full draft" | `academic-paper` `outline-only`, then `full`, each in a named writer teammate, reading the passport; every claim in `claims_register.md` has an owner file |
+| 07-08 | "open stage: review", then "revision" | `academic-paper-reviewer` `full`, then `academic-paper` `revision` + reviewer `re-review` |
+| 09 | "open stage: finalize" | `abstract-only`, `citation-check`, `disclosure`, `format-convert`; done when `citation-check` has no open error |
+
+Any session: "get ready for compact" writes a handoff in `pm/handoffs/compact/`,
+then `/compact`, and the session resumes from it. A blocker or a decision only
+you can make goes to `pm/DECISIONS.md` (escalation) or `pm/DEFERRED.md`; the
+lead asks instead of guessing.
+
+After stage 03 the repo looks like:
+
+```
+pm/stages/01-paper-goal-scan/       closed: BRIEF, README, deliverables/scans, notes/critic reviews
+pm/stages/02-paper-source-sync/     closed: ledger sync check, passport
+pm/stages/03-software-solver/       open:   plan, code, run sheet, numbers
+pm/living/GOALS.md  pm/living/paper_ledger.md  pm/README.md (Load-bearing numbers)
+paper/library/pdfs/                 (manuscript/ appears at the draft stage)
+```
+
+Light mode works the same without stage folders: `/team` tasks, critics into
+`pm/reviews/`, the stage tables as a checklist.
+
+## Zotero (`research-kit-lit`)
+
+Optional add-on for kinds that keep a literature library. It drives
+[Zotero](https://www.zotero.org) through the
+[Zotero MCP server](https://github.com/54yyyu/zotero-mcp) (`zotero-mcp-server`,
+tested 0.15.2) and enforces one hard rule: **PDF and file bodies never go to
+zotero.org storage** (small quota); files sync through your own WebDAV server.
+
+Setup, once per machine:
+
+1. Zotero desktop: Settings > Sync > File Syncing = WebDAV (your server);
+   Settings > Advanced > allow other applications to communicate with Zotero
+   (local API on `127.0.0.1:23119`). Local MCP writes need a recent Zotero.
+2. Install the server into its own environment (see its README), e.g.
+   `python3 -m venv ~/venvs/zotero && ~/venvs/zotero/bin/pip install zotero-mcp-server`.
+3. Register it with Claude Code under the name `zotero`, in local mode, with the
+   SQLite search backend and an empty API key (the empty key masks any key your
+   shell exports, so the MCP has no path to zotero.org):
+
+   ```
+   claude mcp add zotero -s user \
+     -e ZOTERO_LOCAL=true -e ZOTERO_SEARCH_BACKEND=sqlite -e ZOTERO_API_KEY= \
+     -- ~/venvs/zotero/bin/zotero-mcp
+   ```
+4. Optional, only for the preflight's `--file-check`: a read-only
+   `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID` exported in your shell, never in the
+   MCP env.
+
+Use:
+
+- The `zotero` skill holds the tested procedure: preflight script
+  (`skills/zotero/scripts/preflight.py`, run before the first write each
+  session), recipes, stop conditions and pitfalls. Load it before any write.
+- Teammates that touch Zotero run as agent type `research-kit-lit:zotero-worker`
+  (stop conditions built in).
+- Any doubt (hybrid/web mode, "Web API credentials: set", quota or zotero.org
+  text in an error): the agent stops and asks you; it never works around it.
+- Group libraries: WebDAV serves My Library only, so group items get tags, not
+  attachments.
 
 ## Light vs full
 
@@ -202,6 +323,8 @@ flowchart TD
 - The lead orchestrates and never does the legwork.
 - Briefs open with `DELIVERABLE:` (artifact + exact path) and `NOT IN SCOPE:`.
 - Full reports go to `pm/waste/team/<name>-r<round>.md` (gitignored; outside a `pm/` repo: the session scratchpad). The lead gets a message of 500 chars or fewer, and the teammate's final text is one line with the report path. Each report reaches the lead twice: once as the message and once as the idle notification.
+- Critics write their review to the open stage's `notes/` (committed) or, with no open stage, `pm/reviews/`.
+- Files to discard: teammates list `TO-WASTE:` lines in their report; the lead collects them with one grep (see Deleting is off).
 - When reusing an idle teammate, restate the deliverable and the report lines.
 - Critics never fix; owners fix; max 2 rounds, then ask the user.
 - One `/team` task per session; `/clear` after it.
@@ -219,16 +342,20 @@ heuristic that errs on the side of denying; temp files outside a repo are
 simply left alone. Instead:
 
 - Teammates never delete and never run the waste helper (their permission
-  prompts do not reach you). They list each file in their report as a line at
-  column 0: `TO-WASTE: <repo-relative path> -- <reason>`.
+  prompts do not reach you; the hook also denies the helper for subagent
+  calls). They list each file in their report as a line at column 0:
+  `TO-WASTE: <repo-relative path> -- <reason>`.
 - Only the lead (main session) runs the helper, once, for the collected items:
   `grep -h '^TO-WASTE: ' <reports>/*.md`, then `skills/waste/waste.sh lead "<reason>" <paths>`.
   You approve each call; the prompt appears in the main session, so Remote
   Control users see it.
 - The helper moves files to `pm/waste/<stamp>/` (`WASTE/` in legacy repos) with
-  a ledger row. It refuses `.git`, `.claude`, `.env*`, the repo root, `pm`
-  itself, its own plugin directory, symlinked waste dirs or ledgers, and paths
-  with control characters.
+  a ledger row. It refuses: the repo root, `pm` itself, anything in or
+  containing `.git`, `.claude`, `.claude-plugin`, `.env` / `.env.*` (examples
+  and templates allowed), any `.gitignore`, its own plugin files, symlinked
+  waste dirs or ledgers, a waste dir git does not ignore (run `/rk-init` or
+  add it to `.gitignore`), paths outside a git repo, and names with control
+  characters.
 - You empty the waste folder yourself.
 
 ## Optional external tools
@@ -236,8 +363,9 @@ simply left alone. Instead:
 Not bundled; install what your kinds use.
 
 - ARS plugin (`academic-research-skills`): `/plugin marketplace add Imbad0202/academic-research-skills`, then install it. The `paper` and `thesis` stage tables run on it.
-- `superpowers` plugin: the `software` stage table names its brainstorming, planning and subagent-driven-development skills; the rules hold without it.
-- Zotero MCP: `zotero-mcp-server` (tested 0.15.2, https://github.com/54yyyu/zotero-mcp), server name `zotero`, env `ZOTERO_LOCAL=true`, `ZOTERO_SEARCH_BACKEND=sqlite`, `ZOTERO_API_KEY=""`. Details: `plugins/research-kit-lit/skills/zotero/SKILL.md`, section Setup.
+- `superpowers` plugin (`/plugin install superpowers@claude-plugins-official`): the `software` stage table names its brainstorming, planning and subagent-driven-development skills; the rules hold without it.
+- `grill-me` / `grilling` skills (third-party, https://www.skills.sh/mattpocock/skills/grill-me): optional alternative to brainstorming for the `software` design stage; install into `~/.claude/skills/`.
+- Zotero MCP (https://github.com/54yyyu/zotero-mcp): needed by `research-kit-lit`; setup in the Zotero section above.
 - Serena MCP: symbol navigation; briefs tell workers to use it when the repo has `.serena/project.yml`.
 - rea (https://github.com/morluto/rea, MIT): static-analysis MCP for binaries and firmware, optional for `reverse-eng`. Vet it before installing.
 
@@ -248,6 +376,8 @@ claude plugin validate .
 claude plugin validate plugins/research-kit
 claude plugin validate plugins/research-kit-lit
 python3 -I plugins/research-kit/skills/research-kit/scripts/test_rk.py
-bash scripts/anon_check.sh
+bash plugins/research-kit/skills/waste/test-waste.sh
+bash plugins/research-kit/hooks/test-guard-delete.sh
+bash scripts/anon_check.sh   # before every push; reads the private docs/private/denylist.txt
 claude --plugin-dir plugins/research-kit    # try it without installing
 ```

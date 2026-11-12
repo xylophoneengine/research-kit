@@ -10,9 +10,9 @@ never relax it.
 Stage folder: `pm/stages/NN-software-<topic>/` (full mode). Light mode: use the
 table as a checklist, no folders.
 
-The `superpowers` plugin is optional. The table names its skills where they
-fit; without it, run each stage by hand from the rules below. Install it to get
-the mapped skills.
+The `superpowers` plugin and the third-party `grilling` skill are optional
+(README, "Optional external tools"). The table names their skills where they
+fit; without them, run each stage by hand from the rules below.
 
 ## Stages
 
