@@ -7,7 +7,9 @@ import contextlib
 import importlib.util
 import io
 import re
+import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import traceback
@@ -25,6 +27,7 @@ rk: ModuleType = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(rk)
 
 REAL_TEMPLATE: Path = rk.TEMPLATE_DIR
+RK_PY: Path = Path(__file__).with_name("rk.py")
 
 FAKE_CORE: str = (
     "<!-- research-kit: T1 -->\n# core\nrule A\nrule B\n"
@@ -535,6 +538,66 @@ def test_global_rules() -> None:
         text: str = f.read_text()
         assert text == above + want + below, text
         assert rk.CB_START not in text
+
+
+def test_ledger_end_to_end() -> None:
+    """Spec 9: open, spawn, close, decide, supersede; no git call; one file dirty."""
+    real_git: str | None = shutil.which("git")
+    assert real_git is not None, "git not found"
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = root / "repo"
+        repo.mkdir()
+        code, out = run(rk.cmd_init, repo, ["software"], "full", "user")
+        assert code == 0, out
+        fake: Path = root / "fakebin"
+        fake.mkdir()
+        marker: Path = root / "git-called"
+        script: Path = fake / "git"
+        script.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
+        script.chmod(0o755)
+        genv: dict[str, str] = {
+            **os.environ,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+        }
+        git: list[str] = [
+            real_git, "-C", str(repo), "-c", "user.name=t",
+            "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false",
+            "-c", "core.hooksPath=/dev/null",
+        ]  # fmt: skip
+        for args in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "base"]):
+            r = subprocess.run([*git, *args], env=genv, capture_output=True, text=True)
+            assert r.returncode == 0, r.stderr
+        tenv: dict[str, str] = {**os.environ, "PATH": f"{fake}:{os.environ['PATH']}"}
+
+        def tool(*argv: str, stdin: str = "") -> str:
+            r = subprocess.run(
+                [sys.executable, "-I", str(RK_PY), *argv, "--repo", str(repo)],
+                env=tenv, input=stdin, capture_output=True, text=True,
+            )  # fmt: skip
+            assert r.returncode == 0, (argv, r.stdout, r.stderr)
+            return r.stdout
+
+        tool("add", "stage", "01-software-x")
+        tool("add", "task", "build", "--owner", "sr1")
+        tool(
+            "brief-check", "--who", "hook",
+            stdin="You are sr1\nDELIVERABLE: d\nTASK: T-1\n",
+        )  # fmt: skip
+        tool("close", "T-1", "--note", "done", "--ref", "r.md")
+        tool("add", "decision", "metric dE76", "--owner", "user")
+        tool("supersede", "D-1", "metric dE00", "--owner", "user")
+        assert not marker.exists(), "the tool called git"
+        status: str = (repo / "pm" / "STATUS.md").read_text()
+        recent: str = status.split("## Recent decisions", 1)[1].split("\n## ", 1)[0]
+        assert "D-2" in recent and "D-1" not in status and "T-1" not in status, status
+        stages: str = status.split("## Stages", 1)[1].split("\n## ", 1)[0]
+        assert "S-1" in stages, status
+        r = subprocess.run(
+            [*git, "status", "--porcelain"], env=genv, capture_output=True, text=True
+        )
+        assert r.stdout == " M pm/ledger.jsonl\n", r.stdout
 
 
 def _ledger_tests() -> list[tuple[str, Callable[[], None]]]:
