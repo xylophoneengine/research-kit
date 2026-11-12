@@ -39,7 +39,7 @@ License: MIT (see `LICENSE`).
 
 | Plugin | Contents |
 |---|---|
-| `research-kit` (core) | skills `research-kit`, `team`, `waste`, `surviving-compaction`; commands `rk-*`, `s-comp`; agents `worker-{low,medium,high,xhigh}`; hooks; all kind files |
+| `research-kit` (core) | skills `research-kit`, `team`, `waste`, `surviving-compaction`; commands `rk-*`, `s-comp`; agents `worker-{low,medium,high,xhigh}`, `fetcher` (lean lookups); hooks; all kind files |
 | `research-kit-lit` (optional) | skill `zotero` (tested Zotero MCP procedure, preflight, stop conditions), agent `zotero-worker`; for the `paper` and `thesis` kinds |
 
 Skills also answer to their bare name (`/team`) unless another skill already
@@ -87,6 +87,24 @@ without it a named spawn is a one-shot subagent. Turn it on in
 
 Restart Claude Code. Check: in a new session, `/team juniors=1 critics=0 <tiny task>`
 should show a teammate named `jr1` that you can message after it finishes.
+
+#### Teammate mode
+
+`teammateMode` (in `/config`) decides where teammates run:
+
+- `"in-process"` (recommended): teammates run inside the lead's session, no
+  extra panes.
+- Split-pane modes (`tmux`, `iterm`, `auto`): each teammate opens its own
+  terminal pane. Readable for two or three teammates, crowded for a big team.
+
+Teammates may start their own subagents (web lookups, fetches). `/team`
+briefs make them use an agent type that can write files, run it in the
+foreground and write results to
+`pm/waste/team/<run>/<name>-r<round>-sub<k>.md`, so long results never land in the lead's
+context.
+
+Start Claude in a project folder you have trusted before: teammates start in
+the lead's folder, and the home folder asks for trust every time.
 
 ### Updating
 
@@ -346,7 +364,7 @@ flowchart TD
 - Pick the model by how defined the task is (haiku / sonnet / opus); between two tiers, take the higher.
 - The lead orchestrates and never does the legwork.
 - Briefs open with `DELIVERABLE:` (artifact + exact path) and `NOT IN SCOPE:`.
-- Full reports go to `pm/waste/team/<name>-r<round>.md` (gitignored; outside a `pm/` repo: the session scratchpad). The lead gets a message of 500 chars or fewer, and the teammate's final text is one line with the report path. Each report reaches the lead twice: once as the message and once as the idle notification.
+- Full reports go to `pm/waste/team/<run>/<name>-r<round>.md`, one folder per `/team` run (`<run>` = start time `YYYY-MM-DD-HHMM`), so a later run never overwrites an earlier one (gitignored; outside a `pm/` repo: the session scratchpad). The lead gets a message of 500 chars or fewer, and the teammate's final text is one line with the report path. Each report reaches the lead twice: once as the message and once as the idle notification.
 - Critics write their review to the open stage's `notes/` (committed) or, with no open stage, `pm/reviews/`.
 - Files to discard: teammates list `TO-WASTE:` lines in their report; the lead collects them with one grep (see Deleting is off).
 - When reusing an idle teammate, restate the deliverable and the report lines.
@@ -404,6 +422,7 @@ sequenceDiagram
   L->>U: what matched, what differed, then Next step
 ```
 
+- rk-init/rk-sync keep a marked `## Compact Instructions` block in CLAUDE.md; Claude Code reads it on every compact, including auto-compact.
 - Trigger phrases: "get ready for compact", "ready for compaction",
   "prepare for compact", "I'm stopping here" (short messages only, so a pasted
   report that quotes them does not fire it). Or `/s-comp prepare` /

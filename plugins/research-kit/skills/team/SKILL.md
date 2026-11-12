@@ -76,11 +76,21 @@ on that tier).
    TO-WASTE: <repo-relative path> -- <reason>
    The lead moves them. If n > 0, your SendMessage to the lead adds
    `TO-WASTE: <n>`.
+   Subagents you start yourself: for lookups and fetches use
+   `research-kit:fetcher`; for other work a type that can write files
+   (`general-purpose` or `research-kit:worker-<effort>`; never
+   `web-fetch`). Start them in the foreground, and tell each to write
+   its full result to <REPORTS>/<name>-r<round>-sub<k>.md. That file is
+   the result: the Agent call
+   may return only "no report delivered"; read the file yourself.
    ```
 
-   `<REPORTS>` = absolute path `<repo>/pm/waste/team/` when the repo has a
-   `pm/` folder, else `team-reports/` in the lead's scratchpad directory
-   (fallback `$TMPDIR/team-reports/`). This is for worker reports only;
+   `<REPORTS>` = absolute path `<repo>/pm/waste/team/<run>/` when the repo
+   has a `pm/` folder, else `team-reports/<run>/` in the lead's scratchpad
+   directory (fallback `$TMPDIR/team-reports/<run>/`). `<run>` =
+   `YYYY-MM-DD-HHMM` when you first spawn this team; keep it for the whole
+   team. One folder per run: a later run never overwrites these files, and
+   the step-7 grep sees only this run. This is for worker reports only;
    critic reviews go to `<REVIEWS>` (step 5). Reports live on disk, not
    in the lead's context; the lead reads a report only when a decision
    needs it, and then only the needed section.

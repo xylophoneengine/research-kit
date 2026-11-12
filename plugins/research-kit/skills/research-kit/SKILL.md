@@ -31,7 +31,9 @@ The command argument says the mode: init, add-kind, upgrade, sync or close.
    Exit 1 = repo already initialised or unknown kind: tell the user, stop.
 3. Follow the kind files' own start-up steps with the user (each kind file
    says what to ask), then the appendix lines (project name, repo tag).
-4. Tell the user: new session needed to load the rules; commits follow the
+4. `init` also writes a marked `## Compact Instructions` block into the repo's
+   `CLAUDE.md` (created if missing; existing text kept).
+5. Tell the user: new session needed to load the rules; commits follow the
    chosen git policy.
 
 ## add-kind
@@ -66,7 +68,10 @@ Output "already full" = nothing to do.
 3. Rerun the dry run until DROPPED holds only text to drop. Show the user the
    diff summary, then run `sync <repo_dir> --write --accept-drop`. Without
    `--accept-drop`, `--write` exits 2 while drops exist.
-4. Tell the user: AGENTS.md loads at session start, so running teammates and
+4. `sync` also refreshes the marked `## Compact Instructions` block in
+   `CLAUDE.md` (diff shown in the dry run, written only with `--write`; text
+   outside the markers is never touched, never counts as DROPPED).
+5. Tell the user: AGENTS.md loads at session start, so running teammates and
    this session keep the old rules; start a new session.
 
 ## close (user says "close stage", or `/rk-close`)

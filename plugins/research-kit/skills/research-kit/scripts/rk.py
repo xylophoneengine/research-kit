@@ -166,6 +166,37 @@ def ensure_gitignore(repo_dir: Path) -> bool:
     return True
 
 
+CB_START: str = "<!-- research-kit:compact >>> -->"
+CB_END: str = "<!-- <<< research-kit:compact -->"
+
+
+def compact_text(old: str) -> str:
+    """`old` with the Compact Instructions block added once or refreshed."""
+    body: str = (TEMPLATE_DIR / "compact-instructions.md").read_text().rstrip("\n")
+    block: str = f"{CB_START}\n{body}\n{CB_END}\n"
+    pat: re.Pattern[str] = re.compile(
+        rf"^{re.escape(CB_START)}$.*?^{re.escape(CB_END)}$\n?", re.M | re.S
+    )
+    if pat.search(old):
+        return pat.sub(lambda _m: block, old, count=1)
+    if not old:
+        return block
+    sep: str = "\n" if old.endswith("\n") else "\n\n"
+    return f"{old}{sep}{block}"
+
+
+def ensure_compact_block(repo_dir: Path, write: bool) -> tuple[bool, str]:
+    """Add/refresh the marked block in CLAUDE.md; (changed, unified diff)."""
+    path: Path = repo_dir / "CLAUDE.md"
+    old: str = path.read_text() if path.exists() else ""
+    new: str = compact_text(old)
+    if new == old:
+        return False, ""
+    if write:
+        path.write_text(new)
+    return True, _diff(old, new, "CLAUDE.md")
+
+
 def migrate_text(
     repo_agents: str,
     core_template: str,
@@ -269,9 +300,11 @@ def cmd_init(repo_dir: Path, kinds: list[str], mode: str, git_policy: str) -> in
         if not kpath.exists():
             kpath.write_text(_kind_template(k).read_text())
     ensure_gitignore(repo_dir)
+    ensure_compact_block(repo_dir, True)
     print(f"created {target} (template {stamp(template)}), mode {mode}, "
           f"git policy '{GIT_POLICIES[git_policy]}', kinds {', '.join(kinds)}")
-    print(f"created pm/ ({len(dirs)} dirs, {len(files)} skeleton files), .gitignore")
+    print(f"created pm/ ({len(dirs)} dirs, {len(files)} skeleton files), .gitignore, "
+          "CLAUDE.md Compact Instructions block")
     return 0
 
 
@@ -391,6 +424,10 @@ def cmd_sync(repo_dir: Path, write: bool, accept_drop: bool) -> int:
         writes[gi] = gi_new
         print("\n== .gitignore == research-kit block added/refreshed")
 
+    compact_changed, compact_diff = ensure_compact_block(repo_dir, False)
+    if compact_changed:
+        print(f"\n== CLAUDE.md == Compact Instructions block\n{compact_diff}")
+
     mode: str = get_field(app, "Mode") or "light"
     dirs, files = _missing(repo_dir, mode)
     for d in dirs:
@@ -400,7 +437,7 @@ def cmd_sync(repo_dir: Path, write: bool, accept_drop: bool) -> int:
 
     # Stamp lines are template-owned: a version bump is not a dropped rule.
     drops = [(f, ln) for f, ln in drops if not STAMP_RE.search(ln)]
-    if not writes and not dirs and not files:
+    if not writes and not dirs and not files and not compact_changed:
         print("up to date")
         return 0
     if drops:
@@ -415,6 +452,9 @@ def cmd_sync(repo_dir: Path, write: bool, accept_drop: bool) -> int:
         print("\nrefused: dropped lines present; resolve them or pass --accept-drop")
         return 2
     _create(dirs, files)
+    if compact_changed:
+        ensure_compact_block(repo_dir, True)
+        print("wrote CLAUDE.md")
     for path, content in writes.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)

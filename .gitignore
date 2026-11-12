@@ -5,3 +5,4 @@ __pycache__/
 
 # private design notes, never published
 /docs/
+.serena/

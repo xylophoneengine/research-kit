@@ -1,4 +1,4 @@
-<!-- research-kit: 2026-11-13a -->
+<!-- research-kit: 2026-11-13c -->
 # AGENTS.md - how we work on a research project (research-kit core)
 
 Generic working method for every project kind (paper, software, reverse engineering, experiment, thesis), distilled from completed projects. Installed and updated by the `research-kit` plugin (`/rk-init`, `/rk-add-kind`, `/rk-upgrade`, `/rk-sync`, `/rk-close`). Everything above "Project appendix" is generic and replaced on sync: never edit it in a repo copy; repo-specific lines go into the appendix. Kind rules live in `pm/kinds/<kind>.md`, one file per active kind, listed in the kinds block of the appendix; they add to this file, never relax it. Every rule carries a one-clause reason so a later session can judge an edge case instead of obeying blind. Placeholders: `<ID>` = short project id (session prefix, appendix), `NN` = stage number, `<kind>` = kind id, `<topic>` = stage topic.
@@ -82,7 +82,7 @@ NOT IN SCOPE: <what to leave alone, e.g. "do not investigate WHY the data looks 
 DONE WHEN: <mechanical check from the stage BRIEF.md>.
 Team: <name: one-line task>, for every teammate.
 Coordinate via SendMessage only when your work touches a teammate's.
-Full report -> write to pm/waste/team/<name>-r<round>.md (required
+Full report -> write to pm/waste/team/<run>/<name>-r<round>.md (required
 deliverable): what you produced (absolute paths), how verified, open points,
 every claim tagged CONFIRMED / LIKELY / GUESS with its cite, and one line
 per file to discard, at column 0, nothing before it (never move or delete it yourself):
@@ -90,6 +90,9 @@ TO-WASTE: <repo-relative path> -- <reason>
 Then SendMessage to lead, max ~500 chars: DONE / BLOCKED, report path,
 blocking items only. Final text = single line
 "Reported to lead (report file: <path>)." (it reaches the lead too; never repeat the report).
+Subagents you start: research-kit:fetcher for lookups, else a type that can Write; in
+the foreground, full result to pm/waste/team/<run>/<name>-r<round>-sub<k>.md. The file is the
+result (the Agent call may return only "no report delivered"); read it yourself.
 ```
 
 Reusing an idle teammate via `SendMessage`: restate DELIVERABLE, NOT IN SCOPE and the report lines with the new `<round>` (its first brief may predate them). Lead reads a report file only when a decision needs it. Report files are team comms, not deliverables: anything worth keeping is copied into the stage folder.

@@ -39,6 +39,9 @@ def fake_template(root: Path) -> Path:
     (tpl / "kinds").mkdir(parents=True)
     shutil.copy(REAL_TEMPLATE / "gitignore", tpl / "gitignore")
     shutil.copytree(REAL_TEMPLATE / "pm", tpl / "pm")
+    shutil.copy(
+        REAL_TEMPLATE / "compact-instructions.md", tpl / "compact-instructions.md"
+    )
     (tpl / "AGENTS.md").write_text(FAKE_CORE)
     for k in rk.KINDS:
         (tpl / "kinds" / f"{k}.md").write_text(
@@ -419,6 +422,75 @@ def test_init_real_template() -> None:
         assert app.count("<!-- rk:kinds -->") == 1, app
         code, out = run(rk.cmd_sync, repo, False, False)
         assert code == 0 and "up to date" in out, out
+
+
+def _block(repo: Path) -> str:
+    return (repo / "CLAUDE.md").read_text()
+
+
+def _init(repo: Path) -> None:
+    code, out = run(rk.cmd_init, repo, ["software"], "light", "user")
+    assert code == 0, out
+
+
+def test_compact_block_created_on_init() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = setup(Path(d))
+        _init(repo)
+        body: str = (rk.TEMPLATE_DIR / "compact-instructions.md").read_text()
+        want: str = f"{rk.CB_START}\n{body}{rk.CB_END}\n"
+        assert _block(repo) == want, _block(repo)
+
+
+def test_compact_block_idempotent() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = setup(Path(d))
+        _init(repo)
+        for _ in range(2):
+            code, out = run(rk.cmd_sync, repo, True, False)
+            assert code == 0 and "up to date" in out, out
+        assert _block(repo).count(rk.CB_START) == 1, _block(repo)
+        assert _block(repo).count(rk.CB_END) == 1, _block(repo)
+
+
+def test_compact_block_preserves_user_text() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = setup(Path(d))
+        _init(repo)
+        above: str = "# My repo\n\nuser rule 1  \n\tuser rule 2\n\n"
+        below: str = "\n## Mine\nkeep me\nno trailing newline"
+        old: str = f"{rk.CB_START}\n## Compact Instructions\nOLD TEXT\n{rk.CB_END}\n"
+        (repo / "CLAUDE.md").write_text(above + old + below)
+        code, out = run(rk.cmd_sync, repo, True, False)
+        assert code == 0, out
+        text: str = _block(repo)
+        assert text.startswith(above) and text.endswith(below), text
+        assert "OLD TEXT" not in text and "Keep verbatim" in text, text
+        assert text.count(rk.CB_START) == 1, text
+
+
+def test_compact_block_appended_when_missing_markers() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = setup(Path(d))
+        _init(repo)
+        (repo / "CLAUDE.md").write_text("user line\n")
+        code, out = run(rk.cmd_sync, repo, True, False)
+        assert code == 0, out
+        text: str = _block(repo)
+        assert text.startswith(f"user line\n\n{rk.CB_START}\n"), text
+        assert text.endswith(f"{rk.CB_END}\n") and text.count(rk.CB_START) == 1, text
+
+
+def test_sync_dry_run_does_not_write_compact() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = setup(Path(d))
+        _init(repo)
+        (repo / "CLAUDE.md").write_text("user line\n")
+        before: dict[str, bytes | None] = snapshot(repo)
+        code, out = run(rk.cmd_sync, repo, False, False)
+        assert code == 0 and "Compact Instructions" in out, out
+        assert "DROPPED" not in out and "dry run" in out, out
+        assert snapshot(repo) == before
 
 
 def main() -> int:
