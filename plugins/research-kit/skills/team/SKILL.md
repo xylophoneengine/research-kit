@@ -59,16 +59,19 @@ on that tier).
    (lookups before the build), never spawn it early.
 
    In a repo with `pm/ledger.jsonl`, open one task per work item before its
-   brief: `python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" add task "<work item>" --owner <name> [--stage S-<n>]`. The
-   receipt gives the id. A hook refuses a brief (a message with a
+   brief: `python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" add task "<work item>" --owner <name> [--stage S-<n>] [--link D-<n>]...`.
+   Link the decisions that bind the task now. The receipt gives the id. A hook refuses a brief (a message with a
    `DELIVERABLE:` line, by spawn or SendMessage) whose `TASK:` line names no
    open task, and marks the task running. Without a ledger, leave out the
-   TASK line. Brief:
+   TASK line. Every brief, worker and critic, carries the output of
+   `python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" show T-<n>` (the task entry plus one line per linked
+   decision) below its TASK line. Brief:
 
    ```
    You are <name>, <role> on a team. Lead = main session.
    DELIVERABLE: <artifact> at <exact path>.
    TASK: <T-id>
+   <output of rk show <T-id>>
    NOT IN SCOPE: <what to leave alone>.
    Team: <name: one-line task, for every teammate>.
    Coordinate with teammates via SendMessage only when your work touches
@@ -87,7 +90,8 @@ on that tier).
    Subagents you start yourself: for lookups and fetches use
    `research-kit:fetcher`; for other work a type that can write files
    (`general-purpose` or `research-kit:worker-<effort>`; never
-   `web-fetch`). Start them in the foreground, and tell each to write
+   `web-fetch`). Such a sub-lookup needs no TASK line and no ledger entry
+   (the hook skips calls made from inside a subagent). Start them in the foreground, and tell each to write
    its full result to <REPORTS>/<name>-r<round>-sub<k>.md. That file is
    the result: the Agent call
    may return only "no report delivered"; read the file yourself.
@@ -115,8 +119,9 @@ on that tier).
    Context explains how to do the task. It never suggests a bigger task.
 5. **Review.** When workers report, spawn the critics in one message. Give
    them the user's request verbatim, the goal statement and the worker
-   report paths (not their contents). A critic brief's `TASK:` names the
-   task(s) under review. Critics write the full review below
+   report paths (not their contents). Each review round is one `task`
+   entry: open it before briefing (`python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" add task "review round <n>: <what>" --owner <critic names>`); both critic briefs carry its `TASK: T-<n>`, never the
+   work task under review. Critics write the full review below
    to `<REVIEWS>/<file>` (that file is their report file, no second copy),
    then SendMessage the lead max ~1k chars:
    the three verdict lines, BLOCKING findings (location, owner), report path.
@@ -144,7 +149,7 @@ on that tier).
 6. **Fix loop.** Any NO or BLOCKING finding → back to you: re-plan the work
    items, not just patch. Route findings to their owners via `SendMessage`
    (point at the critic report path and finding, do not paste it).
-   The same critics re-review all fixes (`SendMessage`). Max 2 rounds; then
+   The same critics re-review all fixes (`SendMessage`, same review `TASK:` while it is open). Max 2 rounds; then
    AskUserQuestion.
 7. **Integrate and verify.** Engineering: run the tests or checks yourself.
    Research: open the sources of the key claims yourself. Report: what was
@@ -154,7 +159,8 @@ on that tier).
    `pm/reviews/` when critics listed some; never read whole reports for
    this), then close each task on its report
    (`python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" close T-<n> --note "<outcome>" --ref <report path>`; after a
-   critic NO the task stays running), then run `research-kit:waste` (`waste.sh lead "<reason>" <paths>`)
+   critic NO the task stays running), and the review task with the verdicts
+   and the review file paths (`--ref`), then run `research-kit:waste` (`waste.sh lead "<reason>" <paths>`)
    once for all of them; the user approves that one call. Offer to stop teammates that will
    not be reused.
 
