@@ -127,7 +127,7 @@ the repo grows; stages of different kinds can run in parallel.
 
 ```mermaid
 flowchart LR
-  C["core AGENTS.md: roles, /team, stages, evidence, DECISIONS, DEFERRED, waste"]
+  C["core AGENTS.md: roles, /team, stages, evidence, ledger, waste"]
   C --> P["paper"]
   C --> S["software"]
   C --> R["reverse-eng"]
@@ -182,17 +182,17 @@ stage opens in a fresh session named after its folder (`/rename`).
 |---|---|---|
 | setup | `/rk-init` (kinds: paper; full; user commits) | `pm/` tree, appendix, `.gitignore` block. Paper first-session steps: ARS check, library tag asked (e.g. `mypaper`), appendix lines (title, venue, authors, topic) |
 | 01 | `/rename MYP_01_paper_goal-scan`, then "open stage: goal + lit-scan" | Lead writes `BRIEF.md` with a `Done when`. Lead runs the GOALS dialogue (`deep-research`, `socratic`) and writes `pm/living/GOALS.md`; you confirm. `/team`: a teammate runs `deep-research` `three-way-scan` into `deliverables/`; crit1 + crit2 review into `notes/` |
-| | "close stage" (or `/rk-close 01`) | Close checklist: stage README marked closed, `pm/README.md` rows, NEXT_STEPS, handoffs, chat archive last. Stage is frozen |
+| | "close stage" (or `/rk-close 01`) | Close checklist: every stage task done, dropped, re-staged or deferred; `pm/README.md` numbers and traps; handoffs closed; your sign-off logged as a decision; `rk stage-close`; kind freeze steps; chat archive last. Stage is frozen |
 | 02 | "open stage: source sync" | `/team` with `research-kit-lit:zotero-worker` teammates: preflight, import, tag, ledger = PDFs = library entries; corpus passport rebuilt for ARS |
 | 03 | `/rk-add-kind software`, "open stage: software solver" | Software kind in parallel (one open stage per kind): design via `superpowers:brainstorming` or grilling, plan via `writing-plans`, build via `/team`; numbers stamped at a clean commit go to "Load-bearing numbers" in `pm/README.md` |
-| 04 | "open stage: plan" | `academic-paper` `plan` in the lead session (dialogue with you): `chapter_plan.md`, `insight_collection.md`; your decisions logged verbatim in `pm/DECISIONS.md` |
+| 04 | "open stage: plan" | `academic-paper` `plan` in the lead session (dialogue with you): `chapter_plan.md`, `insight_collection.md`; your decisions logged in the ledger |
 | 05-06 | "open stage: outline", then "full draft" | `academic-paper` `outline-only`, then `full`, each in a named writer teammate, reading the passport; every claim in `claims_register.md` has an owner file |
 | 07-08 | "open stage: review", then "revision" | `academic-paper-reviewer` `full`, then `academic-paper` `revision` + reviewer `re-review` |
 | 09 | "open stage: finalize" | `abstract-only`, `citation-check`, `disclosure`, `format-convert`; done when `citation-check` has no open error |
 
 Any session: "get ready for compact" writes a handoff in `pm/handoffs/compact/`,
 then `/compact`, and the session resumes from it. A blocker or a decision only
-you can make goes to `pm/DECISIONS.md` (escalation) or `pm/DEFERRED.md`; the
+you can make goes to the ledger (an open `decision` or a `deferred` entry); the
 lead asks instead of guessing.
 
 After stage 03 the repo looks like:
@@ -252,8 +252,8 @@ Use:
 
 Chosen at `/rk-init`, stored as `Mode:` in the appendix.
 
-Light keeps roles, `/team`, both critics, evidence tags, `pm/DECISIONS.md`,
-`pm/DEFERRED.md`, logs and handoffs; full adds stage folders, stage tables and
+Light keeps roles, `/team`, both critics, evidence tags, the ledger, logs and
+handoffs; full adds stage folders, stage tables and
 the close checklist.
 
 `/rk-upgrade` turns light into full; nothing is downgraded.
@@ -263,9 +263,9 @@ the close checklist.
 ```
 pm/
   README.md         finding aid: stages, "Load-bearing numbers", "Do not quote"   committed
-  DECISIONS.md      decision log + escalation format                              committed
-  DEFERRED.md       parked items (approval, hardware, money)                      committed
-  living/           GOALS, NEXT_STEPS, TASKS, edited in place                     committed
+  ledger.jsonl      tasks, decisions, deferred items, stages: append-only log      committed
+  STATUS.md         generated open list, rebuilt after every ledger write         gitignored
+  living/           GOALS, edited in place                                        committed
   kinds/            active kind files (replaced on sync)                          committed
   stages/NN-<kind>-<topic>/                                                       committed, except chat/
     README.md BRIEF.md deliverables/ notes/ code/ chat/                           chat/ gitignored
@@ -278,9 +278,29 @@ pm/
   waste/            discarded files + LEDGER.md; team/ = teammate reports         gitignored
 ```
 
+### The ledger
+
+Tasks, decisions, deferred items, fetches, debts, handoffs and stages live in one
+append-only event log, `pm/ledger.jsonl`. Only the `rk.py` subcommands read or
+write it (core AGENTS.md 4.2 defines the shorthand `rk`); a hook blocks hand
+edits of the log and of `pm/STATUS.md`, and another refuses a team brief whose
+`TASK:` ids are not open tasks. Every write prints a receipt such as
+`logged D-41: ...`, and `pm/STATUS.md` is regenerated after it.
+
+```
+rk add <type> <title>       log a task, decision, deferred item, ...
+rk start|close|drop|reopen  change status (close and drop take --note)
+rk set | rk supersede       edit fields; replace a decision
+rk list | show | search     open items, one entry, text search
+rk recent                   newest events
+rk stage-close S-n --sign-off D-m   close a stage once the checks pass
+rk render                   rebuild pm/STATUS.md
+rk brief-check              the brief gate the hook calls
+```
+
 `rk-init` also appends a marked block to `.gitignore` (`pm/waste/`,
 `pm/handoffs/compact/`, `pm/scratch/`, `pm/reviews/`, `pm/stages/*/chat/`,
-`_dry/`); rerunning it never duplicates the block or touches your lines.
+`pm/STATUS.md`, `_dry/`); rerunning it never duplicates the block or touches your lines.
 
 ## Commands
 
@@ -308,7 +328,7 @@ flowchart TD
   CR -- "not resolved" --> ESC["Escalate to the user"]
   CR -- "all YES" --> IV["Integrate + verify: Done when check run, tail pasted"]
   IV --> CL["/rk-close"]
-  CL --> S1["README closed, pm/README.md rows, NEXT_STEPS, handoffs, TASKS"]
+  CL --> S1["Tasks settled, numbers and traps, handoffs, sign-off, rk stage-close"]
   S1 --> S2["Kind freeze steps"]
   S2 --> S3["Chat archive LAST"]
   S3 --> N["Next stage"]
@@ -481,6 +501,8 @@ claude plugin validate plugins/research-kit-lit
 python3 -I plugins/research-kit/skills/research-kit/scripts/test_rk.py
 bash plugins/research-kit/skills/waste/test-waste.sh
 bash plugins/research-kit/hooks/test-guard-delete.sh
+bash plugins/research-kit/hooks/test-ledger-guard.sh
+bash plugins/research-kit/hooks/test-handoff-hook.sh
 bash scripts/anon_check.sh   # before every push; reads the private docs/private/denylist.txt
 claude --plugin-dir plugins/research-kit    # try it without installing
 ```
