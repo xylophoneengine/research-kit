@@ -54,6 +54,7 @@ LIST_FIELDS: tuple[str, ...] = ("links", "refs")
 LIST_LIMIT: int = 30
 SEARCH_LIMIT: int = 20
 LINE_MAX: int = 80
+TITLE_MAX: int = 160
 LIST_MAX_BYTES: int = 2600  # proposed bound (spec 9), pinned by test_list_size_bound
 RECENT_DECISIONS: int = 5
 
@@ -87,12 +88,34 @@ def _bad(n: int, what: str) -> LedgerError:
     return LedgerError(f"{LEDGER_REL}:{n}: {what}; {HINT}")
 
 
+def _main_checkout(d: Path) -> Path:
+    """The main checkout when `d` is a git worktree whose main checkout holds the
+    ledger (`.git` file -> <main>/.git/worktrees/...); else `d`. Never runs git."""
+    git: Path = d / ".git"
+    if not git.is_file():
+        return d
+    try:
+        text: str = git.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return d
+    m: re.Match[str] | None = re.match(r"gitdir:[ \t]*(\S.*)", text)
+    if m is None:
+        return d
+    gitdir: str = str((d / m.group(1).strip()).resolve())
+    head, sep, _ = gitdir.partition("/.git/worktrees/")
+    main: Path = Path(head)
+    return main if sep and (main / LEDGER_REL).is_file() else d
+
+
 def find_repo(start: Path, explicit: bool = False) -> Path:
-    """Dir holding pm/ledger.jsonl: `start` itself, or (not explicit) a parent."""
+    """Dir holding pm/ledger.jsonl: `start` itself, or (not explicit) a parent.
+
+    Not explicit: in a git worktree, the main checkout's ledger is the one used.
+    """
     start = start.resolve()
     for d in [start] if explicit else [start, *start.parents]:
         if (d / LEDGER_REL).is_file():
-            return d
+            return d if explicit else _main_checkout(d)
     where: str = "" if explicit else " or above"
     raise LedgerError(
         f"no {LEDGER_REL} in {start}{where}; run rk.py init or pass --repo"
@@ -308,7 +331,23 @@ def _title(value: str) -> str:
     title: str = value.strip()
     if not title or "\n" in title or "\r" in title:
         raise LedgerError("the title is one non-empty line")
+    if len(title) > TITLE_MAX:
+        raise LedgerError(
+            f"the title has {len(title)} characters (at most {TITLE_MAX}); "
+            "put detail in --note"
+        )
     return title
+
+
+def _check_stage_open(
+    state: dict[str, Entry], sid: str, status: str, fix: str
+) -> None:
+    """Refuse putting an open or running entry into a stage that is done."""
+    st: Entry | None = state.get(sid) if sid else None
+    if st is not None and status in OPEN_STATUSES and st.status == "done":
+        raise LedgerError(
+            f"{sid} is closed (done); an {status} entry cannot go into it: {fix}"
+        )
 
 
 def _repo(a: argparse.Namespace) -> Path:
@@ -362,7 +401,7 @@ def _clip(line: str, width: int = LINE_MAX) -> str:
 
 
 def _item(e: Entry, now: datetime) -> str:
-    return (
+    return _clip(
         f"- {e.id} ({e.owner}, {age(_since(e), now)}) {e.title}"
         + (" [imported]" if _imported(e) else "")
     )
@@ -378,7 +417,9 @@ def _stage_line(e: Entry, state: dict[str, Entry], now: datetime) -> str:
         if (n := sum(1 for x in mine if x.status == s))
     ]
     tasks: str = ", ".join(parts) or "none"
-    return f"- {e.id} {e.title} ({e.status} {age(_since(e), now)}; tasks: {tasks})"
+    return _clip(
+        f"- {e.id} {e.title} ({e.status} {age(_since(e), now)}; tasks: {tasks})"
+    )
 
 
 def render_status(state: dict[str, Entry], now: datetime) -> str:
@@ -422,19 +463,14 @@ def render_status(state: dict[str, Entry], now: datetime) -> str:
                 if e.type == typ and e.status == "open" and e.owner != "user"
             ],
         )
-    stage_ids: set[str] = {e.id for e in stages}
     decs: list[Entry] = [
-        e
-        for e in state.values()
-        if e.type == "decision"
-        and e.status == "done"
-        and (not stage_ids or e.stage in stage_ids)
+        e for e in state.values() if e.type == "decision" and e.status == "done"
     ]
     decs.sort(key=lambda e: e.lines[0], reverse=True)
     section(
         "Recent decisions",
         [
-            f"- {e.id} ({e.owner}, {e.created[:10]}) {e.title}"
+            _clip(f"- {e.id} ({e.owner}, {e.created[:10]}) {e.title}")
             for e in decs[:RECENT_DECISIONS]
         ],
     )
@@ -448,6 +484,17 @@ def write_status(repo: Path, state: dict[str, Entry]) -> None:
         render_status(state, datetime.now().astimezone()), encoding="utf-8"
     )
     os.replace(tmp, path)
+
+
+def _list_key(e: Entry) -> tuple[int, int, tuple[int, int, str, int]]:
+    """Open before closed; within each: stages, handoffs, owner user, the rest."""
+    group: int = (
+        0 if e.type == "stage"
+        else 1 if e.type == "handoff"
+        else 2 if e.owner == "user"
+        else 3
+    )
+    return (0 if _is_open(e) else 1, group, _sort_key(e))
 
 
 def _more(k: int) -> str:
@@ -472,7 +519,7 @@ def format_list(
         and (stage is None or e.stage == stage)
     ]
     opens: list[Entry] = [e for e in rows if _is_open(e)]
-    shown: list[Entry] = sorted(rows if include_closed else opens, key=_sort_key)
+    shown: list[Entry] = sorted(rows if include_closed else opens, key=_list_key)
     counts: dict[str, int] = {}
     for e in sorted(opens, key=_sort_key):
         counts[e.type] = counts.get(e.type, 0) + 1
@@ -486,7 +533,7 @@ def format_list(
         title: str = ("[imp] " if _imported(e) else "") + e.title
         lines.append(
             _clip(
-                f"{e.id:<6}{e.status:<8}{e.owner[:8]:<9}"
+                f"{e.id:<5} {e.status:<7} {e.owner[:8]:<8} "
                 f"{age(_since(e), now):>4}  {title}"
             )
         )
@@ -530,6 +577,16 @@ def _cmd_add(a: argparse.Namespace) -> int:
         except ValueError:
             raise LedgerError(f"--date '{a.date}': want YYYY-MM-DD") from None
     status: str = a.status or ("done" if typ == "decision" else "open")
+    if typ == "decision" and status in OPEN_STATUSES:
+        raise LedgerError(
+            "a decision is in force when logged (status done); an open question "
+            'for the user is a deferred entry: add deferred "<question>" --owner user'
+        )
+    if typ == "stage" and status != "open" and not a.imported:
+        raise LedgerError(
+            f"--status {status}: a stage is logged open and closed with "
+            "stage-close; another status only with --imported"
+        )
     made: list[str] = []
 
     def build(state: dict[str, Entry]) -> list[dict[str, object]]:
@@ -541,6 +598,7 @@ def _cmd_add(a: argparse.Namespace) -> int:
             if a.stage
             else _default_stage(state, typ, a.imported)
         )
+        _check_stage_open(state, stage, status, "pass --stage with an open stage")
         eid: str = next_id(state, types[typ])
         f: dict[str, object] = {
             "type": typ,
@@ -597,11 +655,19 @@ def _cmd_start(a: argparse.Namespace) -> int:
 
     def build(state: dict[str, Entry]) -> list[dict[str, object]]:
         e: Entry = _entry(state, a.id)
+        if e.type == "stage":
+            raise LedgerError(
+                f"{e.id} is a stage: stages are not started; it stays open "
+                "until stage-close"
+            )
         if e.status == "running":
             out.append(f"{e.id} already running")
             return []
         if e.status != "open":
             raise LedgerError(f"{e.id} is {e.status}: use reopen first")
+        _check_stage_open(
+            state, e.stage, "running", f"re-stage it first: set {e.id} --stage S-<x>"
+        )
         f: dict[str, object] = {"status": "running"}
         if owner is not None:
             f["owner"] = owner
@@ -624,7 +690,7 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
         e: Entry = _entry(state, a.id)
         if e.type == "stage":
             raise LedgerError(f"{e.id} is a stage: use stage-close")
-        if cmd == "close" and e.type == "decision":
+        if cmd in ("close", "reopen") and e.type == "decision":
             raise LedgerError(
                 f"{e.id} is a decision; decisions are in force when logged: "
                 "supersede or drop"
@@ -636,6 +702,10 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
         }[cmd]
         if e.status not in allowed:
             raise LedgerError(f"cannot {cmd} {e.id}: it is {e.status}")
+        if cmd == "reopen":
+            _check_stage_open(
+                state, e.stage, "open", f"re-stage it first: set {e.id} --stage S-<x>"
+            )
         f: dict[str, object] = {"status": new, "note": note}
         if cmd == "close" and a.ref:
             f["refs"] = _union(e.refs, a.ref)
@@ -673,7 +743,9 @@ def _cmd_set(a: argparse.Namespace) -> int:
         if owner is not None:
             f["owner"] = owner
         if a.stage is not None:
-            f["stage"] = resolve_stage(state, a.stage)
+            sid: str = resolve_stage(state, a.stage)
+            _check_stage_open(state, sid, e.status, "pick an open stage")
+            f["stage"] = sid
         if a.note is not None:
             f["note"] = a.note
         for link in a.link:
@@ -769,7 +841,8 @@ def _val(v: object) -> str:
 def _cmd_show(a: argparse.Namespace) -> int:
     repo: Path = _repo(a)
     events: list[tuple[int, dict[str, object]]] = read_events(repo)
-    e: Entry = _entry(fold(events), a.id)
+    state: dict[str, Entry] = fold(events)
+    e: Entry = _entry(state, a.id)
     fields: list[tuple[str, str]] = [
         ("id", e.id), ("type", e.type), ("title", e.title), ("status", e.status),
         ("owner", e.owner), ("stage", e.stage),
@@ -780,6 +853,14 @@ def _cmd_show(a: argparse.Namespace) -> int:
     ]
     for k, v in fields:
         print(f"{k}: {v}")
+    linked: list[str] = _union(
+        e.links, [x.id for x in state.values() if e.id in x.links]
+    )
+    if linked:
+        print("linked:")
+        for lid in linked:
+            x: Entry | None = state.get(lid)
+            print(_clip(f"  {lid} {x.status}: {x.title}") if x else f"  {lid} unknown")
     print("history:")
     for _, ev in events:
         if ev.get("id") != e.id:
@@ -853,11 +934,15 @@ def _sign_off_problems(
 ) -> list[str]:
     """Why `sign` is not a valid sign-off for stage `sid` (empty = valid)."""
     fix: str = (
-        f'log one: add decision "sign-off: {state[sid].title}" --owner user '
-        f"--link {sid}"
+        f"ask the user to sign off {sid}; only after the user has given it, log "
+        f'it (add decision "sign-off: {state[sid].title}" --owner user --link '
+        f"{sid}) and pass its id. Never log a sign-off the user has not given"
     )
     if not sign:
-        return [f"needs --sign-off D-<m>, a user decision linked to {sid}; {fix}"]
+        return [
+            f"needs --sign-off D-<m>, a user decision that links {sid} or has "
+            f"stage {sid}; {fix}"
+        ]
     d: Entry | None = state.get(sign)
     if d is None or d.type != "decision":
         return [f"{sign} is not a decision; {fix}"]
@@ -866,8 +951,8 @@ def _sign_off_problems(
         out.append(f"{sign} has owner {d.owner}; the sign-off needs owner user")
     if d.status != "done":
         out.append(f"{sign} is {d.status}, not in force")
-    if sid not in d.links:
-        out.append(f"{sign} does not link {sid}; {fix}")
+    if sid not in d.links and d.stage != sid:
+        out.append(f"{sign} does not link {sid} and has another stage; {fix}")
     return out
 
 

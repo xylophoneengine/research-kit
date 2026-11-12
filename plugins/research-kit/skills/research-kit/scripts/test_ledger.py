@@ -177,6 +177,45 @@ def test_repo_lookup() -> None:
         assert snapshot(bare) == snap
 
 
+def test_worktree_uses_main_ledger() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d).resolve()
+        main: Path = new_repo(root)
+        (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+        wt: Path = new_repo(root / "wt")
+        (wt / ".git").write_text(f"gitdir: {main}/.git/worktrees/wt\n")
+        assert L.find_repo(wt / "pm" / "kinds") == main
+        assert L.find_repo(wt, explicit=True) == wt  # --repo is taken as given
+        rel: Path = new_repo(root / "rel")  # relative gitdir
+        (rel / ".git").write_text("gitdir: ../../repo/.git/worktrees/wt\n")
+        assert L.find_repo(rel) == main
+        sub: Path = new_repo(root / "sub")  # submodule: .git file, not a worktree
+        (sub / ".git").write_text(f"gitdir: {main}/.git/modules/sub\n")
+        assert L.find_repo(sub) == sub
+        lone: Path = root / "lone"  # main checkout without a ledger
+        (lone / ".git" / "worktrees" / "w").mkdir(parents=True)
+        w: Path = new_repo(lone / "w")
+        (w / ".git").write_text(f"gitdir: {lone}/.git/worktrees/w\n")
+        assert L.find_repo(w) == w
+        r: subprocess.CompletedProcess[str] = subprocess.run(
+            [sys.executable, "-I", str(RK_PY), "add", "task", "from wt"],
+            cwd=wt / "pm", capture_output=True, text=True,
+        )
+        assert r.returncode == 0 and r.stdout == "logged T-1: from wt\n", r
+        assert len(jl(main)) == 1 and jl(wt) == [], (jl(main), jl(wt))
+
+
+def test_unterminated_last_line_kept() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        (repo / L.LEDGER_REL).write_text(ev_line("T-1", "a").rstrip("\n"))
+        code, out = lrun(repo, "add", "task", "b")
+        assert code == 0 and out == "logged T-2: b\n", out
+        raw: str = (repo / L.LEDGER_REL).read_text()
+        assert raw.endswith("\n") and len(raw.splitlines()) == 2, raw
+        assert [e["id"] for e in jl(repo)] == ["T-1", "T-2"]
+
+
 def test_import_fields() -> None:
     with tempfile.TemporaryDirectory() as d:
         repo: Path = new_repo(Path(d))
@@ -232,6 +271,26 @@ def test_link_and_stage_validation() -> None:
         assert lrun(repo, "add", "task", "d", "--stage", "T-1")[0] == 1
 
 
+def test_title_length_cap() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        long: str = "w" * L.TITLE_MAX
+        assert lrun(repo, "add", "task", long)[0] == 0
+        code, out = lrun(repo, "add", "task", long + "w")
+        assert code == 1 and "--note" in out, out
+        code, out = lrun(repo, "set", "T-1", "--title", long + "w")
+        assert code == 1 and "--note" in out, out
+        lrun(repo, "add", "decision", "d" * L.TITLE_MAX, "--owner", "user")
+        lrun(repo, "add", "stage", "s" * L.TITLE_MAX)
+        lrun(repo, "add", "task", "u" * L.TITLE_MAX, "--owner", "user")
+        lrun(repo, "start", "T-2")
+        st: str = (repo / L.STATUS_REL).read_text()
+        for ln in st.splitlines():
+            if ln.startswith("- "):
+                assert len(ln) <= L.LINE_MAX and ln.endswith("..."), ln
+        assert len(jl(repo)) == 5
+
+
 def test_status_cycle() -> None:
     with tempfile.TemporaryDirectory() as d:
         repo: Path = new_repo(Path(d))
@@ -279,6 +338,49 @@ def test_close_refuses_stage_and_decision() -> None:
         assert code == 1 and "supersede" in out, out
         assert lrun(repo, "drop", "D-1", "--note", "revoked")[0] == 0
         assert L.load(repo)["D-1"].status == "dropped"
+        code, out = lrun(repo, "reopen", "D-1", "--note", "x")
+        assert code == 1 and "supersede or drop" in out, out
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "start", "S-1")
+        assert code == 1 and "stage-close" in out, out
+        assert L.load(repo)["S-1"].status == "open"
+        code, out = lrun(repo, "add", "decision", "q?", "--owner", "user",
+                         "--status", "open")
+        assert code == 1 and "deferred" in out, out
+        assert lrun(repo, "add", "stage", "s", "--status", "done")[0] == 1
+        assert len(jl(repo)) == n
+        assert lrun(
+            repo, "add", "stage", "old", "--status", "done", "--imported",
+            "--source", "a:1",
+        )[0] == 0
+
+
+def test_closed_stage_takes_no_open_entry() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "01-a")
+        lrun(repo, "add", "task", "t")
+        lrun(repo, "add", "deferred", "later")
+        lrun(repo, "close", "T-1", "--note", "ok")
+        lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1")
+        assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 0
+        lrun(repo, "add", "stage", "02-b")
+        lrun(repo, "add", "task", "u")  # T-2, stage S-2
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "add", "task", "late", "--stage", "S-1")
+        assert code == 1 and "S-1 is closed" in out, out
+        assert lrun(repo, "set", "T-2", "--stage", "S-1")[0] == 1
+        code, out = lrun(repo, "reopen", "T-1", "--note", "again")
+        assert code == 1 and "set T-1 --stage" in out, out
+        assert lrun(repo, "start", "DF-1")[0] == 1
+        assert len(jl(repo)) == n
+        code, out = lrun(
+            repo, "add", "task", "x", "--stage", "S-1", "--status", "done"
+        )
+        assert code == 0, out  # created closed: allowed
+        assert lrun(repo, "set", "T-1", "--stage", "S-2")[0] == 0  # T-1 is done
+        assert lrun(repo, "reopen", "T-1", "--note", "again")[0] == 0
+        assert lrun(repo, "list", "--stage", "S-1")[1].startswith("open 1 ")
 
 
 def test_supersede() -> None:
@@ -413,6 +515,10 @@ def test_status_declared_type_and_recent_decisions() -> None:
         rec: str = sec["## Recent decisions"]
         assert len(rec.splitlines()) == 5 and "D-9" in rec and "D-5" in rec, rec
         assert "D-4" not in rec and "D-1 " not in rec
+        lrun(repo, "add", "decision", "big call", "--owner", "user")  # two open stages
+        assert L.load(repo)["D-10"].stage == ""
+        rec = sections((repo / L.STATUS_REL).read_text())["## Recent decisions"]
+        assert "D-10" in rec and len(rec.splitlines()) == 5, rec
 
 
 def test_render_command() -> None:
@@ -434,13 +540,29 @@ def test_list_default_and_filters() -> None:
         assert "D-2" not in out and "T-4" not in out
         lines: list[str] = lrun(repo, "list", "--type", "task")[1].splitlines()
         assert all(ln.startswith("T-") for ln in lines[1:]), lines
-        assert lines[1].startswith("T-1"), lines  # running first
+        assert lines[1].startswith("T-3"), lines  # owner user first
+        assert lines[2].startswith("T-1"), lines  # then running first
         assert "T-3" in lrun(repo, "list", "--owner", "user")[1]
         assert "T-1" in lrun(repo, "list", "--stage", "03-software-x")[1]
         assert lrun(repo, "list", "--type", "tsak")[0] == 1
         assert "T-4" in lrun(repo, "list", "--all")[1]
         head: str = out.splitlines()[0]
         assert head.startswith("open 8 (running 1): task 3"), head
+        ids: list[str] = [ln.split()[0] for ln in out.splitlines()[1:]]
+        assert ids[:4] == ["S-1", "H-1", "T-3", "T-1"], ids  # stage, handoff, user
+
+
+def test_list_columns_separate() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        (repo / L.LEDGER_REL).write_text(ev_line("DF-1000", "wide", "deferred"))
+        lrun(repo, "add", "decision", "a", "--owner", "averyverylongname")
+        lrun(repo, "supersede", "D-1", "b", "--owner", "user")
+        out: list[str] = lrun(repo, "list", "--all")[1].splitlines()[1:]
+        cols: list[list[str]] = [ln.split()[:3] for ln in out]
+        assert ["DF-1000", "open", "lead"] in cols, out
+        assert ["D-1", "superseded", "averyver"] in cols, out
+        assert all(len(ln) <= L.LINE_MAX for ln in out), out
 
 
 def test_list_size_bound() -> None:
@@ -477,6 +599,12 @@ def test_show_history() -> None:
         hist: list[str] = out.split("history:\n")[1].splitlines()
         assert len(hist) == 2 and all(h.startswith("  ") for h in hist), hist
         assert lrun(repo, "show", "T-99")[0] == 1
+        lrun(repo, "add", "decision", "use dE00", "--owner", "user", "--link", "T-1")
+        lrun(repo, "add", "fetch", "smith2020")
+        lrun(repo, "set", "T-1", "--link", "F-1")
+        out = lrun(repo, "show", "T-1")[1]
+        linked: list[str] = out.split("linked:\n")[1].split("history:")[0].splitlines()
+        assert linked == ["  F-1 open: smith2020", "  D-1 done: use dE00"], linked
 
 
 def test_search() -> None:
@@ -541,6 +669,7 @@ def test_stage_close_refusals() -> None:
         lrun(repo, "add", "decision", "unlinked", "--owner", "user")
         code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-3")
         assert code == 1 and "--link S-1" in out, out
+        assert "ask the user" in out and "only after" in out, out
         code, out = lrun(repo, "stage-close", "S-1")
         assert code == 1 and "--sign-off" in out, out
         lrun(repo, "add", "decision", "old ok", "--owner", "user", "--link", "S-1")
@@ -553,6 +682,18 @@ def test_stage_close_refusals() -> None:
         assert s.status == "done" and "D-1" in s.links, s
         assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 1
         assert lrun(repo, "stage-close", "T-1", "--sign-off", "D-1")[0] == 1
+
+
+def test_stage_close_accepts_stage_field() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "01-a")
+        lrun(repo, "add", "stage", "02-b")
+        lrun(repo, "add", "decision", "01 done", "--owner", "user", "--stage", "S-1")
+        code, out = lrun(repo, "stage-close", "S-2", "--sign-off", "D-1")
+        assert code == 1 and "does not link S-2" in out, out
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 0 and out == "closed S-1: sign-off D-1\n", out
 
 
 def test_brief_check() -> None:
