@@ -13,8 +13,7 @@ Agents never touch hardware unless the user explicitly tells them to.
 - Agents write, dry-run, test against simulators and analyse; the user or an
   operator flashes, connects, runs and swaps parts. Why: rig time and device
   state are irreversible, and an agent cannot see the bench.
-- A task that needs a device call is parked in `pm/DEFERRED.md` with the exact
-  command, the operator, and what to bring back. Why: it must not block work.
+- A task that needs a device call is parked as `rk add deferred ... --owner user --note "<exact command; operator; what to bring back>"`. Why: it must not block work.
 - Teammates get no device access and make no commits; the lead briefs the user
   for lab steps. Why: one accountable operator per lab session.
 
@@ -33,7 +32,7 @@ or calibration-source change. "Operator-run" means the user runs it.
 | 5 | calibrate (operator-run) | user + analyst | dated calibration file, explanation note, script, raw folder, generated numbers file | residual or linearity criteria from the spec are met |
 | 6 | measure (operator-run, config-driven) | user | run folders with start and end records, queue log | each run meets its per-run pass criteria or is moved aside |
 | 7 | analyse | analyst | write-once analysis folders, `pm/README.md` "Load-bearing numbers" and "Do not quote" updated | a critic confirmed labels against code; a rerun matches by hash |
-| 8 | close | lead | stage README, debt list, open handoffs | user says "close stage"; the core close checklist is done |
+| 8 | close | lead | stage README, debt and handoff entries current | user says "close stage"; the core close checklist is done |
 
 ## Rules
 
@@ -78,5 +77,5 @@ or calibration-source change. "Operator-run" means the user runs it.
 
 29. List assistant-originated claims that had no source under `pm/README.md` "Do not quote" too. Why: they read as fact when they return.
 30. Add quoting rules beside each result block (per target, never a ranking, floors next to what they bound). Why: the critic who read the data writes the safest wording.
-31. Keep a debt list with a "Pay when" column; strike paid rows with date and evidence. Why: shortcuts otherwise rot into "later means never".
+31. Log each shortcut as `rk add debt "<what>" --note "pay when: <trigger>"`; when paid, `rk close DB-<n> --note "<evidence>"`. Why: shortcuts otherwise rot into "later means never".
 32. Log runs and lab-day steps under `pm/logs/` (step, command, log, start, end, status); pull data back from the rig into an ignored folder first, then import. Why: the record must show what really ran.

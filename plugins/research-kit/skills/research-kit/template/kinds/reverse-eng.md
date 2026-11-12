@@ -5,7 +5,7 @@ Applies to reimplementing a vendor-closed component (driver, protocol, file
 format, SDK) from the vendor's own material and observed behaviour. Read at
 session start and after every compact. Pairs with the `software` kind for the
 implementation stages; add it too. Core `AGENTS.md` still applies (evidence
-tags CONFIRMED / LIKELY / GUESS, `pm/DECISIONS.md`, `pm/DEFERRED.md`).
+tags CONFIRMED / LIKELY / GUESS, the ledger (core 4.2)).
 
 Stage folder: `pm/stages/NN-reverse-eng-<topic>/` (full mode); notes inside
 `notes/` are numbered `NN_<topic>.md`, a later note says which earlier lines it

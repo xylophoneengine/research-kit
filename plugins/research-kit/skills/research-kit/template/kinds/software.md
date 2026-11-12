@@ -4,7 +4,7 @@
 Applies to an app, library, tool or driver built with an orchestrator plus
 implementer agents. Read at session start and after every compact. Core
 `AGENTS.md` still applies: evidence tags (CONFIRMED / LIKELY / GUESS),
-`pm/DECISIONS.md`, `pm/DEFERRED.md`, critics, waste. These rules add to it,
+the ledger (core 4.2), critics, waste. These rules add to it,
 never relax it.
 
 Stage folder: `pm/stages/NN-software-<topic>/` (full mode). Light mode: use the
@@ -73,7 +73,7 @@ fit; without them, run each stage by hand from the rules below.
 Read `Git policy:` in the appendix of `AGENTS.md`; core section 7 defines both values (`user commits`, `orchestrator commits`). Software additions:
 
 - `user commits`: implementers work in the working tree on disjoint file sets, so parallel tasks never edit the same file.
-- `orchestrator commits`: only the lead merges into main (after both critics YES, the Done when check passes, and a named teammate has run the full suite with the lead reading the tail); a task ledger in the stage notes has one row per task (Tests / Impl / Review / Merged), each agent edits its own row at the main-checkout path.
+- `orchestrator commits`: only the lead merges into main (after both critics YES, the Done when check passes, and a named teammate has run the full suite with the lead reading the tail); one `task` entry per plan task; its note records Tests / Impl / Review / Merged (`rk set T-<n> --note ...`).
 
 ## Benchmarks / computational experiments
 

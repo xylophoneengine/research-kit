@@ -1,7 +1,7 @@
 <!-- research-kit-kind paper: 2026-11-13a -->
 # Kind: paper
 
-Rules for writing a research paper: literature, writing stages, citations. They add to the core `AGENTS.md`; they never relax it. Stage folders are `pm/stages/NN-paper-<topic>/` (full mode); in light mode the stage table is a checklist only. Evidence tags (CONFIRMED / LIKELY / GUESS), Done when, `pm/DECISIONS.md` and `pm/DEFERRED.md` work as in core. Placeholder `<ID>` = paper id from the appendix.
+Rules for writing a research paper: literature, writing stages, citations. They add to the core `AGENTS.md`; they never relax it. Stage folders are `pm/stages/NN-paper-<topic>/` (full mode); in light mode the stage table is a checklist only. Evidence tags (CONFIRMED / LIKELY / GUESS), Done when, the ledger (core 4.2) works as in core. Placeholder `<ID>` = paper id from the appendix.
 
 ## P0. Prerequisite: ARS skills (academic-research-skills plugin)
 
@@ -18,12 +18,12 @@ ARS = default tool for every literature and writing stage. Use it, don't reinven
 
 1. ARS check (P0).
 2. Create `paper/library/pdfs/` and `paper/archive/`. `paper/manuscript/` waits until the draft stage.
-3. Skeleton files, headings only (jr): `pm/living/paper_ledger.md` (first line `Repo tag: <tag>`, then header row from P5.1), `pm/living/FETCH_FAILED.md` (two tables: `## Open - fetch by hand` on top, `## Resolved` below).
+3. Skeleton files, headings only (jr): `pm/living/paper_ledger.md` (first line `Repo tag: <tag>`, then header row from P5.1).
 4. ASK user which reference-manager tag marks this repo's library entries (Zotero tag, e.g. `mypaper`). Short, lowercase, unique per paper repo, so every library entry traces to its repo. Propose one derived from `<ID>` as recommended option; user may type own. Never start any import or fetch before the tag is fixed. Record in appendix + first line of `pm/living/paper_ledger.md`.
 5. Appendix lines for this kind: working title + venue + length; authors (first/main, co-authors, supervisor); reference manager + repo tag; paper topic (3 lines, for scoping literature work).
 6. Existing material (thesis, draft, reference list)? -> open a seed stage (row 1, P3). Else -> open the goal + lit-scan stage (row 2). First ARS deliverable either way = `pm/living/GOALS.md`, agreed with user before any scan starts.
 
-Roles for this kind: user = first/main author; co-authors and supervisors get neutral wording in text. `pm/living/paper_ledger.md` and `FETCH_FAILED.md` are teammate files: the lead never edits them. Why: one writer per ledger keeps it in sync with the library.
+Roles for this kind: user = first/main author; co-authors and supervisors get neutral wording in text. `pm/living/paper_ledger.md` is a teammate file: the lead never edits it. Why: one writer per ledger keeps it in sync with the library.
 
 ## P2. Stage table
 
@@ -32,7 +32,7 @@ Column `#` = order, not stage number (NN is the next free number, core 3.1). Ada
 | # | stage | ARS skill (mode) | consumes | driver | deliverable | Done when |
 |---|-------|------------------|----------|--------|-------------|-----------|
 | 1 | seed existing material (optional, P3) | none (import teammates, P5.1-P5.3, P5.8) | existing refs, PDFs, bib | jr/sr | ledger, PDFs, tagged library entries, corpus passport | sync check passes (P5.1); passport validator exits 0; both critics YES |
-| 2 | goal + lit-scan | `deep-research` (`three-way-scan` / `lit-review` for scan; `socratic` optional for GOALS dialogue, skip if user has concrete goals) | passport if seeded | lead: GOALS dialogue, writes `pm/living/GOALS.md`, user confirms. exp/sr: scan | `pm/living/GOALS.md`, scan files ending in `## Candidates for paper_ledger.md` | user's GOALS sign-off logged in `pm/DECISIONS.md` before the scan starts; cross-audit file (P5.6) exists with every conflict resolved |
+| 2 | goal + lit-scan | `deep-research` (`three-way-scan` / `lit-review` for scan; `socratic` optional for GOALS dialogue, skip if user has concrete goals) | passport if seeded | lead: GOALS dialogue, writes `pm/living/GOALS.md`, user confirms. exp/sr: scan | `pm/living/GOALS.md`, scan files ending in `## Candidates for paper_ledger.md` | user's GOALS sign-off logged as a user decision (`rk add decision ... --owner user`) before the scan starts; cross-audit file (P5.6) exists with every conflict resolved |
 | 3 | source sync | none (import teammates, P5.1-P5.3) | candidates | jr/sr | ledger = PDFs = tagged library entries, passport rebuilt | sync check passes; passport fresh (P5.8) |
 | 4 | scan update | `deep-research` (`three-way-scan` / `lit-review` / `fact-check`, full-text re-read) | ledger, passport | exp read, sr audit | updated scans | cross-audit file exists, every conflict resolved |
 | 5 | experiments / benchmarks (only if new runs needed) | none (core 6 + software kind "Benchmarks"; add that kind first). `deep-research` `fact-check` only for literature claims | GOALS | sr/exp | `deliverables/bench/` | run sheet commands reproduce the outputs; both critics YES |
@@ -40,7 +40,7 @@ Column `#` = order, not stage number (NN is the next free number, core 3.1). Ada
 | 7 | plan | `academic-paper` (`plan`), session model | GOALS, scans, numbers | lead session (Socratic user dialogue) | `chapter_plan.md`, `insight_collection.md` | both files exist; both critics YES; user decisions logged verbatim |
 | 8 | outline | `academic-paper` (`outline-only`) | chapter_plan, insight_collection, passport | exp writer teammate | `outline.md`, `claims_register.md` | every claim in `claims_register.md` has an owner file; both critics YES |
 | 9 | full draft | `academic-paper` (`full`). `academic-pipeline` only phase-by-phase (Mode B: `ARS_PASSPORT_RESET=1` + `resume_from_passport`, one pipeline stage per paper stage), else it swallows rows 10-12 | outline, claims_register, passport | exp writer, sr support | `paper/manuscript/current/` | both critics YES; `citation-check` run with no open error; README records which integrity gate ran (`academic-pipeline` mid-entry at Stage 2.5, stopped at its checkpoint), or none |
-| 10 | review | `academic-paper-reviewer` (`full`; `methodology-focus` for method-heavy paper) | draft | exp | `paper/manuscript/reviews/`; keep Revision Roadmap + Round-1 reviewer config cards (needed by `re-review`) | panel report and Roadmap files exist; user has read the panel report (logged in `pm/DECISIONS.md`) |
+| 10 | review | `academic-paper-reviewer` (`full`; `methodology-focus` for method-heavy paper) | draft | exp | `paper/manuscript/reviews/`; keep Revision Roadmap + Round-1 reviewer config cards (needed by `re-review`) | panel report and Roadmap files exist; user has read the panel report (logged as a user decision, `rk add decision ... --owner user`) |
 | 11 | revision | `academic-paper` (`revision`; `revision-coach` on real reviewer comments; `rebuttal-audit` on response letter), then `academic-paper-reviewer` (`re-review`) | Roadmap, pre-revision draft, response letter, Round-1 cards, author sidecar (else `re-review` returns `manifest_incomplete`) | exp | new `paper/manuscript/versions/vNN_*`, response letter | `re-review` marks every Roadmap item resolved or rebutted; both critics YES |
 | 12 | finalize | `academic-paper` (`abstract-only` with language pair from outline Phase 0; `citation-check`, `disclosure`, `format-convert`) | final draft | sr | final manuscript, disclosure | final `citation-check` with no open error; README records which gate ran (Stage 4.5 exists only inside `academic-pipeline`), or none; user sign-off logged |
 
@@ -108,7 +108,7 @@ Rules to paste into every brief that touches the manager (the skill has the proc
 1. Reference manager first (children check on ledger key; if a PDF child exists, copy it from manager storage, never fetch). Reads never gated, writes are.
 2. Unpaywall / publisher OA link via curl.
 3. Browser automation (downloads land in `~/Downloads`; move into `paper/library/pdfs/`).
-4. On failure add a row to the TOP table `## Open - fetch by hand` of `pm/living/FETCH_FAILED.md` (key, title, DOI, best URL, target filename, manager key) and a pointer row in `pm/DEFERRED.md`. Top table = only what the user must still fetch by hand. When the user drops the PDF in, the next import teammate attaches it, flips ledger status, MOVES the row to `## Resolved` marked `DONE`.
+4. On failure: `rk add fetch "<key>: <title>" --note "DOI ...; URL ...; file <target filename>; manager <key>" --link <task id> --who <name>`. Open fetch entries are what the user still fetches by hand (STATUS.md "Open fetches"). When the PDF arrives, the import teammate attaches it, flips the ledger status, and runs `rk close F-<n> --note "attached"`. No pointer row anywhere else.
 Never use paywall-circumvention sites. Fetcher reporting `FAILED` for a PDF already in the manager = brief error.
 
 ### P5.4 PDF reading mode (every read / audit / scan brief states it)
@@ -125,7 +125,7 @@ Scan -> cross-audit by a teammate on a DIFFERENT model (expert read -> senior au
 
 ### P5.7 Corpus saturation
 
-Declare literature saturated explicitly (user decision, dated, in `pm/DECISIONS.md`) after the last scan stops producing narrowing prior art. Log follow-up refs as "not fetched". Saturated corpus = skip outline Phase 1.
+Declare literature saturated explicitly (user decision entry, dated by the ledger: `rk add decision ... --owner user`) after the last scan stops producing narrowing prior art. Log follow-up refs as "not fetched". Saturated corpus = skip outline Phase 1.
 
 ### P5.8 ARS corpus passport
 
@@ -139,6 +139,6 @@ ARS reads our sources only as `literature_corpus[]` in a Material Passport (`pas
 
 ## P6. Writing stages (plan -> outline -> draft -> review -> revise)
 
-- Plan stage: Socratic chapter-by-chapter (lead session, user dialogue), argument stress test on goals + numbers. Output `chapter_plan.md`, `insight_collection.md`. Each user decision logged verbatim with date in the stage `BRIEF.md` or `pm/DECISIONS.md`.
+- Plan stage: Socratic chapter-by-chapter (lead session, user dialogue), argument stress test on goals + numbers. Output `chapter_plan.md`, `insight_collection.md`. Each user decision is a decision entry (`rk add decision ... --owner user`, the user's words in `--note`).
 - Outline stage: structure, word budget per section, figure/table plan, evidence map (every claim -> source key), transitions, open items carried to draft; `claims_register.md`. Phase 0 confirms genre, venue, citation style, abstract language, length.
 - Every written deliverable runs the critic loop (core 2.2) before the user sees it: writer teammate (expert) -> `crit1` + `crit2` -> fix -> v2 -> v3 at most (two fix rounds), then escalate. Keep every version. Why: the user's reading time is the scarcest review.
