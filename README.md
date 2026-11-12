@@ -33,6 +33,30 @@ uses it. Agents only answer to the `research-kit:` name.
 Then restart Claude Code (or `/reload-plugins`). Requirements: `bash`, `jq`,
 `python3` (stdlib only).
 
+### Enable agent teams (needed by `/team`)
+
+`/team` spawns named teammates that stay addressable (`SendMessage`) and can be
+reused across rounds. That is Claude Code's experimental agent-teams feature;
+without it a named spawn is a one-shot subagent. Turn it on in
+`~/.claude/settings.json` (merge into an existing `env` block):
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  }
+}
+```
+
+Restart Claude Code. Check: in a new session, `/team juniors=1 critics=0 <tiny task>`
+should show a teammate named `jr1` that you can message after it finishes.
+
+### Updating
+
+Plugins install as a copy. After pulling a new version (or editing a local
+clone), run `claude plugin marketplace update research-kit`, then
+`/plugin` -> update `research-kit` (and `research-kit-lit`), and restart.
+
 ## Kinds
 
 One file per kind, copied to `pm/kinds/<kind>.md` in your repo. Add kinds as
