@@ -28,7 +28,8 @@ The command argument says the mode: init, add-kind, upgrade, sync or close.
    - git policy: `user` (the user commits) or `orchestrator` (the lead commits
      and merges);
    - global note: "Add the research-kit team-roles note to your global
-     `~/.claude/CLAUDE.md`?" yes (recommended) / no.
+     `~/.claude/CLAUDE.md`?" yes (recommended) / no. Run `global-rules` (dry
+     run) first; if it prints "up to date", drop this question and step 5.
 2. Run `init <repo_dir> --kinds <k1,k2> --mode <full|light> --git <user|orchestrator>`.
    Exit 1 = repo already initialised or unknown kind: tell the user, stop.
 3. Follow the kind files' own start-up steps with the user (each kind file
