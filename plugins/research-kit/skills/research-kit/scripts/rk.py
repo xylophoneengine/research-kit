@@ -24,6 +24,11 @@ and --who NAME):
       [--link ID]... [--ref PATH]...
   python3 -I rk.py supersede ID TITLE --owner NAME [--note T] [--link ID]...
       [--ref PATH]...
+  python3 -I rk.py list [--type T] [--owner N] [--stage S] [--limit N] [--all]
+  python3 -I rk.py show ID
+  python3 -I rk.py search TEXT [--type T] [--limit N]
+  python3 -I rk.py recent [-n N]
+  python3 -I rk.py render
 """
 
 from __future__ import annotations

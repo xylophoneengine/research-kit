@@ -345,6 +345,167 @@ def test_append_only() -> None:
             assert (repo / L.LEDGER_REL).read_bytes().startswith(old), cmd
 
 
+def seed_views(repo: Path) -> None:
+    """Stage S-1, tasks T-1..T-4, D-1 superseded by D-2, F-1, DB-1, H-1, DF-1."""
+    lrun(repo, "add", "stage", "03-software-x")
+    lrun(repo, "add", "task", "Loader", "--owner", "sr1")
+    lrun(repo, "start", "T-1")
+    lrun(repo, "add", "task", "Parser")
+    lrun(repo, "add", "task", "Ask the user", "--owner", "user")
+    lrun(repo, "add", "task", "Old")
+    lrun(repo, "close", "T-4", "--note", "done long ago")
+    lrun(repo, "add", "decision", "metric dE76", "--owner", "user")
+    lrun(repo, "supersede", "D-1", "metric dE00", "--owner", "user")
+    lrun(repo, "add", "fetch", "smith2020: A paper")
+    lrun(repo, "add", "debt", "hardcoded path")
+    lrun(repo, "add", "handoff", "continue in a new session")
+    lrun(repo, "add", "deferred", "plot later")
+
+
+def sections(text: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    head: str | None = None
+    for ln in text.splitlines():
+        if ln.startswith("## "):
+            head = ln
+            out[head] = ""
+        elif head is not None:
+            out[head] += ln + "\n"
+    return out
+
+
+def test_status_md_sections() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        seed_views(repo)
+        st: str = (repo / L.STATUS_REL).read_text()  # no render call: automatic
+        assert st.startswith("# Status (generated)\n"), st
+        assert "Generated from pm/ledger.jsonl by rk.py at" in st.splitlines()[2]
+        sec: dict[str, str] = sections(st)
+        assert "T-1" in sec["## Running"] and "sr1" in sec["## Running"]
+        assert "T-3" in sec["## Needs you"]
+        assert "T-3" not in sec["## Open tasks"] and "T-2" in sec["## Open tasks"]
+        assert "T-4" not in st and "D-1" not in st
+        assert "D-2" in sec["## Recent decisions"]
+        assert "F-1" in sec["## Open fetches"] and "DB-1" in sec["## Open debt"]
+        assert "H-1" in sec["## Open handoffs"] and "DF-1" in sec["## Deferred"]
+        assert "tasks: 1 running, 2 open" in sec["## Stages"], sec["## Stages"]
+        lrun(repo, "close", "T-1", "--note", "ok")
+        assert "## Running" not in (repo / L.STATUS_REL).read_text()
+
+
+def test_status_declared_type_and_recent_decisions() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        (repo / "pm/kinds/k.md").write_text("<!-- rk:type sample SM -->\n")
+        lrun(repo, "add", "sample", "a sample")
+        lrun(repo, "add", "decision", "early", "--owner", "user")  # no stage
+        sec: dict[str, str] = sections((repo / L.STATUS_REL).read_text())
+        assert "SM-1" in sec["## Open sample"]
+        assert "D-1" in sec["## Recent decisions"]  # no stage is open: all count
+        lrun(repo, "add", "stage", "03-x")
+        for i in range(7):
+            lrun(repo, "add", "decision", f"dec {i}", "--owner", "user")
+        lrun(repo, "add", "stage", "04-y")
+        lrun(repo, "add", "decision", "last", "--owner", "user", "--stage", "04-y")
+        sec = sections((repo / L.STATUS_REL).read_text())
+        rec: str = sec["## Recent decisions"]
+        assert len(rec.splitlines()) == 5 and "D-9" in rec and "D-5" in rec, rec
+        assert "D-4" not in rec and "D-1 " not in rec
+
+
+def test_render_command() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        (repo / L.LEDGER_REL).write_text(ev_line("T-1", "by hand"))
+        assert not (repo / L.STATUS_REL).exists()
+        code, out = lrun(repo, "render")
+        assert code == 0 and out == "wrote pm/STATUS.md (1 open)\n", out
+        assert "T-1" in (repo / L.STATUS_REL).read_text()
+
+
+def test_list_default_and_filters() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        seed_views(repo)
+        out: str = lrun(repo, "list")[1]
+        assert out.splitlines()[0].startswith("open "), out
+        assert "D-2" not in out and "T-4" not in out
+        lines: list[str] = lrun(repo, "list", "--type", "task")[1].splitlines()
+        assert all(ln.startswith("T-") for ln in lines[1:]), lines
+        assert lines[1].startswith("T-1"), lines  # running first
+        assert "T-3" in lrun(repo, "list", "--owner", "user")[1]
+        assert "T-1" in lrun(repo, "list", "--stage", "03-software-x")[1]
+        assert lrun(repo, "list", "--type", "tsak")[0] == 1
+        assert "T-4" in lrun(repo, "list", "--all")[1]
+        head: str = out.splitlines()[0]
+        assert head.startswith("open 8 (running 1): task 3"), head
+
+
+def test_list_size_bound() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        title: str = "t" * 120
+        rows: list[str] = []
+        for i in range(1, 51):
+            status: str = "running" if i <= 10 else "open"
+            rows.append(ev_line(f"T-{i}", title, "task", status))
+        for i in range(51, 151):
+            rows.append(ev_line(f"T-{i}", title, "task", "done"))
+        for i in range(1, 11):
+            rows.append(ev_line(f"DB-{i}", title, "debt"))
+        for i in range(1, 41):
+            rows.append(ev_line(f"D-{i}", title, "decision", "done"))
+        (repo / L.LEDGER_REL).write_text("".join(rows))
+        out: str = lrun(repo, "list")[1]
+        assert len(out.encode()) <= L.LIST_MAX_BYTES, len(out.encode())
+        assert all(len(ln) <= L.LINE_MAX for ln in out.splitlines())
+        assert out.splitlines()[-1].startswith("+30 more"), out.splitlines()[-1]
+        full: list[str] = lrun(repo, "list", "--limit", "0")[1].splitlines()
+        assert len(full) == 61, len(full)
+
+
+def test_show_history() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "task", "Loader", "--note", "line1\nline2")
+        lrun(repo, "start", "T-1")
+        out: str = lrun(repo, "show", "T-1")[1]
+        assert "title: Loader" in out and "history:" in out, out
+        assert " add " in out and " set " in out and "status=running" in out, out
+        hist: list[str] = out.split("history:\n")[1].splitlines()
+        assert len(hist) == 2 and all(h.startswith("  ") for h in hist), hist
+        assert lrun(repo, "show", "T-99")[0] == 1
+
+
+def test_search() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "task", "Fix Loader")
+        lrun(repo, "close", "T-1", "--note", "ok")
+        lrun(
+            repo, "add", "task", "Old row", "--imported", "--legacy-id", "07-12",
+            "--source", "pm/living/TASKS.md:44",
+        )
+        assert "T-1 done" in lrun(repo, "search", "loader")[1]
+        assert "[src pm/living/TASKS.md:44]" in lrun(repo, "search", "07-12")[1]
+        assert lrun(repo, "search", "loader", "--type", "decision")[1] == ""
+        assert lrun(repo, "search", "zzz")[1] == ""
+        assert lrun(repo, "search", "x", "--type", "tsak")[0] == 1
+
+
+def test_recent() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "task", "a")
+        lrun(repo, "add", "task", "b")
+        lrun(repo, "add", "task", "c")
+        lrun(repo, "start", "T-1")
+        out: list[str] = lrun(repo, "recent", "-n", "3")[1].splitlines()
+        assert len(out) == 3 and " T-1 " in out[0] and " set " in out[0], out
+        assert " T-3 " in out[1] and " T-2 " in out[2], out
+
+
 def main() -> int:
     tests: list[tuple[str, Callable[[], None]]] = [
         (n, f) for n, f in globals().items() if n.startswith("test_") and callable(f)

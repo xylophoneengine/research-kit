@@ -37,13 +37,21 @@ TYPE_DECL_RE: re.Pattern[str] = re.compile(
 )
 NAME_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_.-]+$")
 COMMANDS: frozenset[str] = frozenset(
-    {"add", "start", "close", "drop", "reopen", "set", "supersede"}
+    {
+        "add", "start", "close", "drop", "reopen", "set", "supersede",
+        "list", "show", "search", "recent", "render",
+    }
 )
 HINT: str = (
     "fix the line by hand outside Claude (agents' edits of the ledger are blocked)"
 )
 STR_FIELDS: tuple[str, ...] = ("type", "title", "status", "owner", "stage", "note")
 LIST_FIELDS: tuple[str, ...] = ("links", "refs")
+LIST_LIMIT: int = 30
+SEARCH_LIMIT: int = 20
+LINE_MAX: int = 80
+LIST_MAX_BYTES: int = 2600  # proposed bound (spec 9), pinned by test_list_size_bound
+RECENT_DECISIONS: int = 5
 
 
 class LedgerError(Exception):
@@ -242,6 +250,7 @@ def append(
             state: dict[str, Entry] = fold(_parse(raw))
             new: list[dict[str, object]] = build(state)
             if not new:
+                write_status(repo, state)
                 return state
             data: bytes = "".join(json.dumps(e) + "\n" for e in new).encode("ascii")
             if raw and not raw.endswith(b"\n"):
@@ -250,6 +259,7 @@ def append(
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
+            write_status(repo, new_state)
         finally:
             fcntl.flock(fh, fcntl.LOCK_UN)
     return new_state
@@ -296,6 +306,181 @@ def _title(value: str) -> str:
 
 def _repo(a: argparse.Namespace) -> Path:
     return find_repo(a.repo, explicit=True) if a.repo else find_repo(Path.cwd())
+
+
+# ---- views ------------------------------------------------------------------
+
+
+def age(ts: str, now: datetime) -> str:
+    """'45m', '5h' or '3d'; a date-only ts counts from local midnight."""
+    try:
+        then: datetime = datetime.fromisoformat(ts).astimezone()
+    except ValueError:
+        return "?"
+    secs: int = max(int((now - then).total_seconds()), 0)
+    if secs < 3600:
+        return f"{secs // 60}m"
+    if secs < 86400:
+        return f"{secs // 3600}h"
+    return f"{secs // 86400}d"
+
+
+def _num(eid: str) -> int:
+    return int(eid.rsplit("-", 1)[1])
+
+
+def _is_open(e: Entry) -> bool:
+    return e.status in OPEN_STATUSES
+
+
+def _imported(e: Entry) -> bool:
+    return e.extra.get("imported") is True
+
+
+def _sort_key(e: Entry) -> tuple[int, int, str, int]:
+    """Running first, then open, then the rest; then type order, then id number."""
+    rank: int = 0 if e.status == "running" else 1 if _is_open(e) else 2
+    builtin: list[str] = list(BUILTIN_TYPES)
+    trank: int = builtin.index(e.type) if e.type in builtin else len(builtin)
+    return (rank, trank, e.type, _num(e.id))
+
+
+def _clip(line: str, width: int = LINE_MAX) -> str:
+    return line if len(line) <= width else line[: width - 3] + "..."
+
+
+def _item(e: Entry, now: datetime) -> str:
+    return (
+        f"- {e.id} ({e.owner}, {age(e.created, now)}) {e.title}"
+        + (" [imported]" if _imported(e) else "")
+    )
+
+
+def _stage_line(e: Entry, state: dict[str, Entry], now: datetime) -> str:
+    mine: list[Entry] = [
+        x for x in state.values() if x.type == "task" and x.stage == e.id
+    ]
+    parts: list[str] = [
+        f"{n} {s}"
+        for s in OPEN_STATUSES[::-1]
+        if (n := sum(1 for x in mine if x.status == s))
+    ]
+    tasks: str = ", ".join(parts) or "none"
+    return f"- {e.id} {e.title} ({e.status} {age(e.created, now)}; tasks: {tasks})"
+
+
+def render_status(state: dict[str, Entry], now: datetime) -> str:
+    open_: list[Entry] = sorted(
+        (e for e in state.values() if _is_open(e)), key=_sort_key
+    )
+    stages: list[Entry] = [e for e in open_ if e.type == "stage"]
+    rest: list[Entry] = [e for e in open_ if e.type != "stage"]
+    stamp: str = now.isoformat(timespec="seconds")
+    out: list[str] = [
+        "# Status (generated)",
+        "",
+        f"Generated from {LEDGER_REL} by rk.py at {stamp}. "
+        f"Do not edit: hand edits are blocked and overwritten. Open: {len(open_)}.",
+    ]
+
+    def section(title: str, lines: list[str]) -> None:
+        if lines:
+            out.extend(["", f"## {title}", *lines])
+
+    section("Stages", [_stage_line(e, state, now) for e in stages])
+    section(
+        "Running",
+        [_item(e, now) for e in rest if e.status == "running" and e.owner != "user"],
+    )
+    section("Needs you", [_item(e, now) for e in rest if e.owner == "user"])
+    fixed: dict[str, str] = {
+        "task": "Open tasks",
+        "fetch": "Open fetches",
+        "debt": "Open debt",
+        "handoff": "Open handoffs",
+        "deferred": "Deferred",
+    }
+    declared: list[str] = sorted({e.type for e in rest} - set(BUILTIN_TYPES))
+    for typ, title in [*fixed.items(), *((t, f"Open {t}") for t in declared)]:
+        section(
+            title,
+            [
+                _item(e, now)
+                for e in rest
+                if e.type == typ and e.status == "open" and e.owner != "user"
+            ],
+        )
+    stage_ids: set[str] = {e.id for e in stages}
+    decs: list[Entry] = [
+        e
+        for e in state.values()
+        if e.type == "decision"
+        and e.status == "done"
+        and (not stage_ids or e.stage in stage_ids)
+    ]
+    decs.sort(key=lambda e: e.lines[0], reverse=True)
+    section(
+        "Recent decisions",
+        [
+            f"- {e.id} ({e.owner}, {e.created[:10]}) {e.title}"
+            for e in decs[:RECENT_DECISIONS]
+        ],
+    )
+    return "\n".join(out) + "\n"
+
+
+def write_status(repo: Path, state: dict[str, Entry]) -> None:
+    path: Path = repo / STATUS_REL
+    tmp: Path = path.with_name(path.name + ".tmp")
+    tmp.write_text(
+        render_status(state, datetime.now().astimezone()), encoding="utf-8"
+    )
+    os.replace(tmp, path)
+
+
+def _more(k: int) -> str:
+    return f"+{k} more: narrow with --type/--owner/--stage, or --limit 0"
+
+
+def format_list(
+    state: dict[str, Entry],
+    now: datetime,
+    *,
+    type_: str | None,
+    owner: str | None,
+    stage: str | None,
+    limit: int,
+    include_closed: bool,
+) -> str:
+    rows: list[Entry] = [
+        e
+        for e in state.values()
+        if (type_ is None or e.type == type_)
+        and (owner is None or e.owner == owner)
+        and (stage is None or e.stage == stage)
+    ]
+    opens: list[Entry] = [e for e in rows if _is_open(e)]
+    shown: list[Entry] = sorted(rows if include_closed else opens, key=_sort_key)
+    counts: dict[str, int] = {}
+    for e in sorted(opens, key=_sort_key):
+        counts[e.type] = counts.get(e.type, 0) + 1
+    running: int = sum(1 for e in opens if e.status == "running")
+    head: str = f"open {len(opens)} (running {running})"
+    if counts:
+        head += ": " + ", ".join(f"{t} {c}" for t, c in counts.items())
+    lines: list[str] = [head]
+    cap: list[Entry] = shown[:limit] if limit else shown
+    for e in cap:
+        title: str = ("[imp] " if _imported(e) else "") + e.title
+        lines.append(
+            _clip(
+                f"{e.id:<6}{e.status:<8}{e.owner[:8]:<9}"
+                f"{age(e.created, now):>4}  {title}"
+            )
+        )
+    if len(cap) < len(shown):
+        lines.append(_more(len(shown) - len(cap)))
+    return "\n".join(lines)
 
 
 # ---- commands ---------------------------------------------------------------
@@ -539,6 +724,118 @@ def _cmd_supersede(a: argparse.Namespace) -> int:
     return 0
 
 
+def _nonneg(value: int, flag: str) -> int:
+    if value < 0:
+        raise LedgerError(f"{flag} must not be negative")
+    return value
+
+
+def _cmd_list(a: argparse.Namespace) -> int:
+    repo: Path = _repo(a)
+    state: dict[str, Entry] = load(repo)
+    typ: str | None = check_type(a.type, known_types(repo)) if a.type else None
+    stage: str | None = resolve_stage(state, a.stage) if a.stage else None
+    print(
+        format_list(
+            state,
+            datetime.now().astimezone(),
+            type_=typ,
+            owner=a.owner,
+            stage=stage,
+            limit=_nonneg(a.limit, "--limit"),
+            include_closed=a.all,
+        )
+    )
+    return 0
+
+
+def _val(v: object) -> str:
+    s: str = v if isinstance(v, str) else json.dumps(v)
+    return s.replace("\n", "\\n")[:60]
+
+
+def _cmd_show(a: argparse.Namespace) -> int:
+    repo: Path = _repo(a)
+    events: list[tuple[int, dict[str, object]]] = read_events(repo)
+    e: Entry = _entry(fold(events), a.id)
+    fields: list[tuple[str, str]] = [
+        ("id", e.id), ("type", e.type), ("title", e.title), ("status", e.status),
+        ("owner", e.owner), ("stage", e.stage),
+        ("note", e.note.replace("\n", "\\n")),
+        ("links", ", ".join(e.links)), ("refs", ", ".join(e.refs)),
+        ("created", e.created), ("updated", e.updated),
+        *((k, str(v)) for k, v in e.extra.items()),
+    ]
+    for k, v in fields:
+        print(f"{k}: {v}")
+    print("history:")
+    for _, ev in events:
+        if ev.get("id") != e.id:
+            continue
+        f: object = ev.get("f")
+        pairs: str = ", ".join(
+            f"{k}={_val(v)}" for k, v in (f.items() if isinstance(f, dict) else [])
+        )
+        print(f"  {ev.get('ts')} {ev.get('who')} {ev.get('ev')} {pairs}")
+    return 0
+
+
+def _cmd_search(a: argparse.Namespace) -> int:
+    repo: Path = _repo(a)
+    state: dict[str, Entry] = load(repo)
+    typ: str | None = check_type(a.type, known_types(repo)) if a.type else None
+    needle: str = a.text.lower()
+    hits: list[Entry] = [
+        e
+        for e in state.values()
+        if (typ is None or e.type == typ)
+        and any(
+            needle in str(s).lower()
+            for s in (e.title, e.note, e.extra.get("legacy_id", ""),
+                      e.extra.get("source", ""))
+        )
+    ]
+    limit: int = _nonneg(a.limit, "--limit")
+    cap: list[Entry] = hits[:limit] if limit else hits
+    for e in cap:
+        src: str = f" [src {e.extra['source']}]" if _imported(e) else ""
+        print(f"{e.id} {e.status}: {e.title[:60]}{src}")
+    if len(cap) < len(hits):
+        print(_more(len(hits) - len(cap)))
+    return 0
+
+
+def _cmd_recent(a: argparse.Namespace) -> int:
+    repo: Path = _repo(a)
+    events: list[tuple[int, dict[str, object]]] = read_events(repo)
+    state: dict[str, Entry] = fold(events)
+    if a.n < 1:
+        raise LedgerError("-n must be at least 1")
+    seen: set[str] = set()
+    for _, ev in reversed(events):
+        eid: str = str(ev["id"])
+        if eid in seen:
+            continue
+        seen.add(eid)
+        e: Entry = state[eid]
+        print(
+            _clip(
+                f"{str(ev['ts'])[:16]} {ev['who']} {ev['ev']} {eid} "
+                f"{e.status}: {e.title}"
+            )
+        )
+        if len(seen) == a.n:
+            break
+    return 0
+
+
+def _cmd_render(a: argparse.Namespace) -> int:
+    repo: Path = _repo(a)
+    state: dict[str, Entry] = append(repo, lambda s: [])
+    print(f"wrote {STATUS_REL} ({sum(1 for e in state.values() if _is_open(e))} open)")
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     common: argparse.ArgumentParser = argparse.ArgumentParser(add_help=False)
     common.add_argument("--repo", type=Path, default=None)
@@ -582,6 +879,21 @@ def _parser() -> argparse.ArgumentParser:
     pu.add_argument("--note", default="")
     pu.add_argument("--link", action="append", default=[])
     pu.add_argument("--ref", action="append", default=[])
+    pl: argparse.ArgumentParser = sub.add_parser("list", parents=[common])
+    pl.add_argument("--type", default=None)
+    pl.add_argument("--owner", default=None)
+    pl.add_argument("--stage", default=None)
+    pl.add_argument("--limit", type=int, default=LIST_LIMIT)
+    pl.add_argument("--all", action="store_true")
+    ph: argparse.ArgumentParser = sub.add_parser("show", parents=[common])
+    ph.add_argument("id")
+    pq: argparse.ArgumentParser = sub.add_parser("search", parents=[common])
+    pq.add_argument("text")
+    pq.add_argument("--type", default=None)
+    pq.add_argument("--limit", type=int, default=SEARCH_LIMIT)
+    pr: argparse.ArgumentParser = sub.add_parser("recent", parents=[common])
+    pr.add_argument("-n", type=int, default=10)
+    sub.add_parser("render", parents=[common])
     return p
 
 
@@ -593,6 +905,11 @@ HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "reopen": _close_drop_reopen,
     "set": _cmd_set,
     "supersede": _cmd_supersede,
+    "list": _cmd_list,
+    "show": _cmd_show,
+    "search": _cmd_search,
+    "recent": _cmd_recent,
+    "render": _cmd_render,
 }
 
 
