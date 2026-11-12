@@ -191,9 +191,9 @@ stage opens in a fresh session named after its folder (`/rename`).
 | 09 | "open stage: finalize" | `abstract-only`, `citation-check`, `disclosure`, `format-convert`; done when `citation-check` has no open error |
 
 Any session: "get ready for compact" writes a handoff in `pm/handoffs/compact/`,
-then `/compact`, and the session resumes from it. A blocker or a decision only
-you can make goes to the ledger (an open `decision` or a `deferred` entry); the
-lead asks instead of guessing.
+then `/compact`, and the session resumes from it. A blocker or a question only
+you can answer goes to the ledger as a `deferred` entry (owner: user); the lead
+asks instead of guessing. A decision is logged once you have made it.
 
 After stage 03 the repo looks like:
 
