@@ -21,19 +21,23 @@ The command argument says the mode: init, add-kind, upgrade, sync or close.
 
 ## init (repo has no `AGENTS.md`)
 
-1. Ask the user with AskUserQuestion, all three in one call:
+1. Ask the user with AskUserQuestion, all four in one call:
    - kinds (`multiSelect: true`; the five ids above);
    - mode: `full` (stage folders, close checklist) or `light` (no stage
      folders; critics, DECISIONS/DEFERRED, logs, handoffs stay);
    - git policy: `user` (the user commits) or `orchestrator` (the lead commits
-     and merges).
+     and merges);
+   - global note: "Add the research-kit team-roles note to your global
+     `~/.claude/CLAUDE.md`?" yes (recommended) / no.
 2. Run `init <repo_dir> --kinds <k1,k2> --mode <full|light> --git <user|orchestrator>`.
    Exit 1 = repo already initialised or unknown kind: tell the user, stop.
 3. Follow the kind files' own start-up steps with the user (each kind file
    says what to ask), then the appendix lines (project name, repo tag).
 4. `init` also writes a marked `## Compact Instructions` block into the repo's
    `CLAUDE.md` (created if missing; existing text kept).
-5. Tell the user: new session needed to load the rules; commits follow the
+5. Only on yes to the global note: run `global-rules --write` (marked block in
+   `~/.claude/CLAUDE.md`; text outside kept). Never run without that yes.
+6. Tell the user: new session needed to load the rules; commits follow the
    chosen git policy.
 
 ## add-kind
@@ -71,7 +75,9 @@ Output "already full" = nothing to do.
 4. `sync` also refreshes the marked `## Compact Instructions` block in
    `CLAUDE.md` (diff shown in the dry run, written only with `--write`; text
    outside the markers is never touched, never counts as DROPPED).
-5. Tell the user: AGENTS.md loads at session start, so running teammates and
+5. If `~/.claude/CLAUDE.md` already holds the `research-kit:global` block, show
+   the `global-rules` dry-run diff; run it with `--write` only with consent.
+6. Tell the user: AGENTS.md loads at session start, so running teammates and
    this session keep the old rules; start a new session.
 
 ## close (user says "close stage", or `/rk-close`)

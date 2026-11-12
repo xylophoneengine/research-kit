@@ -42,6 +42,7 @@ def fake_template(root: Path) -> Path:
     shutil.copy(
         REAL_TEMPLATE / "compact-instructions.md", tpl / "compact-instructions.md"
     )
+    shutil.copy(REAL_TEMPLATE / "global-claude.md", tpl / "global-claude.md")
     (tpl / "AGENTS.md").write_text(FAKE_CORE)
     for k in rk.KINDS:
         (tpl / "kinds" / f"{k}.md").write_text(
@@ -491,6 +492,29 @@ def test_sync_dry_run_does_not_write_compact() -> None:
         assert code == 0 and "Compact Instructions" in out, out
         assert "DROPPED" not in out and "dry run" in out, out
         assert snapshot(repo) == before
+
+
+def test_global_rules() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        setup(Path(d))
+        f: Path = Path(d) / "home" / "CLAUDE.md"
+        before: dict[str, bytes | None] = snapshot(Path(d))
+        code, out = run(rk.cmd_global_rules, f, False)
+        assert code == 0 and "dry run" in out and "team roles" in out, out
+        assert snapshot(Path(d)) == before and not f.exists()
+        code, out = run(rk.cmd_global_rules, f, True)
+        body: str = (rk.TEMPLATE_DIR / "global-claude.md").read_text()
+        want: str = f"{rk.GB_START}\n{body}{rk.GB_END}\n"
+        assert code == 0 and f.read_text() == want, f.read_text()
+        _, out = run(rk.cmd_global_rules, f, True)
+        assert out == "up to date\n" and f.read_text() == want, out
+        above: str = "# Mine\n\n\tuser rule  \n"
+        below: str = "\n## Tail\nno trailing newline"
+        f.write_text(above + want.replace("team roles", "OLD") + below)
+        run(rk.cmd_global_rules, f, True)
+        text: str = f.read_text()
+        assert text == above + want + below, text
+        assert rk.CB_START not in text
 
 
 def main() -> int:

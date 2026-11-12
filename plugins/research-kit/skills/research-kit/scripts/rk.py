@@ -170,12 +170,17 @@ CB_START: str = "<!-- research-kit:compact >>> -->"
 CB_END: str = "<!-- <<< research-kit:compact -->"
 
 
-def compact_text(old: str) -> str:
-    """`old` with the Compact Instructions block added once or refreshed."""
-    body: str = (TEMPLATE_DIR / "compact-instructions.md").read_text().rstrip("\n")
-    block: str = f"{CB_START}\n{body}\n{CB_END}\n"
+def compact_text(
+    old: str,
+    tpl: str = "compact-instructions.md",
+    start: str = CB_START,
+    end: str = CB_END,
+) -> str:
+    """`old` with the marked template block added once or refreshed."""
+    body: str = (TEMPLATE_DIR / tpl).read_text().rstrip("\n")
+    block: str = f"{start}\n{body}\n{end}\n"
     pat: re.Pattern[str] = re.compile(
-        rf"^{re.escape(CB_START)}$.*?^{re.escape(CB_END)}$\n?", re.M | re.S
+        rf"^{re.escape(start)}$.*?^{re.escape(end)}$\n?", re.M | re.S
     )
     if pat.search(old):
         return pat.sub(lambda _m: block, old, count=1)
@@ -185,16 +190,48 @@ def compact_text(old: str) -> str:
     return f"{old}{sep}{block}"
 
 
-def ensure_compact_block(repo_dir: Path, write: bool) -> tuple[bool, str]:
-    """Add/refresh the marked block in CLAUDE.md; (changed, unified diff)."""
-    path: Path = repo_dir / "CLAUDE.md"
+def ensure_block(
+    path: Path, name: str, tpl: str, start: str, end: str, write: bool
+) -> tuple[bool, str]:
+    """Add/refresh a marked block in `path`; (changed, unified diff)."""
     old: str = path.read_text() if path.exists() else ""
-    new: str = compact_text(old)
+    new: str = compact_text(old, tpl, start, end)
     if new == old:
         return False, ""
     if write:
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(new)
-    return True, _diff(old, new, "CLAUDE.md")
+    return True, _diff(old, new, name)
+
+
+def ensure_compact_block(repo_dir: Path, write: bool) -> tuple[bool, str]:
+    """Add/refresh the marked block in CLAUDE.md; (changed, unified diff)."""
+    return ensure_block(
+        repo_dir / "CLAUDE.md",
+        "CLAUDE.md",
+        "compact-instructions.md",
+        CB_START,
+        CB_END,
+        write,
+    )
+
+
+GB_START: str = "<!-- research-kit:global >>> -->"
+GB_END: str = "<!-- <<< research-kit:global -->"
+
+
+def cmd_global_rules(claude_md: Path, write: bool) -> int:
+    """Team-roles block in the global CLAUDE.md; dry run unless `write`."""
+    changed, diff = ensure_block(
+        claude_md, str(claude_md), "global-claude.md", GB_START, GB_END, write
+    )
+    if not changed:
+        print("up to date")
+    elif write:
+        print(f"wrote {claude_md}")
+    else:
+        print(f"{diff}\n\ndry run; rerun with --write to apply")
+    return 0
 
 
 def migrate_text(
@@ -481,6 +518,9 @@ def main() -> int:
     ps.add_argument("repo_dir", nargs="?", type=Path, default=Path.cwd())
     ps.add_argument("--write", action="store_true")
     ps.add_argument("--accept-drop", action="store_true")
+    pg: argparse.ArgumentParser = sub.add_parser("global-rules")
+    pg.add_argument("--claude-md", type=Path, default=Path("~/.claude/CLAUDE.md"))
+    pg.add_argument("--write", action="store_true")
     a: argparse.Namespace = p.parse_args()
     if a.cmd == "init":
         kinds: list[str] = [k.strip() for k in a.kinds.split(",") if k.strip()]
@@ -489,6 +529,8 @@ def main() -> int:
         return cmd_add_kind(a.repo_dir, a.kind)
     if a.cmd == "upgrade":
         return cmd_upgrade(a.repo_dir)
+    if a.cmd == "global-rules":
+        return cmd_global_rules(a.claude_md.expanduser(), a.write)
     return cmd_sync(a.repo_dir, a.write, a.accept_drop)
 
 
