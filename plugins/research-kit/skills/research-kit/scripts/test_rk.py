@@ -136,8 +136,14 @@ def test_init_full() -> None:
         assert (repo / "pm/kinds/software.md").is_file()
         for sub in [*rk.PM_DIRS, "stages"]:
             assert (repo / "pm" / sub).is_dir(), sub
-        for f in ("README.md", "DECISIONS.md", "DEFERRED.md"):
+        for f in ("README.md", "ledger.jsonl"):
             assert (repo / "pm" / f).is_file(), f
+        assert (repo / "pm/ledger.jsonl").read_bytes() == b""
+        for f in ("DECISIONS.md", "DEFERRED.md"):
+            assert not (repo / "pm" / f).exists(), f
+        readme: str = (repo / "pm/README.md").read_text()
+        assert "## Stages" not in readme, readme
+        assert "## Open handoffs" not in readme, readme
 
 
 def test_init_light_has_no_stages() -> None:
@@ -181,6 +187,7 @@ def test_gitignore_block_idempotent() -> None:
             assert text.count(rk.GI_START) == 1, text
             assert text.count(rk.GI_END) == 1, text
             assert "pm/waste/" in text and "_dry/" in text, text
+            assert "pm/STATUS.md" in text, text
 
         assert run(rk.cmd_init, repo, ["paper"], "full", "user")[0] == 0
         check()
@@ -329,6 +336,7 @@ def test_migrate_legacy_moves_nothing() -> None:
         assert rk.active_kinds(app) == ["paper"], app
         assert (repo / "pm/kinds/paper.md").is_file()
         assert (repo / "pm/stages").is_dir()
+        assert (repo / "pm/ledger.jsonl").is_file()
         assert "up to date" in run(rk.cmd_sync, repo, False, False)[1]
 
 
