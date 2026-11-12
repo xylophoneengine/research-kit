@@ -245,6 +245,7 @@ pm/
 
 | Command | Does |
 |---|---|
+| `/rk` | menu: shows the options below for the repo's state and runs your choice (start here) |
 | `/rk-init` | asks kinds, mode and git policy, then creates `pm/`, the appendix fields, the kinds block, the `.gitignore` block |
 | `/rk-add-kind <kind>` | activates another kind (no-op if already active; unknown kind lists the valid ids) |
 | `/rk-upgrade` | light to full: adds `pm/stages/`, flips `Mode:` |
