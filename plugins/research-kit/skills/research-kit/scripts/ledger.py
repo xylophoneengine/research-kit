@@ -90,7 +90,8 @@ def _bad(n: int, what: str) -> LedgerError:
 
 def _main_checkout(d: Path) -> Path:
     """The main checkout when `d` is a git worktree whose main checkout holds the
-    ledger (`.git` file -> <main>/.git/worktrees/...); else `d`. Never runs git."""
+    ledger (`.git` file -> <main>/.git/worktrees/<name>, nothing below it); else
+    `d`, e.g. for a submodule, also one inside a worktree. Never runs git."""
     git: Path = d / ".git"
     if not git.is_file():
         return d
@@ -102,9 +103,11 @@ def _main_checkout(d: Path) -> Path:
     if m is None:
         return d
     gitdir: str = str((d / m.group(1).strip()).resolve())
-    head, sep, _ = gitdir.partition("/.git/worktrees/")
+    head, _, name = gitdir.partition("/.git/worktrees/")
+    if not name or "/" in name:  # no /.git/worktrees/, or a path below <name>
+        return d
     main: Path = Path(head)
-    return main if sep and (main / LEDGER_REL).is_file() else d
+    return main if (main / LEDGER_REL).is_file() else d
 
 
 def find_repo(start: Path, explicit: bool = False) -> Path:
@@ -524,9 +527,14 @@ def format_list(
     for e in sorted(opens, key=_sort_key):
         counts[e.type] = counts.get(e.type, 0) + 1
     running: int = sum(1 for e in opens if e.status == "running")
-    head: str = f"open {len(opens)} (running {running})"
-    if counts:
-        head += ": " + ", ".join(f"{t} {c}" for t, c in counts.items())
+    parts: list[str] = [f"{t} {c}" for t, c in counts.items()]
+    head: str = ""
+    for k in range(len(parts), -1, -1):  # within LINE_MAX, cut between counts
+        shown_parts: list[str] = parts[:k] + (["..."] if k < len(parts) else [])
+        head = f"open {len(opens)} (running {running})"
+        head += ": " + ", ".join(shown_parts) if shown_parts else ""
+        if len(head) <= LINE_MAX:
+            break
     lines: list[str] = [head]
     cap: list[Entry] = shown[:limit] if limit else shown
     for e in cap:

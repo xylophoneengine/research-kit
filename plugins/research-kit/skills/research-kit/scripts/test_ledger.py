@@ -55,9 +55,11 @@ def snapshot(root: Path) -> dict[str, bytes | None]:
     }
 
 
-def ev_line(eid: str, title: str, typ: str = "task", status: str = "open") -> str:
+def ev_line(
+    eid: str, title: str, typ: str = "task", status: str = "open", owner: str = "lead"
+) -> str:
     f: dict[str, object] = {
-        "type": typ, "title": title, "status": status, "owner": "lead",
+        "type": typ, "title": title, "status": status, "owner": owner,
         "stage": "", "note": "", "links": [], "refs": [],
     }
     return json.dumps(L.make_event("lead", "add", eid, f)) + "\n"
@@ -191,7 +193,14 @@ def test_worktree_uses_main_ledger() -> None:
         assert L.find_repo(rel) == main
         sub: Path = new_repo(root / "sub")  # submodule: .git file, not a worktree
         (sub / ".git").write_text(f"gitdir: {main}/.git/modules/sub\n")
-        assert L.find_repo(sub) == sub
+        decoy: Path = main / ".git" / "modules" / "sub" / "pm"  # ledger at the gitdir
+        decoy.mkdir(parents=True)
+        (decoy / "ledger.jsonl").write_text("")
+        assert L.find_repo(sub) == sub  # pins the /.git/worktrees/ check
+        wsub: Path = new_repo(wt / "wsub")  # submodule inside a worktree
+        (main / ".git" / "worktrees" / "wt" / "modules" / "wsub").mkdir(parents=True)
+        (wsub / ".git").write_text(f"gitdir: {main}/.git/worktrees/wt/modules/wsub\n")
+        assert L.find_repo(wsub) == wsub
         lone: Path = root / "lone"  # main checkout without a ledger
         (lone / ".git" / "worktrees" / "w").mkdir(parents=True)
         w: Path = new_repo(lone / "w")
@@ -586,6 +595,23 @@ def test_list_size_bound() -> None:
         assert out.splitlines()[-1].startswith("+30 more"), out.splitlines()[-1]
         full: list[str] = lrun(repo, "list", "--limit", "0")[1].splitlines()
         assert len(full) == 61, len(full)
+    with tempfile.TemporaryDirectory() as d:  # many long type and owner names
+        repo = new_repo(Path(d))
+        types: list[str] = [f"{c * 30}-{i}" for i, c in enumerate("abcdefgh")]
+        rows = [
+            ev_line(f"X-{i}", "t" * 160, typ, "running" if i % 3 else "open",
+                    "o" * 60)
+            for i, typ in enumerate(types * 25, 1)
+        ]  # fmt: skip
+        (repo / L.LEDGER_REL).write_text("".join(rows))
+        out = lrun(repo, "list")[1]
+        assert len(out.encode()) <= L.LIST_MAX_BYTES, len(out.encode())
+        assert all(len(ln) <= L.LINE_MAX for ln in out.splitlines()), out
+        head: str = out.splitlines()[0]
+        assert head.startswith("open 200 (running 134): "), head
+        shown: list[str] = head.split(": ", 1)[1].removesuffix(", ...").split(", ")
+        assert shown and all(x == f"{t} 25" for x, t in zip(shown, types)), head
+        assert head.endswith(", ...") and len(shown) < len(types), head
 
 
 def test_show_history() -> None:
