@@ -40,7 +40,7 @@ prepare, resume), skip the menu and run it.
      (hide upgrade when `Mode: full`); for "Add a kind", ask which (multiSelect,
      only kinds not yet active).
    - Compaction: "Prepare" or "Resume".
-   - Close a stage: if several stages are open, ask which (list folder names).
+   - Close a stage: if several stages are open, ask which (list the open stage entries: `rk.py list --type stage`).
 4. Run it:
    - init / add-kind / upgrade / sync / close: invoke the Skill tool with skill
      `research-kit:research-kit` and the mode (plus the kind or stage) as args.

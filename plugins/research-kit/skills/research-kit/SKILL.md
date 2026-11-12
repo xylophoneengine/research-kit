@@ -17,6 +17,9 @@ Kinds: `paper`, `software`, `reverse-eng`, `experiment`, `thesis`.
 
 Script (every mode below): `python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" <mode> <repo_dir> ...`
 
+The ledger commands use the same script (`rk.py add|start|close|list|...`); the
+reference is core AGENTS.md 4.2.
+
 The command argument says the mode: init, add-kind, upgrade, sync or close.
 
 ## init (repo has no `AGENTS.md`)
@@ -24,7 +27,7 @@ The command argument says the mode: init, add-kind, upgrade, sync or close.
 1. Ask the user with AskUserQuestion, all four in one call:
    - kinds (`multiSelect: true`; the five ids above);
    - mode: `full` (stage folders, close checklist) or `light` (no stage
-     folders; critics, DECISIONS/DEFERRED, logs, handoffs stay);
+     folders; critics, the ledger, logs, handoffs stay);
    - git policy: `user` (the user commits) or `orchestrator` (the lead commits
      and merges);
    - global note: "Add the research-kit team-roles note to your global
@@ -35,7 +38,8 @@ The command argument says the mode: init, add-kind, upgrade, sync or close.
 3. Follow the kind files' own start-up steps with the user (each kind file
    says what to ask), then the appendix lines (project name, repo tag).
 4. `init` also writes a marked `## Compact Instructions` block into the repo's
-   `CLAUDE.md` (created if missing; existing text kept).
+   `CLAUDE.md` (created if missing; existing text kept), creates an empty
+   `pm/ledger.jsonl` and ignores `pm/STATUS.md`.
 5. Only on yes to the global note: run `global-rules --write` (marked block in
    `~/.claude/CLAUDE.md`; text outside kept). Never run without that yes.
 6. Tell the user: new session needed to load the rules; commits follow the
@@ -59,7 +63,8 @@ Output "already full" = nothing to do.
    `AGENTS.md` and every `pm/kinds/<kind>.md` listed in the kinds block, and
    a DROPPED list: repo lines the template lacks. `up to date` = done.
    A repo with the legacy (pre-research-kit) stamp is migrated: `AGENTS.md` is
-   rewritten, `pm/` (folders, skeleton files), `pm/kinds/paper.md` and the
+   rewritten, `pm/` (folders, skeleton files, among them an empty
+   `pm/ledger.jsonl`), `pm/kinds/paper.md` and the
    `.gitignore` block are added, old stage and waste paths are recorded in the
    appendix as `Legacy stages:` / `Legacy waste:`; no existing file is moved.
 2. Sort each DROPPED line:
@@ -83,17 +88,19 @@ Output "already full" = nothing to do.
 
 ## close (user says "close stage", or `/rk-close`)
 
-No script. Full mode only (light has no stage folders: say so and stop).
+Full mode only (light has no stage entries: say so and stop).
 
-1. Name the stage being closed: folder `pm/stages/NN-<kind>-<topic>/`. Several
-   open stages (at most one per kind): ask which. A legacy stage path from the
+1. Name the stage being closed: the open stages are
+   `rk.py list --type stage`; its folder is `pm/stages/NN-<kind>-<topic>/`.
+   Several open stages (at most one per kind): ask which. A legacy stage path from the
    appendix is read-only: do not close it.
 2. First check the stage's **Done when** condition mechanically; if it does
    not hold, stop and tell the user what is missing.
 3. Read the repo's `AGENTS.md` section 3.4 "Stage close" (8 steps: step 1 is
-   the Done when check, step 7 the kind's freeze steps from
-   `pm/kinds/<kind>.md`, step 8 the chat archive) and run it exactly in the
-   order given there. Do not work from memory or a copy: 3.4 is the single
+   the Done when check, step 6 is `rk.py stage-close S-<n> --sign-off D-<m>`,
+   step 7 the kind's freeze steps from `pm/kinds/<kind>.md`, step 8 the chat
+   archive) and run it exactly in the order given there. A `stage-close`
+   refusal prints what is missing: fix it and rerun. Do not work from memory or a copy: 3.4 is the single
    source.
 4. One todo per step, with the owner the checklist names. Lead steps: the lead
    does them. Teammate steps: brief a named teammate.
