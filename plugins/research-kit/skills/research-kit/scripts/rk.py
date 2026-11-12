@@ -10,15 +10,24 @@ Usage:
   python3 -I rk.py add-kind <repo_dir> <kind>
   python3 -I rk.py upgrade <repo_dir>
   python3 -I rk.py sync <repo_dir> [--write] [--accept-drop]
+
+Ledger store (pm/ledger.jsonl, see ledger.py; every command takes --repo DIR
+and --who NAME):
+  python3 -I rk.py add <type> <title> [--owner NAME] [--stage S] [--note TEXT]
+      [--link ID]... [--ref PATH]... [--status STATUS]
+      [--imported --source FILE:LINE [--legacy-id OLD] [--date YYYY-MM-DD]]
 """
 
 from __future__ import annotations
 
 import argparse
 import difflib
+import importlib.util
 import re
 import sys
+from importlib.machinery import ModuleSpec
 from pathlib import Path
+from types import ModuleType
 
 TEMPLATE_DIR: Path = Path(__file__).resolve().parents[1] / "template"
 APPENDIX: str = "## Project appendix"
@@ -50,6 +59,24 @@ KINDS_RE: re.Pattern[str] = re.compile(
 KIND_LINE_RE: re.Pattern[str] = re.compile(r"^- Kind `([^`]+)`", re.M)
 GI_START: str = "# >>> research-kit"
 GI_END: str = "# <<< research-kit"
+
+
+def _load_ledger() -> ModuleType:
+    """ledger.py next to this file: python3 -I drops the script dir from sys.path."""
+    name: str = "rk_ledger"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec: ModuleSpec | None = importlib.util.spec_from_file_location(
+        name, Path(__file__).with_name("ledger.py")
+    )
+    assert spec is not None and spec.loader is not None
+    mod: ModuleType = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod  # dataclasses look the module up here
+    spec.loader.exec_module(mod)
+    return mod
+
+
+ledger: ModuleType = _load_ledger()
 
 
 # ---- text helpers -----------------------------------------------------------
@@ -500,6 +527,8 @@ def cmd_sync(repo_dir: Path, write: bool, accept_drop: bool) -> int:
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] in ledger.COMMANDS:
+        return ledger.main(sys.argv[1:])
     p: argparse.ArgumentParser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )

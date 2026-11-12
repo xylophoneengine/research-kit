@@ -517,10 +517,24 @@ def test_global_rules() -> None:
         assert rk.CB_START not in text
 
 
+def _ledger_tests() -> list[tuple[str, Callable[[], None]]]:
+    """The test_* functions of test_ledger.py (loaded by path, like rk.py)."""
+    spec: ModuleSpec | None = importlib.util.spec_from_file_location(
+        "test_ledger", Path(__file__).with_name("test_ledger.py")
+    )
+    assert spec is not None and spec.loader is not None
+    mod: ModuleType = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return [
+        (n, f) for n, f in vars(mod).items() if n.startswith("test_") and callable(f)
+    ]
+
+
 def main() -> int:
     tests: list[tuple[str, Callable[[], None]]] = [
         (n, f) for n, f in globals().items() if n.startswith("test_") and callable(f)
     ]
+    tests += _ledger_tests()
     failed: list[str] = []
     for name, fn in tests:
         try:
