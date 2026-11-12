@@ -59,6 +59,39 @@ case "$(reason Edit file_path "$R/pm/ledger.jsonl")" in
 case "$(reason Agent prompt $'DELIVERABLE: x')" in
   "refused:"*"TASK: T-"*) ;; *) echo "FAIL brief reason text"; fail=1;; esac
 
+# path spellings: relative, doubled slash, /./ (normalised before matching)
+t deny Edit file_path "pm/ledger.jsonl"
+t deny Write file_path "$R/pm//ledger.jsonl"
+t deny Edit file_path "$R/pm/./ledger.jsonl"
+t deny Write file_path "$R//pm/.//./STATUS.md"
+
+# tabs and CRLF in a brief: open T-3 passes (and runs), done T-2 is refused
+python3 -I "$RK" add task "crlf" --repo "$R" >/dev/null
+t none Agent prompt $'\t\tDELIVERABLE: x\r\n\tTASK: T-3\r\n'
+python3 -I "$RK" show T-3 --repo "$R" | grep -q '^status: running' ||
+  { echo "FAIL T-3 not running after a CRLF/tab brief"; fail=1; }
+t deny SendMessage message $'DELIVERABLE: x\r\nTASK: T-2\r\n'
+
+# inside a subagent (.agent_id set): briefs are not checked, the edit block stays
+sub() {
+  jq -n --arg t "$1" --arg f "$2" --arg v "$3" \
+    '{tool_name:$t,tool_input:{($f):$v},agent_id:"a1",cwd:"/nowhere"}' |
+    decision
+}
+[ -z "$(sub Agent prompt $'DELIVERABLE: lookup\nfind a DOI')" ] ||
+  { echo "FAIL subagent brief without TASK was denied"; fail=1; }
+[ -z "$(sub SendMessage message $'DELIVERABLE: x\nTASK: T-2')" ] ||
+  { echo "FAIL subagent SendMessage was checked"; fail=1; }
+[ "$(sub Edit file_path "$R/pm/ledger.jsonl")" = deny ] ||
+  { echo "FAIL subagent edit of the ledger not denied"; fail=1; }
+
+# corrupt ledger: a brief is refused and names the line; edits stay denied
+C="$(mktemp -d)"
+mkdir -p "$C/pm" && printf '<<<<<<< HEAD\n' > "$C/pm/ledger.jsonl"
+case "$(CLAUDE_PROJECT_DIR="$C" reason Agent prompt $'DELIVERABLE: x\nTASK: T-1')" in
+  "refused:"*"pm/ledger.jsonl:1"*) ;; *) echo "FAIL corrupt ledger brief"; fail=1;; esac
+CLAUDE_PROJECT_DIR="$C" t deny Edit file_path "$C/pm/ledger.jsonl"
+
 # CLAUDE_PROJECT_DIR unset: the payload's cwd is the root
 got="$(env -u CLAUDE_PROJECT_DIR bash -c "jq -n --arg c '$R' '{tool_name:\"Agent\",tool_input:{prompt:\"DELIVERABLE: x\"},cwd:\$c}' | bash '$G'" |
   jq -r '.hookSpecificOutput.permissionDecision // empty')"

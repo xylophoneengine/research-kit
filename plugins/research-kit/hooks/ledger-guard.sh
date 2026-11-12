@@ -5,6 +5,7 @@
 #  - Edit/Write/MultiEdit of pm/ledger.jsonl or pm/STATUS.md: deny; only rk.py writes them.
 #  - Agent prompt / SendMessage message with a DELIVERABLE: line (a team brief): rk.py
 #    brief-check; refused -> deny with its text. A passing brief marks its task running.
+#    Not checked inside a subagent (.agent_id set): only the lead hands out work.
 # Reads the hook JSON on stdin. bash + jq + python3. Unparsable input -> silent exit 0.
 set -u
 in="$(cat)"
@@ -25,6 +26,9 @@ case "$tool" in
   Edit|Write|MultiEdit)
     fp="$(jq -r '.tool_input.file_path // empty' <<<"$in" 2>/dev/null)" || exit 0
     lc="$(printf '%s' "$fp" | tr '[:upper:]' '[:lower:]')"
+    while [[ "$lc" == *//* || "$lc" == */./* ]]; do  # pm//x, pm/./x -> pm/x
+      lc="${lc//\/\//\/}"; lc="${lc//\/.\//\/}"
+    done
     case "$lc" in
       */pm/ledger.jsonl|*/pm/status.md|pm/ledger.jsonl|pm/status.md)
         deny "pm/ledger.jsonl and pm/STATUS.md are written only by the ledger tool: python3 -I \"$rk\" <add|start|close|drop|reopen|set|supersede|stage-close> ... STATUS.md is regenerated after every write (render rebuilds it). A broken ledger line: ask the user to fix it by hand outside Claude."
@@ -32,6 +36,7 @@ case "$tool" in
     esac
     ;;
   Agent|SendMessage)
+    [ -n "$(jq -r '.agent_id // empty' <<<"$in" 2>/dev/null)" ] && exit 0
     q='.tool_input.prompt | strings'
     [ "$tool" = SendMessage ] && q='.tool_input.message | strings'
     text="$(jq -r "$q" <<<"$in" 2>/dev/null)" || exit 0
