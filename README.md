@@ -12,6 +12,29 @@ compaction handoff hooks.
 
 License: MIT (see `LICENSE`).
 
+## Contents
+
+- [Plugins](#plugins)
+- [Install](#install)
+  - [Quick start](#quick-start)
+  - [Enable agent teams (needed by `/team`)](#enable-agent-teams-needed-by-team)
+  - [Updating](#updating)
+- [Kinds](#kinds)
+- [ARS integration (`paper`, `thesis`)](#ars-integration-paper-thesis)
+- [Example: a paper with a code part, end to end](#example-a-paper-with-a-code-part-end-to-end)
+- [Zotero (`research-kit-lit`)](#zotero-research-kit-lit)
+- [Light vs full](#light-vs-full)
+- [The `pm/` folder](#the-pm-folder)
+- [Commands](#commands)
+- [Stage lifecycle](#stage-lifecycle)
+- [How sync works](#how-sync-works)
+- [/team flow](#team-flow)
+- [Best practices for teams](#best-practices-for-teams)
+- [Surviving compaction](#surviving-compaction)
+- [Deleting is off](#deleting-is-off)
+- [Optional external tools](#optional-external-tools)
+- [Development](#development)
+
 ## Plugins
 
 | Plugin | Contents |
@@ -275,7 +298,7 @@ flowchart TD
 ```
 
 Side loops: `get ready for compact` writes a handoff, then `/compact`, then
-resume from it.
+resume from it (see [Surviving compaction](#surviving-compaction)).
 
 ## How sync works
 
@@ -333,6 +356,66 @@ flowchart TD
 - Optional cost tip: a `~/.claude/agents/Explore.md` with `model: haiku` and `omitClaudeMd: true` overrides the built-in Explore agent.
 - The advisor tool only pays off as a cheaper main model plus a stronger advisor. Skip it when the main model outranks the advisor.
 - Keep the Mac awake (`caffeinate -i claude`) if you rely on auto-continue after usage-limit resets.
+
+## Surviving compaction
+
+**Why.** Long sessions (a `/team` stage, a lead orchestrating many teammates)
+fill the context window, and Claude Code then compacts: the conversation is
+replaced by a summary. Summaries are lossy in exactly the wrong places. Your
+decisions get paraphrased, "tests green" loses the log that proves it, and
+"jr2 is still running" survives as a claim although the agent may be gone with
+its work uncommitted. The fix: **files and commits are the store; the summary
+is only an index**, and after a compact it is a hypothesis until checked.
+
+**What.** One handoff file per session,
+`pm/handoffs/compact/handoff-YYYY-MM-DD.md` (gitignored), with six required
+slots (write "none" when empty):
+
+| Slot | Holds |
+|---|---|
+| User decisions and rules | verbatim quotes, safety rules first |
+| Done | what + commit hash or log file path |
+| In flight | per agent: name, worktree/branch, brief file, last commit, uncommitted file count, last known state |
+| Open questions for the user | |
+| Instructions given to the user | path of the file holding them |
+| Next step | one action with its precondition |
+
+The lead keeps it current **as it goes**, because a compact can arrive
+unannounced: brief saved to a file before spawning an agent, your decisions
+quoted in when you make them, test output redirected to a log and the path
+noted.
+
+**How.** Three hooks do the plumbing; you only say one sentence and type one
+command:
+
+```mermaid
+sequenceDiagram
+  participant U as You
+  participant L as Lead session
+  participant H as Hooks
+  U->>L: "get ready for compact" (or /s-comp prepare)
+  H-->>L: phrase hook: run surviving-compaction Prepare
+  L->>L: ask agents for WIP commits, refill every handoff slot
+  L->>U: handoff path + "/compact Read <path> first."
+  U->>L: /compact Read <path> first.
+  H-->>L: PreCompact: summary must start with the handoff path, quote decisions verbatim, mark agent/uncommitted claims "unverified after compact"
+  H-->>L: SessionStart (compact): run Resume
+  L->>L: read handoff, check git log/status, check live agents
+  L->>U: what matched, what differed, then Next step
+```
+
+- Trigger phrases: "get ready for compact", "ready for compaction",
+  "prepare for compact", "I'm stopping here" (short messages only, so a pasted
+  report that quotes them does not fire it). Or `/s-comp prepare` /
+  `/s-comp resume` (`/rk` -> Compaction handoff).
+- Resume restarts an agent only if it is no longer listed, from its brief file
+  plus last commit; a listed agent is messaged instead (two agents in one
+  worktree is the classic failure).
+- A detail missing from the handoff is recovered from the session transcript,
+  never from memory.
+- Cost tip: the lead's context is the main cost driver; compacting
+  deliberately at a stage boundary is cheaper than letting it auto-compact
+  mid-task.
 
 ## Deleting is off
 
