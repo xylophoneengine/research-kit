@@ -112,7 +112,7 @@ Every step producing deliverables (scan, build, run, draft) is its OWN stage wit
 - Session name `<ID>_NN_<kind>_<topic>` (`/rename`), matching folder.
 - At most one open stage per kind; stages of different kinds may run in parallel. `/rk-close` names the stage it closes.
 - Stage sequence: the stage table in each kind file. Adapt the stage set per project; keep each row's Done when.
-- **Done when**: every stage opens with a mechanical exit check, written in `BRIEF.md` (file exists, check exits 0, counts match, both critics YES, user sign-off = a user decision naming the stage, 5.3). Why: completion by judgment call cannot be verified by the lead.
+- **Done when**: every stage opens with a mechanical exit check, written in `BRIEF.md` (file exists, check exits 0, counts match, both critics YES, user sign-off = a user decision linking the stage, 5.3). Why: completion by judgment call cannot be verified by the lead.
 - Opening a stage = `rk add stage "NN-<kind>-<topic>"` plus the folder; never `rk start` a stage. The stage entry is the only record of its state; only `rk stage-close` closes it.
 - Legacy stage paths (appendix `Legacy stages:`) are frozen and read-only; new stages go to `pm/stages/`. Why: closed stages are cited by path.
 
@@ -138,11 +138,11 @@ pm/stages/NN-<kind>-<topic>/
 ### 3.4 Stage close (user says "close stage"; `/rk-close`)
 
 Checklist, this order, each step with owner. Chat archive LAST: session JSONL is snapshot at copy time, anything after it is missing from archive.
-1. Done when check run, output tail pasted into stage README (teammate runs, lead reads). Not met -> stage stays open, or user accepts the gap, logged as a user decision naming the stage (5.3).
+1. Done when check run, output tail pasted into stage README (teammate runs, lead reads). Not met -> stage stays open, or user accepts the gap, logged as a user decision linking the stage (5.3).
 2. Every task of the stage done, dropped, re-staged or deferred: `rk list --stage S-<n>` shows no open task (lead).
 3. `pm/README.md`: every quotable number stage produced or refuted gets row in "Load-bearing numbers". Update "Do not quote / known traps" (lead).
 4. Executed handoffs -> `pm/handoffs/done/` (jr moves files), `rk close H-<n> --note "<outcome>"` (lead).
-5. User sign-off: the lead asks the user; only after the user gave it, `rk add decision "<sign-off>" --owner user --stage S-<n>` (or `--link S-<n>`; both count) (lead).
+5. User sign-off: the lead asks the user; only after the user gave it, `rk add decision "<sign-off>" --owner user --link S-<n>` (lead).
 6. `rk stage-close S-<n> --sign-off D-<m>` (lead). Refused -> fix what it names, rerun. Stage table, open list and task view are generated from the ledger; nothing to rewrite by hand.
 7. Kind-specific freeze steps named in the kind file (owner as named there).
 8. Chat archive into the stage's `chat/` (sr, copy only, never digest in `notes/`):
@@ -194,7 +194,7 @@ Kind-specific folders (e.g. a paper's library and manuscript) are named in the k
 - `rk set ID [--title T] [--owner N] [--stage S-<n>] [--note T] [--link ID] [--ref PATH]`: change fields, status kept
 - `rk supersede D-<n> "<new>" --owner N [--note T]`: replaces a decision in one call
 - `rk list [--type T] [--owner N] [--stage S-<n>] [--all]`: open entries, short (`--all` adds closed ones)
-- `rk show ID`: fields and history
+- `rk show ID`: fields, history, and one line (id, status, title) per linked entry, both directions (it links, links it)
 - `rk search TEXT`: titles and notes, every status
 - `rk recent [-n N]`: entries with the newest events
 - `rk stage-close S-<n> --sign-off D-<m>`: the only way to close a stage (3.4)
@@ -228,7 +228,7 @@ Every claim in a report, note, README or brief carries one tag and a cite. Why: 
 
 ### 5.3 Decisions and escalation
 
-- One `decision` entry per decision: `rk add decision "<what>" --owner <user / lead / name> --note "<why>" [--stage S-<n>] [--link ID]...`; `--owner` = who decided. A decision is in force when logged: a change = `rk supersede D-<n> "<new>" --owner ...` (never a re-add), a withdrawal = `rk drop`; never closed. Includes decisions already taken (do not reopen without the user). An open question for the user is not a decision: it is a `deferred` entry with `--owner user` (5.4). Stage sign-off = a user decision naming the stage with `--stage S-<n>` or `--link S-<n>` (both count); the lead asks and logs it only after the user gave it. Why: later sessions must tell user calls from agent calls.
+- One `decision` entry per decision: `rk add decision "<what>" --owner <user / lead / name> --note "<why>" [--stage S-<n>] [--link ID]...`; `--owner` = who decided. A decision is in force when logged: a change = `rk supersede D-<n> "<new>" --owner ...` (never a re-add), a withdrawal = `rk drop`; never closed. Includes decisions already taken (do not reopen without the user). An open question for the user is not a decision: it is a `deferred` entry with `--owner user` (5.4). Stage sign-off = a user decision that links the stage, `--link S-<n>` (`--stage S-<n>` alone does not count: decisions default to the open stage); the lead asks and logs it only after the user gave it. Why: later sessions must tell user calls from agent calls.
 - Scope test: escalate only if a choice changes output, public surface, claims, or files named in the brief; otherwise decide, log one entry. Clusters of agent rows against one stage signal a bad brief.
 - Escalation (teammate -> lead, lead -> user) is one ESCALATE block, nothing around it:
   ```
