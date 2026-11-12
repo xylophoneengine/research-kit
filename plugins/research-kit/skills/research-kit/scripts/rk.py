@@ -379,11 +379,15 @@ def cmd_init(repo_dir: Path, kinds: list[str], mode: str, git_policy: str) -> in
         if not kpath.exists():
             kpath.write_text(_kind_template(k).read_text())
     ensure_gitignore(repo_dir)
+    ensure_block(
+        repo_dir / ".gitattributes", ".gitattributes", "gitattributes",
+        GI_START, GI_END, True,
+    )  # fmt: skip
     ensure_compact_block(repo_dir, True)
     print(f"created {target} (template {stamp(template)}), mode {mode}, "
           f"git policy '{GIT_POLICIES[git_policy]}', kinds {', '.join(kinds)}")
     print(f"created pm/ ({len(dirs)} dirs, {len(files)} skeleton files), .gitignore, "
-          "CLAUDE.md Compact Instructions block")
+          ".gitattributes, CLAUDE.md Compact Instructions block")
     return 0
 
 
@@ -502,6 +506,14 @@ def cmd_sync(repo_dir: Path, write: bool, accept_drop: bool) -> int:
     if gi_new != gi_old:
         writes[gi] = gi_new
         print("\n== .gitignore == research-kit block added/refreshed")
+
+    ga: Path = repo_dir / ".gitattributes"
+    ga_old: str = ga.read_text() if ga.exists() else ""
+    ga_new: str = compact_text(ga_old, "gitattributes", GI_START, GI_END)
+    if ga_new != ga_old:
+        writes[ga] = ga_new
+        print(f"\n== .gitattributes == research-kit block (ledger merge=union)\n"
+              f"{_diff(ga_old, ga_new, '.gitattributes')}")
 
     compact_changed, compact_diff = ensure_compact_block(repo_dir, False)
     if compact_changed:

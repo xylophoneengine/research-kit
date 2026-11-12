@@ -41,6 +41,7 @@ def fake_template(root: Path) -> Path:
     tpl: Path = root / "template"
     (tpl / "kinds").mkdir(parents=True)
     shutil.copy(REAL_TEMPLATE / "gitignore", tpl / "gitignore")
+    shutil.copy(REAL_TEMPLATE / "gitattributes", tpl / "gitattributes")
     shutil.copytree(REAL_TEMPLATE / "pm", tpl / "pm")
     shutil.copy(
         REAL_TEMPLATE / "compact-instructions.md", tpl / "compact-instructions.md"
@@ -201,6 +202,28 @@ def test_gitignore_block_idempotent() -> None:
             check()
             assert run(rk.cmd_sync, repo, True, False)[0] == 0
             check()
+
+
+def test_gitattributes_block() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = setup(Path(d))
+        assert run(rk.cmd_init, repo, ["paper"], "full", "user")[0] == 0
+        ga: Path = repo / ".gitattributes"
+        line: str = "pm/ledger.jsonl merge=union"
+        text: str = ga.read_text()
+        assert text == f"{rk.GI_START}\n{line}\n{rk.GI_END}\n", text
+        above: str = "*.png binary\n"
+        ga.write_text(above + text.replace(line, "OLD") + "tail")
+        before: dict[str, bytes | None] = snapshot(repo)
+        code, out = run(rk.cmd_sync, repo, False, False)
+        assert code == 0 and "== .gitattributes ==" in out and f"+{line}" in out, out
+        assert snapshot(repo) == before, "dry run wrote something"
+        assert run(rk.cmd_sync, repo, True, False)[0] == 0
+        text = ga.read_text()
+        assert text.startswith(above) and text.endswith("tail"), text
+        assert line in text and "OLD" not in text, text
+        assert text.count(rk.GI_START) == 1 and text.count(rk.GI_END) == 1, text
+        assert "up to date" in run(rk.cmd_sync, repo, True, False)[1]
 
 
 # ---- Task 3: add-kind + upgrade -----------------------------------------------
