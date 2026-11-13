@@ -18,6 +18,9 @@ Safety rules (built in; the skill has the detail):
   write_capabilities shows `**Mode:** local` AND `Web API credentials: not set`,
   only to My Library (never a group library), and only after the skill's
   one-file sync test (R7) has proven the WebDAV target for this batch.
+- Look first: before every add and every attach, search the library for the
+  work (DOI, then title; all libraries) and read the item's children. An
+  existing PDF/EPUB child means no attach: report the key.
 - Metadata adds: `attach_mode="none"`, `if_exists="file"`, plus a title
   dedupe check. Tags and collections: incremental tools only
   (`zotero_batch_update add_tags`, `zotero_set_item_collections add_to`);

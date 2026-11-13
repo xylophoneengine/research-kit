@@ -1,4 +1,4 @@
-<!-- research-kit-kind paper: 2026-11-13a -->
+<!-- research-kit-kind paper: 2026-11-13b -->
 # Kind: paper
 
 Rules for writing a research paper: literature, writing stages, citations. They add to the core `AGENTS.md`; they never relax it. Stage folders are `pm/stages/NN-paper-<topic>/` (full mode); in light mode the stage table is a checklist only. Evidence tags (CONFIRMED / LIKELY / GUESS), Done when, the ledger (core 4.2) works as in core. Placeholder `<ID>` = paper id from the appendix.
@@ -69,6 +69,7 @@ Brief appends (core 2.3) for this kind:
 - Research briefs state PDF reading mode (P5.4) and page-cite rule (P5.5).
 - Touching the reference manager: paste its rules (P5.2) into the brief.
 - Fetcher brief: step 1 = reference-manager check (P5.3).
+- Scan / audit briefs: every candidate gets the manager lookup (P5.1).
 
 Claims (in addition to core 5.1-5.2):
 - Claims affirmative: say what we do. No "nobody / first / unlike X", no attack on a named group. Method contrasts at the level of method families. Why: such claims rarely survive review.
@@ -88,7 +89,7 @@ Claims (in addition to core 5.1-5.2):
 - PDF naming: `Author et al. - YEAR - Title.pdf`, in `paper/library/pdfs/`.
 - First line of paper_ledger = `Repo tag: <tag>` (P1 step 4). Every source filed in the reference manager and tagged with it. Tag = only link library entry <-> repo. Teammate adding an item sets the tag in the same call; item without tag = sync-check failure. Item already in library (other repo's tag): ADD this repo's tag (items carry several repo tags). Never remove or rename another repo's tag, never create a duplicate item.
 - paper_ledger row, PDF, reference-manager entry stay in sync. Each import pass appends `## Sync check (<date>)` (PDFs <-> `ok` rows 1:1; manager tag set = paper_ledger set; counts asserted by per-key checks, never from a capped search result). The checker is a script frozen in the stage's `code/`; it checks per key via the manager's local API across all libraries, accepts a PDF or EPUB child, and exempts group items from the file-child test.
-- Single writer on paper_ledger at any time (import teammate). Scans end with `## Candidates for paper_ledger.md` in row format. Import teammate merges them.
+- Single writer on paper_ledger at any time (import teammate). Scans and audits end with `## Candidates for paper_ledger.md` in row format; every candidate row (any work named that is not yet in paper_ledger) carries the result of a manager lookup by DOI, then title, across all libraries, in the `reference-manager key/tag` cell: `<manager key>, PDF yes/no` or `not in manager`. The scanner only reports it. Never a new item for a work already in the manager: with a PDF/EPUB child no fetch (copy from manager storage); without a file, retrieval ladder from step 2 and attach to the existing item. Tagging and paper_ledger rows stay with the import teammate, who merges the candidates.
 - Open-access substitutes: separate paper_ledger row + separate manager item, cross-referenced. Cite original, read and quote substitute.
 
 ### P5.2 Reference manager (Zotero)
@@ -105,7 +106,7 @@ Rules to paste into every brief that touches the manager (the skill has the proc
 
 ### P5.3 Retrieval ladder (every fetch brief)
 
-1. Reference manager first (children check on paper_ledger key; if a PDF child exists, copy it from manager storage, never fetch). Reads never gated, writes are.
+1. Reference manager first (lookup by the row's manager key when it has one, else by DOI then title across all libraries; children check; if a PDF child exists, copy it from manager storage, never fetch). Reads never gated, writes are.
 2. Unpaywall / publisher OA link via curl.
 3. Browser automation (downloads land in `~/Downloads`; move into `paper/library/pdfs/`).
 4. On failure: `rk add fetch "<key>: <title>" --note "DOI ...; URL ...; file <target filename>; manager <key>" --link <task id> --who <name>`. Open fetch entries are what the user still fetches by hand (STATUS.md "Open fetches"). When the PDF arrives, the import teammate attaches it, flips the paper_ledger status, and runs `rk close F-<n> --note "attached"`. No pointer row anywhere else.

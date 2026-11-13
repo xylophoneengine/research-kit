@@ -12,7 +12,8 @@ condition below = notify the user (via the lead if you are a teammate) and ask
 for guidance. Never silently skip, never engineer around it.
 
 Metadata writes (add item, tag, collections) do not move files and are safe
-once step 1 passes. Attachments additionally need step R7.
+once step 1 passes. Attachments additionally need R9 (every attach) and R7
+(once per batch / repo / session).
 
 ## Setup (once per machine; the preflight checks it)
 
@@ -79,7 +80,9 @@ check the title:
 
     curl -s 'http://127.0.0.1:23119/api/users/0/items?q=<url-encoded short title>&qmode=titleCreatorYear&itemType=-attachment&limit=5'
 
-Hit -> tag the existing item (R3) instead of adding. Preprint items often
+Hit -> tag the existing item (R3) instead of adding. This checks My Library
+only: also `zotero_search_items(query, search_all_libraries=true)`; a hit in a
+group library = report it, do not add. Preprint items often
 carry the DOI only in `extra` as a `DOI: ...` line; check there too.
 
 **R3 tag** -- incremental, keeps other tags:
@@ -110,17 +113,14 @@ Add `&sort=dateAdded&direction=desc` for newest first. Filter
 `data.dateAdded` (ISO, UTC) in a small `python3 -I` script. Spot-check two
 items via `zotero_get_item_metadata`.
 
-**R7 attach ONE file, then prove the sync target** (new batch, new repo,
-new session):
+**R7 attach ONE file, then prove the sync target** (once per new batch,
+new repo, new session; R9 still applies to every attach, this one too):
 
 1. Preflight OK + MCP step OK. Item is in My Library (users/0), not a group.
-2. `zotero_get_item_children(item_key=[...all keys...])` in one call; skip
-   items that already have a PDF.
-3. Page-1 check of the file: `pdftotext -l 3 <file> -` contains the DOI or
-   >= 80 pct of the item's title words. Else do not attach.
-4. `zotero_attach_file(item_key="KEY", file_path="/abs/path.pdf")`. Read the
+2. Run R9 (children check, page-1 check) for this item and file.
+3. `zotero_attach_file(item_key="KEY", file_path="/abs/path.pdf")`. Read the
    reply for quota / zotero.org text (stop condition).
-5. Evidence, in order:
+4. Evidence, in order:
    (a) web key in shell (preflight INFO says so): wait for Zotero to sync,
        then `python3 -I ${CLAUDE_PLUGIN_ROOT}/skills/zotero/scripts/preflight.py --file-check <attKey>`.
        Required: `OK: file synced (md5 set) and not on zotero.org`.
@@ -134,7 +134,7 @@ new session):
 
 **R8 batch attach** (only after R7 passed):
 
-- Match file -> item by DOI first, title second; page-1 check every file;
+- Match file -> item by DOI first, title second; R9 for every file;
   pick one file per duplicate set (the one that fits the item: VoR /
   journal layout over preprint) and say which.
 - Keep the default `link_mode="import"` (stores the file, syncs via
@@ -144,6 +144,15 @@ new session):
 - Post-check: local API re-dump, each attached item has exactly one child
   (`meta.numChildren` = 1 when it had none before; no double attach). Report table: item key, DOI, file, status.
 - Optional: `zotero_update_search_database` for semantic search.
+
+**R9 before EVERY attach** (any batch, any session; not only the R7 proof):
+
+1. `zotero_search_items(query, search_all_libraries=true)` for the work (DOI,
+   then title), then `zotero_get_item_children(item_key=[...all keys...])` in
+   one call. An item that already has a PDF/EPUB child gets no attach; report
+   its key. Two items match the work: report both keys, attach to none, ask.
+2. Page-1 check of the file: `pdftotext -l 3 <file> -` contains the DOI or
+   >= 80 pct of the item's title words. Else do not attach.
 
 ## Stop conditions -> notify the user, ask for guidance
 
@@ -177,7 +186,7 @@ new session):
 - The tool docstrings say writes "fail in local-only mode": that is
   read-only local. Mode local with a held key (Zotero 10+) writes fine.
 - `zotero_attach_file` is idempotent by filename / MD5 only: the same paper
-  under another filename becomes a second attachment. Check children first.
+  under another filename becomes a second attachment. Check children first (R9).
 - `zotero_search_items` is substring match: short queries ("Author Year").
   `search_all_libraries=true` needs the sqlite backend; the error "global
   search requires the SQLite backend" = env var lost: report it, then
