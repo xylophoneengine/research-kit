@@ -347,6 +347,17 @@ def _title(value: str) -> str:
     return title
 
 
+def _check_links(state: dict[str, Entry], links: list[str]) -> None:
+    for link in links:
+        if link not in state:
+            raise LedgerError(f"--link {link}: no such entry")
+
+
+def _note_plus(old: str, text: str) -> str:
+    """`text` on a new line after the old note; notes are never cut."""
+    return f"{old}\n{text}" if old else text
+
+
 def _check_stage_open(
     state: dict[str, Entry], sid: str, status: str, fix: str
 ) -> None:
@@ -559,11 +570,11 @@ def format_list(
 
 
 def _add_step(
-    a: argparse.Namespace, types: dict[str, str]
+    a: argparse.Namespace, types: dict[str, str], key_links: bool = False
 ) -> Callable[[dict[str, Entry]], tuple[str, dict[str, object]]]:
     """Validate an add (what needs no ledger state now); the returned step checks
     the rest against a state and gives (new id, event fields). Shared by add and
-    import."""
+    import. `key_links`: links "@KEY" pass unchecked (import resolves them)."""
     typ: str = check_type(a.type, types)
     title: str = _title(a.title)
     if typ == "decision" and a.owner is None:
@@ -604,9 +615,9 @@ def _add_step(
         )
 
     def step(state: dict[str, Entry]) -> tuple[str, dict[str, object]]:
-        for link in a.link:
-            if link not in state:
-                raise LedgerError(f"--link {link}: no such entry")
+        _check_links(
+            state, [x for x in a.link if not (key_links and x.startswith("@"))]
+        )
         stage: str = (
             resolve_stage(state, a.stage)
             if a.stage
@@ -656,8 +667,46 @@ def _cmd_add(a: argparse.Namespace) -> int:
 
 IMPORT_STR_KEYS: tuple[str, ...] = (
     "type", "title", "source", "owner", "stage", "note", "status", "legacy_id", "date",
+    "key",
 )
 IMPORT_LIST_KEYS: tuple[str, ...] = ("link", "ref")
+IMPORT_DESCRIPTION: str = """\
+Import history as imported entries, all or nothing: every row of every FILE is
+checked first; one bad row and nothing is written. Errors print as
+FILE:LINE: message. Each FILE is JSON Lines: one JSON object per line, blank
+lines skipped. Several FILEs are one batch, read in the order given: a stage
+row in an earlier file can be named by "stage" in a later one (--dry-run too).
+"stage" takes a stage id or a stage title, never @KEY; the stage row must come
+before the row that names it in the batch (earlier in the same file, or in a
+file given earlier), a stage row further down fails with "no stage".
+"""
+IMPORT_EPILOG: str = """\
+row keys (required: type, title, source; every value a string, link and ref a
+list of strings):
+  type       entry type: task, decision, stage, ... or a type declared in
+             pm/kinds/
+  title      one line, at most 160 characters
+  source     where the row came from, e.g. "pm/living/TASKS.md:44"
+  status     open (default; a decision: done), running, done, dropped or
+             superseded
+  owner      name, default lead; a decision needs it (who decided)
+  stage      a stage id or the exact title of one stage; default: no stage
+  note       free text
+  legacy_id  the row's id in the old system
+  date       YYYY-MM-DD, the original date (becomes the entry's created)
+  link       entry ids; "@KEY" names the row with that key in this batch
+             (it may come later in the batch)
+  ref        paths
+  key        name for "@KEY" links: letters, digits, _ . - only; unique in
+             the batch; not stored in the entry
+
+A row already imported (same source and legacy_id, or same source and title
+when it has no legacy_id), in the ledger or earlier in the batch, is refused.
+Example FILE, one row per line (the task links the fetch by its key):
+  {"type": "stage", "title": "01-pilot", "source": "A.md:3", "status": "done"}
+  {"type": "task", "title": "port", "source": "A.md:5", "link": ["@s20"]}
+  {"type": "fetch", "title": "smith2020", "source": "A.md:9", "key": "s20"}
+"""
 
 
 def _import_row(obj: object, who: str) -> argparse.Namespace:
@@ -679,9 +728,12 @@ def _import_row(obj: object, who: str) -> argparse.Namespace:
             raise LedgerError(f"{key} must be a list of strings")
     if obj.get("status", "open") not in STATUSES:
         raise LedgerError(f"status '{obj['status']}': one of {', '.join(STATUSES)}")
+    if "key" in obj:
+        _name(obj["key"], "key")
     fields: dict[str, object] = {
         "who": who, "imported": True, "owner": None, "stage": None, "note": "",
         "link": [], "ref": [], "status": None, "legacy_id": None, "date": None,
+        "key": None,
     }
     return argparse.Namespace(**{**fields, **obj})
 
@@ -710,11 +762,19 @@ def _cmd_import(a: argparse.Namespace) -> int:
     repo: Path = _repo(a)
     who: str = _name(a.who, "--who")
     types: dict[str, str] = known_types(repo)
-    try:
-        raw: bytes = Path(a.file).read_bytes()
-    except OSError as e:
-        raise LedgerError(f"{a.file}: {e.strerror}") from None
-    errs: list[str] = []
+    rows: list[tuple[str, bytes]] = []  # (FILE:LINE, line) over the whole batch
+    errs: list[tuple[int, str]] = []  # (index into rows, message): sorted on print
+    for file in a.files:
+        try:
+            raw: bytes = Path(file).read_bytes()
+        except OSError as e:
+            raise LedgerError(f"{file}: {e.strerror}") from None
+        lines: list[tuple[str, bytes]] = [
+            (f"{file}:{n}", b) for n, b in enumerate(raw.split(b"\n"), 1) if b.strip()
+        ]
+        if not lines:
+            errs.append((len(rows), f"{file}: no rows"))
+        rows.extend(lines)
     made: list[tuple[str, str, str]] = []
 
     def plan(state: dict[str, Entry]) -> list[dict[str, object]]:
@@ -724,29 +784,47 @@ def _cmd_import(a: argparse.Namespace) -> int:
             for e in state.values()
             if e.extra.get("imported")
         }
-        for n, bline in enumerate(raw.split(b"\n"), 1):
-            if not bline.strip():
-                continue
+        keys: dict[str, str] = {}  # row key -> FILE:LINE of its row
+        ids: dict[str, str] = {}  # row key -> id given to its row
+        linked: list[tuple[int, dict[str, object], list[str]]] = []
+        for i, (where, bline) in enumerate(rows):
             try:
                 try:
                     obj: object = json.loads(bline.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError):
                     raise LedgerError("not a JSON line") from None
-                eid, f = _add_step(_import_row(obj, who), types)(state)
+                ns: argparse.Namespace = _import_row(obj, who)
+                rkey: str | None = ns.key
+                if rkey is not None:
+                    if rkey in keys:
+                        raise LedgerError(
+                            f"duplicate key '{rkey}' (first at {keys[rkey]})"
+                        )
+                    keys[rkey] = where
+                eid, f = _add_step(ns, types, key_links=True)(state)
                 key: tuple[str, str, str] = _import_key(
                     f["source"], f.get("legacy_id"), f["title"]
                 )
                 if key in seen:
                     raise LedgerError(f"already imported as {seen[key]}")
                 seen[key] = eid
+                if rkey is not None:
+                    ids[rkey] = eid
                 ev: dict[str, object] = make_event(who, "add", eid, f)
-                fold([(n, ev)], state)
+                fold([(i + 1, ev)], state)
                 events.append(ev)
                 made.append((str(f["type"]), str(f["status"]), eid))
+                linked.append((i, f, ns.link))
             except LedgerError as e:
-                errs.append(f"{a.file}:{n}: {e}")
-        if not events and not errs:
-            errs.append(f"{a.file}: no rows")
+                errs.append((i, f"{where}: {e}"))
+        for i, f, links in linked:  # "@KEY" -> id, now that every row has one
+            out: list[str] = []
+            for link in links:
+                if link.startswith("@") and link[1:] not in keys:
+                    errs.append((i, f"{rows[i][0]}: link {link}: no row with that key"))
+                # a key whose row failed stays unresolved: the batch is refused
+                out.append(ids.get(link[1:], link) if link.startswith("@") else link)
+            f["links"] = list(dict.fromkeys(out))
         if errs:
             raise LedgerError("import refused")
         return events
@@ -759,7 +837,7 @@ def _cmd_import(a: argparse.Namespace) -> int:
     except LedgerError:
         if not errs:
             raise
-        print("\n".join(errs))
+        print("\n".join(m for _, m in sorted(errs, key=lambda x: x[0])))
         return 1
     print("\n".join(_import_summary(made, a.dry_run)))
     return 0
@@ -846,9 +924,13 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
             _check_stage_open(
                 state, e.stage, "open", f"re-stage it first: set {e.id} --stage S-<x>"
             )
-        f: dict[str, object] = {"status": new, "note": note}
+        f: dict[str, object] = {"status": new, "note": _note_plus(e.note, note)}
         if cmd == "close" and a.ref:
             f["refs"] = _union(e.refs, a.ref)
+        links: list[str] = [] if cmd == "reopen" else a.link
+        _check_links(state, links)
+        if links:
+            f["links"] = _union(e.links, links)
         return [make_event(who, "set", e.id, f)]
 
     append(repo, build)
@@ -867,11 +949,18 @@ def _cmd_set(a: argparse.Namespace) -> int:
         or owner is not None
         or a.stage is not None
         or a.note is not None
+        or a.note_replace is not None
         or a.link
         or a.ref
     ):
         raise LedgerError(
-            "nothing to set (give --title, --owner, --stage, --note, --link or --ref)"
+            "nothing to set (give --title, --owner, --stage, --note, --note-replace, "
+            "--link or --ref)"
+        )
+    if a.note is not None and not a.note.strip():
+        raise LedgerError(
+            "--note adds a line to the note and needs text; "
+            "--note-replace '' clears the note"
         )
     keys: list[str] = []
 
@@ -887,10 +976,10 @@ def _cmd_set(a: argparse.Namespace) -> int:
             _check_stage_open(state, sid, e.status, "pick an open stage")
             f["stage"] = sid
         if a.note is not None:
-            f["note"] = a.note
-        for link in a.link:
-            if link not in state:
-                raise LedgerError(f"--link {link}: no such entry")
+            f["note"] = _note_plus(e.note, a.note)
+        elif a.note_replace is not None:
+            f["note"] = a.note_replace
+        _check_links(state, a.link)
         if a.link:
             f["links"] = _union(e.links, a.link)
         if a.ref:
@@ -920,9 +1009,7 @@ def _cmd_supersede(a: argparse.Namespace) -> int:
             raise LedgerError(f"{old.id} is a {old.type}, not a decision")
         if old.status != "done":
             raise LedgerError(f"{old.id} is {old.status}, not in force")
-        for link in a.link:
-            if link not in state:
-                raise LedgerError(f"--link {link}: no such entry")
+        _check_links(state, a.link)
         eid: str = next_id(state, BUILTIN_TYPES["decision"])
         f: dict[str, object] = {
             "type": "decision",
@@ -1017,11 +1104,16 @@ def _cmd_search(a: argparse.Namespace) -> int:
     repo: Path = _repo(a)
     state: dict[str, Entry] = load(repo)
     typ: str | None = check_type(a.type, known_types(repo)) if a.type else None
-    needle: str = a.text.lower()
+    exact: bool = a.source is not None or a.legacy_id is not None
+    if a.text is None and not exact:
+        raise LedgerError("search needs TEXT, --source or --legacy-id")
+    needle: str = (a.text or "").lower()
     hits: list[Entry] = [
         e
         for e in state.values()
         if (typ is None or e.type == typ)
+        and (a.source is None or e.extra.get("source") == a.source)
+        and (a.legacy_id is None or e.extra.get("legacy_id") == a.legacy_id)
         and any(
             needle in str(s).lower()
             for s in (e.title, e.note, e.extra.get("legacy_id", ""),
@@ -1032,7 +1124,7 @@ def _cmd_search(a: argparse.Namespace) -> int:
     cap: list[Entry] = hits[:limit] if limit else hits
     for e in cap:
         src: str = f" [src {e.extra['source']}]" if _imported(e) else ""
-        print(f"{e.id} {e.status}: {e.title[:60]}{src}")
+        print(f"{e.id} {e.status}: {e.title}{src}")
     if len(cap) < len(hits):
         print(_more(len(hits) - len(cap)))
     return 0
@@ -1126,7 +1218,7 @@ def _cmd_stage_close(a: argparse.Namespace) -> int:
             raise LedgerError(f"stage-close {sid} refused: " + "; ".join(problems))
         f: dict[str, object] = {
             "status": "done",
-            "note": f"closed; sign-off {a.sign_off}",
+            "note": _note_plus(stage.note, f"closed; sign-off {a.sign_off}"),
             "links": _union(stage.links, [a.sign_off]),
         }
         out.append(f"closed {sid}: sign-off {a.sign_off}")
@@ -1220,15 +1312,21 @@ def _parser() -> argparse.ArgumentParser:
     for name in ("close", "drop", "reopen"):
         pc: argparse.ArgumentParser = sub.add_parser(name, parents=[common])
         pc.add_argument("id")
-        pc.add_argument("--note", default=None)
+        pc.add_argument("--note", default=None, help="added as a new line of the note")
         if name == "close":
             pc.add_argument("--ref", action="append", default=[])
+        if name != "reopen":
+            pc.add_argument("--link", action="append", default=[])
     pt: argparse.ArgumentParser = sub.add_parser("set", parents=[common])
     pt.add_argument("id")
     pt.add_argument("--title", default=None)
     pt.add_argument("--owner", default=None)
     pt.add_argument("--stage", default=None)
-    pt.add_argument("--note", default=None)
+    notes = pt.add_mutually_exclusive_group()
+    notes.add_argument("--note", default=None, help="added as a new line of the note")
+    notes.add_argument(
+        "--note-replace", default=None, help="replaces the whole note ('' clears it)"
+    )
     pt.add_argument("--link", action="append", default=[])
     pt.add_argument("--ref", action="append", default=[])
     pu: argparse.ArgumentParser = sub.add_parser("supersede", parents=[common])
@@ -1247,7 +1345,9 @@ def _parser() -> argparse.ArgumentParser:
     ph: argparse.ArgumentParser = sub.add_parser("show", parents=[common])
     ph.add_argument("id")
     pq: argparse.ArgumentParser = sub.add_parser("search", parents=[common])
-    pq.add_argument("text")
+    pq.add_argument("text", nargs="?", default=None)
+    pq.add_argument("--source", default=None, help="exact source of an imported entry")
+    pq.add_argument("--legacy-id", default=None, help="exact legacy id")
     pq.add_argument("--type", default=None)
     pq.add_argument("--limit", type=int, default=SEARCH_LIMIT)
     pr: argparse.ArgumentParser = sub.add_parser("recent", parents=[common])
@@ -1257,8 +1357,14 @@ def _parser() -> argparse.ArgumentParser:
     pz.add_argument("id")
     pz.add_argument("--sign-off", default=None)
     sub.add_parser("brief-check", parents=[common])
-    pi: argparse.ArgumentParser = sub.add_parser("import", parents=[common])
-    pi.add_argument("file")
+    pi: argparse.ArgumentParser = sub.add_parser(
+        "import",
+        parents=[common],
+        description=IMPORT_DESCRIPTION,
+        epilog=IMPORT_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    pi.add_argument("files", nargs="+", metavar="FILE", help="JSON Lines file")
     pi.add_argument("--dry-run", action="store_true")
     return p
 

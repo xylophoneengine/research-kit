@@ -324,7 +324,7 @@ def test_status_cycle() -> None:
         assert L.load(repo)["T-2"].status == "dropped"
         lrun(repo, "reopen", "T-2", "--note", "needed after all")
         e = L.load(repo)["T-2"]
-        assert e.status == "open" and e.note == "needed after all", e
+        assert e.status == "open" and e.note == "not needed\nneeded after all", e
         assert lrun(repo, "reopen", "T-2", "--note", "x")[0] == 1  # already open
         code, out = lrun(repo, "start", "T-2", "--owner", "sr2")
         assert code == 0 and L.load(repo)["T-2"].owner == "sr2", out
@@ -947,6 +947,182 @@ def test_import_title_over_160_refused() -> None:
         code, out = lrun(repo, "import", str(rows))
         assert code == 1 and "rows.jsonl:1:" in out and "161 characters" in out, out
         assert jl(repo) == []
+
+
+def test_notes_append() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "task", "a", "--note", "orig\ntext")
+        for cmd in (("close", "T-1"), ("reopen", "T-1"), ("drop", "T-1")):
+            assert lrun(repo, *cmd, "--note", cmd[0])[0] == 0
+        assert lrun(repo, "set", "T-1", "--note", "set")[0] == 0
+        note: str = L.load(repo)["T-1"].note
+        assert note == "orig\ntext\nclose\nreopen\ndrop\nset", note
+        lrun(repo, "add", "task", "b")  # empty note: just the text
+        lrun(repo, "set", "T-2", "--note", "first")
+        assert L.load(repo)["T-2"].note == "first"
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "set", "T-1", "--note", "  ")
+        assert code == 1 and "--note-replace" in out, out
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                lrun(repo, "set", "T-1", "--note", "x", "--note-replace", "y")
+            raise AssertionError("--note with --note-replace accepted")
+        except SystemExit:
+            pass
+        assert len(jl(repo)) == n
+        code, out = lrun(repo, "set", "T-1", "--note-replace", "new")
+        assert code == 0 and out == "updated T-1: note\n", out
+        assert L.load(repo)["T-1"].note == "new"
+        assert lrun(repo, "set", "T-1", "--note-replace", "")[0] == 0
+        assert L.load(repo)["T-1"].note == ""
+
+
+def test_stage_close_keeps_note() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "01-a", "--note", "scope: x")
+        lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1")
+        assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 0
+        note: str = L.load(repo)["S-1"].note
+        assert note == "scope: x\nclosed; sign-off D-1", note
+
+
+def test_close_drop_link() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        for t in ("a", "b", "c"):
+            lrun(repo, "add", "task", t)
+        lrun(repo, "set", "T-1", "--link", "T-2")
+        code, out = lrun(
+            repo, "close", "T-1", "--note", "ok", "--link", "T-3", "--link", "T-2"
+        )
+        assert code == 0, out
+        assert L.load(repo)["T-1"].links == ["T-2", "T-3"]
+        assert lrun(repo, "drop", "T-2", "--note", "no", "--link", "T-1")[0] == 0
+        assert L.load(repo)["T-2"].links == ["T-1"]
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "drop", "T-3", "--note", "no", "--link", "X-9")
+        assert code == 1 and "X-9" in out, out
+        assert len(jl(repo)) == n
+
+
+def test_import_multi_file() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        (root / "a").mkdir()
+        (root / "b").mkdir()
+        one: Path = write_rows(root / "a", [
+            {"type": "stage", "title": "Old", "source": "P.md:1", "status": "done"},
+        ])
+        two: Path = write_rows(root / "b", [
+            {"type": "task", "title": "t", "source": "Q.md:1", "stage": "Old",
+             "status": "done"},
+        ])
+        code, out = lrun(repo, "import", str(two), str(one), "--dry-run")
+        assert code == 1 and f"{two}:1: no stage 'Old'" in out, out  # order counts
+        code, out = lrun(repo, "import", str(one), str(two), "--dry-run")
+        assert code == 0 and "total 2 would be imported" in out, out
+        assert jl(repo) == []
+        code, out = lrun(repo, "import", str(one), str(two))
+        assert code == 0 and out.endswith("total 2 imported\n"), out
+        assert L.load(repo)["T-1"].stage == "S-1"
+        before: bytes = (repo / L.LEDGER_REL).read_bytes()
+        empty: Path = root / "empty.jsonl"
+        empty.write_text("\n")
+        bad: Path = write_rows(root, [
+            {"type": "task", "title": "u", "source": "R.md:1"},
+            {"type": "task", "title": "v"},
+        ])
+        code, out = lrun(repo, "import", str(empty), str(bad))
+        assert code == 1 and out.splitlines() == [
+            f"{empty}: no rows", f"{bad}:2: missing key 'source'"
+        ], out
+        assert (repo / L.LEDGER_REL).read_bytes() == before
+
+
+def test_import_key_links() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        lrun(repo, "add", "task", "pre")
+        rows: Path = write_rows(root, [
+            {"type": "task", "title": "a", "source": "P.md:1",
+             "link": ["@later", "T-1", "@b"], "key": "a"},
+            {"type": "decision", "title": "b", "source": "P.md:2", "owner": "user",
+             "key": "b", "link": ["@a"]},
+            {"type": "task", "title": "c", "source": "P.md:3", "key": "later"},
+        ])
+        code, out = lrun(repo, "import", str(rows))
+        assert code == 0, out
+        st: dict[str, Any] = L.load(repo)
+        assert st["T-2"].links == ["T-3", "T-1", "D-1"], st["T-2"]
+        assert st["D-1"].links == ["T-2"], st["D-1"]
+        assert all("key" not in e["f"] for e in jl(repo)), jl(repo)
+        before: bytes = (repo / L.LEDGER_REL).read_bytes()
+        bad: Path = write_rows(root, [
+            {"type": "task", "title": "x", "source": "Z.md:1", "key": "k"},
+            {"type": "task", "title": "y", "source": "Z.md:2", "key": "k"},
+            {"type": "task", "title": "z", "source": "Z.md:3", "link": ["@nope"]},
+            {"type": "task", "title": "w", "source": "Z.md:4", "key": "a b"},
+        ])
+        code, out = lrun(repo, "import", str(bad))
+        lines: list[str] = out.splitlines()
+        assert code == 1 and len(lines) == 3, out
+        assert lines[0] == f"{bad}:2: duplicate key 'k' (first at {bad}:1)", out
+        assert lines[1] == f"{bad}:3: link @nope: no row with that key", out
+        assert lines[2].startswith(f"{bad}:4: key 'a b'"), out
+        assert (repo / L.LEDGER_REL).read_bytes() == before
+
+
+def test_import_help_documents_rows() -> None:
+    buf: io.StringIO = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        try:
+            L.main(["import", "--help"])
+        except SystemExit:
+            pass
+    text: str = buf.getvalue()
+    for key in (*L.IMPORT_STR_KEYS, *L.IMPORT_LIST_KEYS, "@KEY", "FILE [FILE ...]"):
+        assert key in text, key
+    assert "required: type, title, source" in text and "order given" in text, text
+    assert "never @KEY" in text and "must come\nbefore" in text, text
+    with tempfile.TemporaryDirectory() as d:  # the example rows import as shown
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        rows: list[str] = [
+            ln.strip() for ln in text.splitlines() if ln.startswith("  {")
+        ]
+        assert len(rows) == 3, rows
+        (root / "ex.jsonl").write_text("\n".join(rows) + "\n")
+        code, out = lrun(repo, "import", str(root / "ex.jsonl"))
+        assert code == 0, out
+        assert L.load(repo)["T-1"].links == ["F-1"]
+
+
+def test_search_exact() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        long: str = "Long imported title " + "x" * 80
+        for src, legacy in (("P.md:1", "07-1"), ("P.md:10", "07-10")):
+            lrun(
+                repo, "add", "task", long, "--imported", "--source", src,
+                "--legacy-id", legacy,
+            )
+        lrun(repo, "add", "task", "plain P.md:1")
+        out: str = lrun(repo, "search", "--source", "P.md:1")[1]
+        assert out == f"T-1 open: {long} [src P.md:1]\n", out
+        out = lrun(repo, "search", "--legacy-id", "07-10")[1]
+        assert out.startswith("T-2 open: ") and long in out, out
+        assert lrun(repo, "search", "--legacy-id", "07")[1] == ""
+        out = lrun(repo, "search", "P.md:1")[1]  # substring: all three, full titles
+        assert len(out.splitlines()) == 3 and out.count(long) == 2, out
+        assert lrun(repo, "search", "Long", "--source", "P.md:10")[1].startswith(
+            "T-2 "
+        )
+        code, out = lrun(repo, "search")
+        assert code == 1 and "--source" in out, out
 
 
 def main() -> int:
