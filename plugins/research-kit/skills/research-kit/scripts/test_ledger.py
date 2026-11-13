@@ -803,6 +803,152 @@ def test_running_age_counts_from_start() -> None:
         assert "(sr1, 0m) Slow" in sec["## Running"], sec["## Running"]
 
 
+def write_rows(root: Path, rows: list[dict[str, object] | str]) -> Path:
+    path: Path = root / "rows.jsonl"
+    path.write_text(
+        "".join((r if isinstance(r, str) else json.dumps(r)) + "\n" for r in rows)
+    )
+    return path
+
+
+def no_ts(repo: Path) -> list[dict[str, Any]]:
+    return [{k: v for k, v in e.items() if k != "ts"} for e in jl(repo)]
+
+
+IMPORT_ROWS: list[dict[str, object] | str] = [
+    {"type": "stage", "title": "Old stage", "source": "P.md:1", "status": "done"},
+    "",
+    {"type": "task", "title": "t1", "source": "P.md:2", "stage": "S-1",
+     "status": "done", "legacy_id": "07-1", "date": "2025-03-04", "note": "n",
+     "link": ["S-1"], "ref": ["a.md"], "owner": "ann"},
+    {"type": "task", "title": "t2", "source": "P.md:3", "stage": "Old stage",
+     "status": "dropped"},
+    {"type": "decision", "title": "d1", "source": "P.md:4", "owner": "user"},
+]
+
+
+def test_import_happy_and_equals_add() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        rows: Path = write_rows(root, IMPORT_ROWS)
+        code, out = lrun(repo, "import", str(rows))
+        assert code == 0, out
+        assert out.splitlines() == [
+            "stage: 1 (done 1) S-1..S-1",
+            "task: 2 (done 1, dropped 1) T-1..T-2",
+            "decision: 1 (done 1) D-1..D-1",
+            "total 4 imported",
+        ], out
+        st: dict[str, Any] = L.load(repo)
+        assert st["T-1"].stage == "S-1" and st["T-2"].stage == "S-1"
+        assert st["D-1"].extra["imported"] is True and "S-1" in st["T-1"].links
+        assert (repo / L.STATUS_REL).is_file()
+        other: Path = new_repo(root / "o")
+        for argv in (
+            ("stage", "Old stage", "--status", "done", "--source", "P.md:1"),
+            ("task", "t1", "--stage", "S-1", "--status", "done", "--legacy-id",
+             "07-1", "--date", "2025-03-04", "--note", "n", "--link", "S-1",
+             "--ref", "a.md", "--owner", "ann", "--source", "P.md:2"),
+            ("task", "t2", "--stage", "Old stage", "--status", "dropped",
+             "--source", "P.md:3"),
+            ("decision", "d1", "--owner", "user", "--source", "P.md:4"),
+        ):
+            assert lrun(other, "add", *argv, "--imported")[0] == 0
+        assert no_ts(repo) == no_ts(other)
+
+
+def test_import_failure_writes_nothing() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        lrun(repo, "add", "task", "pre")
+        rows: Path = write_rows(root, [
+            {"type": "task", "title": "ok", "source": "P.md:1"},
+            {"type": "task", "title": "x" * 161, "source": "P.md:2"},
+            "{not json",
+            {"type": "task", "title": "k", "source": "P.md:3", "bogus": 1},
+            {"type": "task", "title": "m", "source": "P.md:3", "link": ["T-9"]},
+            {"type": "task", "title": "s", "source": "P.md:3", "status": "bad"},
+            {"type": "task", "title": "ok2", "source": "P.md:4"},
+        ])
+        before: dict[str, bytes | None] = snapshot(root)
+        code, out = lrun(repo, "import", str(rows))
+        lines: list[str] = out.splitlines()
+        assert code == 1 and len(lines) == 5, out
+        assert [ln.split(":")[1] for ln in lines] == ["2", "3", "4", "5", "6"], out
+        assert "at most 160" in lines[0] and "not a JSON line" in lines[1], out
+        assert "unknown key 'bogus'" in lines[2] and "T-9" in lines[3], out
+        assert snapshot(root) == before
+
+
+def test_import_dry_run() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        rows: Path = write_rows(root, IMPORT_ROWS)
+        before: dict[str, bytes | None] = snapshot(root)
+        code, out = lrun(repo, "import", str(rows), "--dry-run")
+        assert code == 0 and "dry run, nothing written" in out, out
+        assert "task: 2 (done 1, dropped 1) T-1..T-2" in out, out
+        assert snapshot(root) == before
+
+
+def test_import_rerun_guard() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        rows: Path = write_rows(root, IMPORT_ROWS)
+        assert lrun(repo, "import", str(rows))[0] == 0
+        before: bytes = (repo / L.LEDGER_REL).read_bytes()
+        code, out = lrun(repo, "import", str(rows))
+        lines: list[str] = out.splitlines()
+        assert code == 1 and len(lines) == 4, out
+        assert lines[0].endswith(":1: already imported as S-1"), out
+        assert (repo / L.LEDGER_REL).read_bytes() == before
+        # same source: legacy id decides when given, else the title
+        one: Path = write_rows(root, [
+            {"type": "task", "title": "o", "source": "P.md:2", "legacy_id": "07-1"},
+            {"type": "task", "title": "o", "source": "P.md:2", "legacy_id": "07-2"},
+            {"type": "task", "title": "o", "source": "P.md:2", "legacy_id": "07-2"},
+            {"type": "task", "title": "t", "source": "P.md:9"},
+            {"type": "task", "title": "t", "source": "P.md:9"},
+        ])
+        code, out = lrun(repo, "import", str(one))
+        lines = out.splitlines()
+        assert code == 1 and [ln.split(":")[1] for ln in lines] == ["1", "3", "5"], out
+        assert "already imported as T-1" in lines[0], out
+        assert "already imported as T-3" in lines[1], out
+
+
+def test_import_closed_stage_refused() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        rows: Path = write_rows(root, [
+            {"type": "stage", "title": "S", "source": "P.md:1", "status": "done"},
+            {"type": "task", "title": "a", "source": "P.md:2", "stage": "S-1",
+             "status": "done"},
+            {"type": "task", "title": "b", "source": "P.md:3", "stage": "S-1"},
+        ])
+        code, out = lrun(repo, "import", str(rows))
+        assert code == 1 and out.count("\n") == 1, out
+        assert "rows.jsonl:3: S-1 is closed" in out, out
+        assert jl(repo) == []
+
+
+def test_import_title_over_160_refused() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        rows: Path = write_rows(
+            root, [{"type": "task", "title": "x" * 161, "source": "P.md:1"}]
+        )
+        code, out = lrun(repo, "import", str(rows))
+        assert code == 1 and "rows.jsonl:1:" in out and "161 characters" in out, out
+        assert jl(repo) == []
+
+
 def main() -> int:
     tests: list[tuple[str, Callable[[], None]]] = [
         (n, f) for n, f in globals().items() if n.startswith("test_") and callable(f)

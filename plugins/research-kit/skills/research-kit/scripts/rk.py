@@ -31,6 +31,9 @@ and --who NAME):
   python3 -I rk.py render
   python3 -I rk.py stage-close S-n --sign-off D-m
   python3 -I rk.py brief-check < message.txt    (hook gate: rc 0 pass, 2 refuse)
+  python3 -I rk.py import FILE.jsonl [--dry-run]    (imported history, all or nothing;
+      rows: type, title, source; optional owner, stage, note, link, ref, status,
+      legacy_id, date)
 """
 
 from __future__ import annotations

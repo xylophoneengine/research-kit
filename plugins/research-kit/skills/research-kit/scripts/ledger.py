@@ -41,6 +41,7 @@ COMMANDS: frozenset[str] = frozenset(
     {
         "add", "start", "close", "drop", "reopen", "set", "supersede",
         "list", "show", "search", "recent", "render", "stage-close", "brief-check",
+        "import",
     }
 )
 BRIEF_RE: re.Pattern[str] = re.compile(r"^[ \t]*DELIVERABLE:", re.M)
@@ -195,8 +196,12 @@ def _apply(e: Entry, f: dict[str, object], n: int) -> None:
             raise _bad(n, f"field {key} must be a string or boolean")
 
 
-def fold(events: list[tuple[int, dict[str, object]]]) -> dict[str, Entry]:
-    state: dict[str, Entry] = {}
+def fold(
+    events: list[tuple[int, dict[str, object]]],
+    state: dict[str, Entry] | None = None,
+) -> dict[str, Entry]:
+    """Fold events into a new state, or into `state` in place when given."""
+    state = {} if state is None else state
     for n, ev in events:
         ts, who, kind, eid, f = (ev.get(k) for k in ("ts", "who", "ev", "id", "f"))
         if not (
@@ -553,10 +558,12 @@ def format_list(
 # ---- commands ---------------------------------------------------------------
 
 
-def _cmd_add(a: argparse.Namespace) -> int:
-    repo: Path = _repo(a)
-    who: str = _name(a.who, "--who")
-    types: dict[str, str] = known_types(repo)
+def _add_step(
+    a: argparse.Namespace, types: dict[str, str]
+) -> Callable[[dict[str, Entry]], tuple[str, dict[str, object]]]:
+    """Validate an add (what needs no ledger state now); the returned step checks
+    the rest against a state and gives (new id, event fields). Shared by add and
+    import."""
     typ: str = check_type(a.type, types)
     title: str = _title(a.title)
     if typ == "decision" and a.owner is None:
@@ -595,9 +602,8 @@ def _cmd_add(a: argparse.Namespace) -> int:
             f"--status {status}: a stage is logged open and closed with "
             "stage-close; another status only with --imported"
         )
-    made: list[str] = []
 
-    def build(state: dict[str, Entry]) -> list[dict[str, object]]:
+    def step(state: dict[str, Entry]) -> tuple[str, dict[str, object]]:
         for link in a.link:
             if link not in state:
                 raise LedgerError(f"--link {link}: no such entry")
@@ -625,11 +631,137 @@ def _cmd_add(a: argparse.Namespace) -> int:
                 f["legacy_id"] = a.legacy_id
             if a.date is not None:
                 f["date"] = a.date
+        return eid, f
+
+    return step
+
+
+def _cmd_add(a: argparse.Namespace) -> int:
+    repo: Path = _repo(a)
+    who: str = _name(a.who, "--who")
+    step: Callable[[dict[str, Entry]], tuple[str, dict[str, object]]] = _add_step(
+        a, known_types(repo)
+    )
+    made: list[str] = []
+
+    def build(state: dict[str, Entry]) -> list[dict[str, object]]:
+        eid, f = step(state)
         made.append(eid)
         return [make_event(who, "add", eid, f)]
 
     append(repo, build)
-    print(f"logged {made[0]}: {title}")
+    print(f"logged {made[0]}: {a.title.strip()}")
+    return 0
+
+
+IMPORT_STR_KEYS: tuple[str, ...] = (
+    "type", "title", "source", "owner", "stage", "note", "status", "legacy_id", "date",
+)
+IMPORT_LIST_KEYS: tuple[str, ...] = ("link", "ref")
+
+
+def _import_row(obj: object, who: str) -> argparse.Namespace:
+    """A JSONL row as the namespace `add --imported` would have parsed."""
+    if not isinstance(obj, dict):
+        raise LedgerError("not a JSON object")
+    unknown: list[str] = [k for k in obj if k not in IMPORT_STR_KEYS + IMPORT_LIST_KEYS]
+    if unknown:
+        raise LedgerError(f"unknown key {', '.join(map(repr, unknown))}")
+    for key in ("type", "title", "source"):
+        if key not in obj:
+            raise LedgerError(f"missing key {key!r}")
+    for key in IMPORT_STR_KEYS:
+        if key in obj and not isinstance(obj[key], str):
+            raise LedgerError(f"{key} must be a string")
+    for key in IMPORT_LIST_KEYS:
+        val: object = obj.get(key, [])
+        if not isinstance(val, list) or not all(isinstance(v, str) for v in val):
+            raise LedgerError(f"{key} must be a list of strings")
+    if obj.get("status", "open") not in STATUSES:
+        raise LedgerError(f"status '{obj['status']}': one of {', '.join(STATUSES)}")
+    fields: dict[str, object] = {
+        "who": who, "imported": True, "owner": None, "stage": None, "note": "",
+        "link": [], "ref": [], "status": None, "legacy_id": None, "date": None,
+    }
+    return argparse.Namespace(**{**fields, **obj})
+
+
+def _import_key(source: object, legacy: object, title: object) -> tuple[str, str, str]:
+    """What the re-run guard compares: source plus legacy id, else title."""
+    return str(source), "id" if legacy else "title", str(legacy or title)
+
+
+def _import_summary(made: list[tuple[str, str, str]], dry: bool) -> list[str]:
+    """One line per type (status counts, id range), then the total."""
+    out: list[str] = []
+    for typ in dict.fromkeys(t for t, _, _ in made):
+        rows: list[tuple[str, str, str]] = [m for m in made if m[0] == typ]
+        counts: str = ", ".join(
+            f"{s} {sum(1 for r in rows if r[1] == s)}"
+            for s in STATUSES
+            if any(r[1] == s for r in rows)
+        )
+        out.append(f"{typ}: {len(rows)} ({counts}) {rows[0][2]}..{rows[-1][2]}")
+    verb: str = "would be imported (dry run, nothing written)" if dry else "imported"
+    return [*out, f"total {len(made)} {verb}"]
+
+
+def _cmd_import(a: argparse.Namespace) -> int:
+    repo: Path = _repo(a)
+    who: str = _name(a.who, "--who")
+    types: dict[str, str] = known_types(repo)
+    try:
+        raw: bytes = Path(a.file).read_bytes()
+    except OSError as e:
+        raise LedgerError(f"{a.file}: {e.strerror}") from None
+    errs: list[str] = []
+    made: list[tuple[str, str, str]] = []
+
+    def plan(state: dict[str, Entry]) -> list[dict[str, object]]:
+        events: list[dict[str, object]] = []
+        seen: dict[tuple[str, str, str], str] = {
+            _import_key(e.extra.get("source"), e.extra.get("legacy_id"), e.title): e.id
+            for e in state.values()
+            if e.extra.get("imported")
+        }
+        for n, bline in enumerate(raw.split(b"\n"), 1):
+            if not bline.strip():
+                continue
+            try:
+                try:
+                    obj: object = json.loads(bline.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    raise LedgerError("not a JSON line") from None
+                eid, f = _add_step(_import_row(obj, who), types)(state)
+                key: tuple[str, str, str] = _import_key(
+                    f["source"], f.get("legacy_id"), f["title"]
+                )
+                if key in seen:
+                    raise LedgerError(f"already imported as {seen[key]}")
+                seen[key] = eid
+                ev: dict[str, object] = make_event(who, "add", eid, f)
+                fold([(n, ev)], state)
+                events.append(ev)
+                made.append((str(f["type"]), str(f["status"]), eid))
+            except LedgerError as e:
+                errs.append(f"{a.file}:{n}: {e}")
+        if not events and not errs:
+            errs.append(f"{a.file}: no rows")
+        if errs:
+            raise LedgerError("import refused")
+        return events
+
+    try:
+        if a.dry_run:
+            plan(load(repo))
+        else:
+            append(repo, plan)
+    except LedgerError:
+        if not errs:
+            raise
+        print("\n".join(errs))
+        return 1
+    print("\n".join(_import_summary(made, a.dry_run)))
     return 0
 
 
@@ -1125,6 +1257,9 @@ def _parser() -> argparse.ArgumentParser:
     pz.add_argument("id")
     pz.add_argument("--sign-off", default=None)
     sub.add_parser("brief-check", parents=[common])
+    pi: argparse.ArgumentParser = sub.add_parser("import", parents=[common])
+    pi.add_argument("file")
+    pi.add_argument("--dry-run", action="store_true")
     return p
 
 
@@ -1143,6 +1278,7 @@ HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "render": _cmd_render,
     "stage-close": _cmd_stage_close,
     "brief-check": _cmd_brief_check,
+    "import": _cmd_import,
 }
 
 

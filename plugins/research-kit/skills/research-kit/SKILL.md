@@ -17,7 +17,7 @@ Kinds: `paper`, `software`, `reverse-eng`, `experiment`, `thesis`.
 
 Script (every mode below): `python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" <mode> <repo_dir> ...`
 
-The ledger commands use the same script (`rk.py add|start|close|list|...`); the
+The ledger commands use the same script (`rk.py add|start|close|list|import|...`); the
 reference is core AGENTS.md 4.2.
 
 The command argument says the mode: init, add-kind, upgrade, sync or close.
