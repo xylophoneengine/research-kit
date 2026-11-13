@@ -17,23 +17,24 @@ and --who NAME):
       [--link ID]... [--ref PATH]... [--status STATUS]
       [--imported --source FILE:LINE [--legacy-id OLD] [--date YYYY-MM-DD]]
   python3 -I rk.py start ID [--owner NAME]
-  python3 -I rk.py close ID --note TEXT [--ref PATH]...
-  python3 -I rk.py drop ID --note TEXT
+  python3 -I rk.py close ID --note TEXT [--ref PATH]... [--link ID]...
+  python3 -I rk.py drop ID --note TEXT [--link ID]...
   python3 -I rk.py reopen ID --note TEXT
-  python3 -I rk.py set ID [--title T] [--owner N] [--stage S] [--note T]
-      [--link ID]... [--ref PATH]...
+  python3 -I rk.py set ID [--title T] [--owner N] [--stage S]
+      [--note T | --note-replace T] [--link ID]... [--ref PATH]...
   python3 -I rk.py supersede ID TITLE --owner NAME [--note T] [--link ID]...
       [--ref PATH]...
   python3 -I rk.py list [--type T] [--owner N] [--stage S] [--limit N] [--all]
   python3 -I rk.py show ID
-  python3 -I rk.py search TEXT [--type T] [--limit N]
+  python3 -I rk.py search [TEXT] [--source S] [--legacy-id L] [--type T] [--limit N]
   python3 -I rk.py recent [-n N]
   python3 -I rk.py render
   python3 -I rk.py stage-close S-n --sign-off D-m
   python3 -I rk.py brief-check < message.txt    (hook gate: rc 0 pass, 2 refuse)
-  python3 -I rk.py import FILE.jsonl [--dry-run]    (imported history, all or nothing;
-      rows: type, title, source; optional owner, stage, note, link, ref, status,
-      legacy_id, date)
+  python3 -I rk.py import FILE.jsonl [FILE.jsonl ...] [--dry-run]
+      (imported history, all or nothing; rows: type, title, source; optional
+      owner, stage, note, link, ref, status, legacy_id, date, key; see
+      `rk.py import --help`)
 """
 
 from __future__ import annotations
@@ -261,6 +262,19 @@ def ensure_compact_block(repo_dir: Path, write: bool) -> tuple[bool, str]:
     )
 
 
+LEGACY_README: str = "paper/README.md"
+NEW_README: str = "pm/README.md"
+# bare or ./paper/README.md; not ../paper/README.md (outside the repo root)
+LEGACY_README_RE: re.Pattern[str] = re.compile(
+    r"(?<![\w/.-])((?:\./)?)paper/README\.md(?!\w)"
+)
+
+
+def repoint_paper_readme(text: str) -> str:
+    """`text` with the legacy README path replaced; nothing else touched."""
+    return LEGACY_README_RE.sub(lambda m: m.group(1) + NEW_README, text)
+
+
 GB_START: str = "<!-- research-kit:global >>> -->"
 GB_END: str = "<!-- <<< research-kit:global -->"
 
@@ -287,13 +301,26 @@ def migrate_text(
 ) -> str:
     """Legacy paper-playbook AGENTS.md -> research-kit core + old appendix."""
     app: str = split(repo_agents, "repo AGENTS.md")[1]
-    app = set_field(app, "Mode", "full")
-    app = set_field(app, "Git policy", GIT_POLICIES["user"])
+    first: bool = True
+
+    def take(new: str) -> None:
+        """Adopt `new`; the first pure append gets one blank line before it."""
+        nonlocal app, first
+        tail: str = new[len(app) :]
+        if first and new != app and new.startswith(app) and (
+            app.endswith("\n") or tail.startswith("\n")
+        ):
+            new = app.rstrip("\n") + "\n\n" + tail.lstrip("\n")
+            first = False
+        app = new
+
+    take(set_field(app, "Mode", "full"))
+    take(set_field(app, "Git policy", GIT_POLICIES["user"]))
     if legacy_stages:
-        app = set_field(app, "Legacy stages", legacy_stages)
+        take(set_field(app, "Legacy stages", legacy_stages))
     if legacy_waste:
-        app = set_field(app, "Legacy waste", legacy_waste)
-    app = set_kinds(app, ["paper"])
+        take(set_field(app, "Legacy waste", legacy_waste))
+    take(set_kinds(app, ["paper"]))
     return split(core_template, "template")[0] + app
 
 
@@ -518,6 +545,13 @@ def cmd_sync(repo_dir: Path, write: bool, accept_drop: bool) -> int:
         print(f"\n== .gitattributes == research-kit block (ledger merge=union)\n"
               f"{_diff(ga_old, ga_new, '.gitattributes')}")
 
+    claude: Path = repo_dir / "CLAUDE.md"
+    ptr_old: str = claude.read_bytes().decode() if claude.exists() else ""
+    ptr_new: str = repoint_paper_readme(ptr_old) if legacy else ptr_old
+    if ptr_new != ptr_old:
+        print(f"\n== CLAUDE.md == pointer {LEGACY_README} -> {NEW_README}\n"
+              f"{_diff(ptr_old, ptr_new, 'CLAUDE.md')}")
+
     compact_changed, compact_diff = ensure_compact_block(repo_dir, False)
     if compact_changed:
         print(f"\n== CLAUDE.md == Compact Instructions block\n{compact_diff}")
@@ -531,7 +565,8 @@ def cmd_sync(repo_dir: Path, write: bool, accept_drop: bool) -> int:
 
     # Stamp lines are template-owned: a version bump is not a dropped rule.
     drops = [(f, ln) for f, ln in drops if not STAMP_RE.search(ln)]
-    if not writes and not dirs and not files and not compact_changed:
+    ptr_changed: bool = ptr_new != ptr_old
+    if not (writes or dirs or files or compact_changed or ptr_changed):
         print("up to date")
         return 0
     if drops:
@@ -546,6 +581,9 @@ def cmd_sync(repo_dir: Path, write: bool, accept_drop: bool) -> int:
         print("\nrefused: dropped lines present; resolve them or pass --accept-drop")
         return 2
     _create(dirs, files)
+    if ptr_changed:
+        claude.write_bytes(ptr_new.encode())  # bytes: other lines stay identical
+        print("wrote CLAUDE.md (pointer)")
     if compact_changed:
         ensure_compact_block(repo_dir, True)
         print("wrote CLAUDE.md")
@@ -560,7 +598,8 @@ def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] in ledger.COMMANDS:
         return ledger.main(sys.argv[1:])
     p: argparse.ArgumentParser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = p.add_subparsers(dest="cmd", required=True)
     pi: argparse.ArgumentParser = sub.add_parser("init")
@@ -580,6 +619,8 @@ def main() -> int:
     pg: argparse.ArgumentParser = sub.add_parser("global-rules")
     pg.add_argument("--claude-md", type=Path, default=Path("~/.claude/CLAUDE.md"))
     pg.add_argument("--write", action="store_true")
+    for name in sorted(ledger.COMMANDS):  # listed in --help; main() dispatches them
+        sub.add_parser(name, add_help=False)
     a: argparse.Namespace = p.parse_args()
     if a.cmd == "init":
         kinds: list[str] = [k.strip() for k in a.kinds.split(",") if k.strip()]

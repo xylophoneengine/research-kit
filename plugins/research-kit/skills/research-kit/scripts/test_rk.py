@@ -366,6 +366,98 @@ def test_migrate_legacy_moves_nothing() -> None:
         assert "up to date" in run(rk.cmd_sync, repo, False, False)[1]
 
 
+def _legacy_repo(root: Path, appendix_text: str, claude: str | None = None) -> Path:
+    repo: Path = setup(root)
+    (repo / "AGENTS.md").write_text(
+        "<!-- paper-playbook: 1 -->\n# old\nold rule\n## Project appendix\n"
+        + appendix_text
+    )
+    if claude is not None:
+        (repo / "CLAUDE.md").write_bytes(claude.encode())
+    return repo
+
+
+def test_sync_dropped_line_printed_in_full() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = _legacy_repo(Path(d), "mine\n")
+        tail: str = "repo-specific tail " + "x" * 600 + " END"
+        text: str = (repo / "AGENTS.md").read_text()
+        (repo / "AGENTS.md").write_text(text.replace("old rule", "old rule " + tail))
+        out: str = run(rk.cmd_sync, repo, False, False)[1]
+        assert f"  AGENTS.md | old rule {tail}\n" in out, out
+
+
+def test_migrate_one_blank_line_before_appended_block() -> None:
+    for app in ("mine\n", "mine", "mine\n\n", "mine\n\n\n\n"):
+        with tempfile.TemporaryDirectory() as d:
+            repo: Path = _legacy_repo(Path(d), app)
+            assert run(rk.cmd_sync, repo, True, True)[0] == 0
+            got: str = appendix(repo)
+            assert got.startswith("## Project appendix\nmine\n\nMode: full\n"), got
+            assert "\n\n\n" not in got, repr(got)
+            assert "up to date" in run(rk.cmd_sync, repo, False, False)[1]
+
+
+def test_migrate_appendix_with_fields_gets_no_blank() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = _legacy_repo(Path(d), "Mode: light\nGit policy: x\nmine\n")
+        assert run(rk.cmd_sync, repo, True, True)[0] == 0
+        got: str = appendix(repo)
+        assert got.startswith(
+            "## Project appendix\nMode: full\nGit policy: user commits\nmine\n"
+        ), got
+
+
+def test_migrate_claude_md_pointer() -> None:
+    claude: str = (
+        "Read paper/README.md first.\n"
+        "See docs/paper/README.md and xpaper/README.md and paper/README.mdx.\n"
+        "Also `paper/README.md`.\n"
+    )
+    want: str = claude.replace("Read paper/", "Read pm/").replace("`paper/", "`pm/")
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = _legacy_repo(Path(d), "mine\n", claude)
+        before: dict[str, bytes | None] = snapshot(repo)
+        code, out = run(rk.cmd_sync, repo, False, False)
+        assert code == 0 and "pointer paper/README.md -> pm/README.md" in out, out
+        assert snapshot(repo) == before, "dry run wrote something"
+        assert run(rk.cmd_sync, repo, True, True)[0] == 0
+        got: bytes = (repo / "CLAUDE.md").read_bytes()
+        assert got.decode().startswith(want), got
+        # the research-kit block is appended after the untouched text
+        assert b"research-kit:compact" in got
+        assert "up to date" in run(rk.cmd_sync, repo, False, False)[1]
+
+
+def test_pointer_dot_slash_yes_dot_dot_slash_no() -> None:
+    old: str = "a ./paper/README.md b ../paper/README.md c x./paper/README.md\n"
+    want: str = "a ./pm/README.md b ../paper/README.md c x./paper/README.md\n"
+    assert rk.repoint_paper_readme(old) == want, rk.repoint_paper_readme(old)
+
+
+def test_claude_md_pointer_only_for_legacy() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = setup(Path(d))
+        assert run(rk.cmd_init, repo, ["paper"], "full", "user")[0] == 0
+        text: str = (repo / "CLAUDE.md").read_text() + "see paper/README.md\n"
+        (repo / "CLAUDE.md").write_text(text)
+        code, out = run(rk.cmd_sync, repo, True, True)
+        assert code == 0 and "up to date" in out, out
+        assert (repo / "CLAUDE.md").read_text() == text
+
+
+def test_help_usage_lists_ledger_commands() -> None:
+    r: subprocess.CompletedProcess[str] = subprocess.run(
+        [sys.executable, "-I", str(RK_PY), "--help"], capture_output=True, text=True
+    )
+    usage: str = r.stdout.split("\n\n", 1)[0]
+    positional: str = r.stdout.split("positional arguments:", 1)[1]
+    positional = positional.split("options:", 1)[0]
+    for cmd in ("sync", "add", "import", "list", "stage-close", "brief-check"):
+        assert re.search(rf"[{{,]{cmd}[,}}]", usage), usage
+        assert re.search(rf"[{{,]{cmd}[,}}]", positional), positional
+
+
 # ---- Tasks 5-8: real template content (other teammates deliver it) -----------
 
 

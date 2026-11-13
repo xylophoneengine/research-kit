@@ -1,4 +1,4 @@
-<!-- research-kit: 2026-11-13c -->
+<!-- research-kit: 2026-11-13d -->
 # AGENTS.md - how we work on a research project (research-kit core)
 
 Generic working method for every project kind (paper, software, reverse engineering, experiment, thesis), distilled from completed projects. Installed and updated by the `research-kit` plugin (`/rk-init`, `/rk-add-kind`, `/rk-upgrade`, `/rk-sync`, `/rk-close`). Everything above "Project appendix" is generic and replaced on sync: never edit it in a repo copy; repo-specific lines go into the appendix. Kind rules live in `pm/kinds/<kind>.md`, one file per active kind, listed in the kinds block of the appendix; they add to this file, never relax it. Every rule carries a one-clause reason so a later session can judge an edge case instead of obeying blind. Placeholders: `<ID>` = short project id (session prefix, appendix), `NN` = stage number, `<kind>` = kind id, `<topic>` = stage topic.
@@ -188,10 +188,10 @@ Kind-specific folders (e.g. a paper's library and manuscript) are named in the k
 - Granularity: an entry is a unit of work or a ruling; a file edit, a one-line fix or a test rerun is not. The user's own work: `rk add task "<what>" --owner user --status done --note ...`. Never hand-edit `ledger.jsonl` or `STATUS.md` (a hook blocks it); corrections are new events. `ledger.jsonl` is committed together with the work (section 7); the tool never runs git.
 - `rk add <type> "<title>" [--owner N] [--stage S-<n>] [--note T] [--link ID]... [--ref PATH]... [--status S]`: new entry
 - `rk start ID`: open -> running, for tasks and other work entries, never a stage (the brief hook does it for the brief's `TASK:` ids)
-- `rk close ID --note "<outcome>" [--ref PATH]`: done; not for stages (`stage-close`) or decisions (`supersede` / `drop`)
-- `rk drop ID --note "<why>"`: dropped
+- `rk close ID --note "<outcome>" [--ref PATH] [--link ID]`: done; not for stages (`stage-close`) or decisions (`supersede` / `drop`)
+- `rk drop ID --note "<why>" [--link ID]`: dropped
 - `rk reopen ID --note "<why>"`: done / dropped -> open
-- `rk set ID [--title T] [--owner N] [--stage S-<n>] [--note T] [--link ID] [--ref PATH]`: change fields, status kept
+- `rk set ID [--title T] [--owner N] [--stage S-<n>] [--note T | --note-replace T] [--link ID] [--ref PATH]`: change fields, status kept. Every `--note` (set, close, drop, reopen) appends a line to the entry's note; only `--note-replace T` replaces it
 - `rk supersede D-<n> "<new>" --owner N [--note T]`: replaces a decision in one call
 - `rk list [--type T] [--owner N] [--stage S-<n>] [--all]`: open entries, short (`--all` adds closed ones)
 - `rk show ID`: fields, history, and one line (id, status, title) per linked entry, both directions (it links, links it)

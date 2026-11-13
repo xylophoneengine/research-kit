@@ -82,11 +82,51 @@ Output "already full" = nothing to do.
    `--accept-drop`, `--write` exits 2 while drops exist.
 4. `sync` also refreshes the marked `## Compact Instructions` block in
    `CLAUDE.md` (diff shown in the dry run, written only with `--write`; text
-   outside the markers is never touched, never counts as DROPPED).
+   outside the markers is never touched, never counts as DROPPED). When it
+   migrates a legacy repo, it also rewrites a `paper/README.md` pointer in
+   `CLAUDE.md` to `pm/README.md` (named in the dry run; nothing else in the
+   file changes).
 5. If `~/.claude/CLAUDE.md` already holds the `research-kit:global` block, show
    the `global-rules` dry-run diff; run it with `--write` only with consent.
 6. Tell the user: AGENTS.md loads at session start, so running teammates and
    this session keep the old rules; start a new session.
+
+## import (legacy history into the ledger)
+
+`rk.py import FILE.jsonl [FILE.jsonl ...] [--dry-run] [--repo DIR] [--who NAME]`
+turns the old system's tasks, decisions and stages into ledger entries marked
+`imported` (unverified). All or nothing: every row of every file is checked
+first; one bad row and nothing is written (errors print as `FILE:LINE: message`).
+Several files are one batch, read in the order given.
+
+Each file is JSON Lines: one object per line, blank lines skipped, every value
+a string except `link` and `ref` (lists of strings).
+
+- Required: `type`, `title` (one line, at most 160 characters), `source` (where
+  the row came from, e.g. `pm/living/TASKS.md:44`).
+- Optional: `status` (default open; a decision: done), `owner` (a decision needs
+  it), `stage` (a stage id or the exact title of one stage), `note`,
+  `legacy_id`, `date` (YYYY-MM-DD, the original date), `link` (entry ids),
+  `ref` (paths), `key`.
+- `key` names a row (letters, digits, `_ . -` only, unique in the batch, not
+  stored). Another row links to it with `"link": ["@KEY"]`, even if that row
+  comes later in the batch (an unknown `@KEY` or a duplicate key is an error;
+  plain entry ids in `link` still work). `stage` takes a stage id or a stage
+  title, never `@KEY`; the stage row must come before the row that names it in
+  the batch (earlier in the same file, or in a file given earlier), a stage row
+  further down fails with `no stage`.
+
+Run with `--dry-run` first: it checks everything and prints the per-type counts
+and id ranges it would create, writing nothing. Then run without it. A re-run
+refuses rows already in the ledger (same `source` and `legacy_id`, or same
+`source` and `title` when there is no `legacy_id`), so the whole batch is
+refused (exit 1, one `already imported as ID` line per row): put only the new
+rows in their own file rather than importing twice (a duplicate earlier in the
+same batch is refused too). Look an imported row up afterwards
+with `rk.py search --source S` or `--legacy-id L` (exact match on the stored
+value). Later notes on an entry append (`set|close|drop|reopen --note`);
+`set --note-replace TEXT` replaces.
+`rk.py import --help` has the full key list and example rows.
 
 ## close (user says "close stage", or `/rk-close`)
 
