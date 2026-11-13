@@ -23,7 +23,7 @@ ${CLAUDE_PLUGIN_ROOT}/skills/waste/waste.sh <who> "<reason>" <path> [<path> ...]
   - a directory that holds any of those names anywhere inside (so nested repos are refused);
   - a waste dir that git does not ignore (run `rk-init` or `rk-sync --write`, or add `pm/waste/` to `.gitignore`; legacy `WASTE/*` plus `!WASTE/LEDGER.md` also passes);
   - a symlinked `pm`, `pm/waste`, `WASTE` or ledger, and symlinks in the destination;
-  - this plugin's own files or a directory holding them (so in the research-kit repo itself, files under `plugins/research-kit/` cannot be wasted with the helper: move them by hand);
+  - the plugin dir of the `waste.sh` that runs (its own path, two levels above `skills/waste/`, i.e. `${CLAUDE_PLUGIN_ROOT}`) or a directory holding it; a copy of the same files in another checkout or worktree (e.g. `<worktree>/plugins/research-kit/` while the helper runs from the main checkout) is NOT protected and gets moved, so never pass such paths by accident;
   - control characters in who, reason or path (a `|` in a path is escaped in the ledger; `|` in who or reason is refused);
   - any call from a subagent or teammate: the PreToolUse guard denies `waste.sh` when the hook input carries an `agent_id`. Only the lead's call goes through (with the owner's approval).
   `GIT_*` environment variables are ignored.

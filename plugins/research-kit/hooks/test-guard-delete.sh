@@ -36,10 +36,68 @@ t none "bash \"$W\" sr1 t f"; t none 'bash ${CLAUDE_PLUGIN_ROOT}/skills/waste/wa
 t none "bash -c 'x' /x/skills/waste/waste.sh y"; t none 'bash /x/skills/waste/waste.sh sr1 t f'
 t none "chmod -R 000 . $W y"; t none "echo $W y"; t none "bash -x $W sr1 t f"
 t none "$W a b /r/*"; t none "$W a b ~/p/.env"
+# heredocs are not parsed: a delete word at line start inside a heredoc body is denied too (hint in the reason says: use the Write tool)
+t deny $'cat > f.md <<\'EOF\'\nrm src/App.css\ngit clean -fd\nEOF'
+t deny $'cat > f.md <<EOF\nrm -rf dist\nEOF'
+t deny $'cat <<\'EOF\' | tee f.md\nrm a\nEOF'
+t deny $'cat >> f.md <<-EOF\n\trm a\n\tEOF'
+t deny $'tee f.md <<"EOF" >/dev/null\nfind . -delete\nEOF'
+t deny $'cat > f.md <<\\EOF\nrm a\nEOF\necho done'
+t deny $'cat > f.md <<\'EOF\'\n$(rm a)\nEOF'
+t deny $'cat > f.md <<EOF\n$(rm a)\nEOF'
+t deny $'cat > f.md <<EOF\n`rm a`\nEOF'
+t deny $'cat > f <<\'EOF\'\nx\nEOF\nrm f'
+t deny $'cat > f <<\'EOF\' ; rm f\nx\nEOF'
+t deny $'cat <<\'EOF\' \\\n; rm f\nx\nEOF'
+t deny $'cat > f.md <<\'EOF\'\nx\nrm f'
+t deny $'cat <<\'EOF\' > f && rm f\nx\nEOF'
+t deny $'cat <<\'EOF\' | bash\nrm f\nEOF'
+t deny $'cat <<\'EOF\' | tee f | sh -s\nrm f\nEOF'
+t deny $'cat <<\'EOF\' | python3\nimport os; os.remove("f")\nEOF'
+t deny $'bash <<\'EOF\'\nrm f\nEOF'
+t deny $'sh <<EOF\nrm f\nEOF'
+t deny $'zsh -s <<\'EOF\'\nrm f\nEOF'
+t deny $'python3 - <<\'EOF\'\nimport shutil; shutil.rmtree("f")\nEOF'
+t deny $'ssh h <<\'EOF\'\nrm f\nEOF'
+t deny $'xargs sh <<\'EOF\'\nrm f\nEOF'
+t deny $'eval "$(cat <<\'EOF\'\nrm f\nEOF\n)"'
+t deny $'source <(cat <<\'EOF\'\nrm f\nEOF\n)'
+t deny $'cat <<A <<B\nrm f\nA\nB'
+# crit5 F1: write a script with a heredoc, then run it in the same command
+for run in 'sh x.sh' 'bash x.sh' '. ./x.sh' 'source x.sh' 'chmod +x x.sh && ./x.sh' 'env sh x.sh' 'sh<x.sh' 'xargs -a x.sh sh -c' 'make' 'crontab x.sh'; do
+  t deny $'cat > x.sh <<\'EOF\'\nrm f\nEOF\n'"$run"
+  t deny $'tee x.sh <<\'EOF\' >/dev/null\nrm f\nEOF\n'"$run"
+done
+t deny $'cat > x.sh <<\'EOF\' ; sh x.sh\nrm f\nEOF'
+t deny $'cat > x.sh <<\'EOF\' && sh x.sh\nrm f\nEOF'
+t deny $'tee x.sh <<\'EOF\' | sh\nrm f\nEOF'
+t deny $'tee >(sh) <<\'EOF\'\nrm f\nEOF'
+t deny $'cat <<\'EOF\' > >(sh)\nrm f\nEOF'
+t deny $'cat <<-\'EOF\' > x\n\trm f\n\tEOF\nsh x'
+t deny $'cat <<"EOF" > x\nrm f\nEOF\nsh x'
+t deny $'cat <<EOF > x\nrm f\nEOF\nsh x'
+t deny $'cat <<A > x\nrm f\nA\ncat <<B\nhi\nB\nsh x'
+t deny $'cat > Makefile <<\'EOF\'\nall:\n\trm f\nEOF\nmake'
+t deny $'cat > x.py <<\'EOF\'\nimport shutil; shutil.rmtree("f")\nEOF\npython3 x.py'
+t deny $'cat > .git/hooks/pre-commit <<\'EOF\'\nrm f\nEOF\nchmod +x .git/hooks/pre-commit; git commit -m x'
+# crit5 F2: a << that is quoted or in a comment is not a heredoc; bash runs the following lines
+t deny $'cat f "<<EOF"\nrm f\nEOF'
+t deny $'cat f \'<<EOF\'\nrm -rf src\nEOF'
+t deny $'cat f # <<EOF\nrm f\nEOF'
+t deny $'echo "<<EOF"\nrm f\nEOF'
+# crit5 F3: bash ends the body at the whole delimiter word, not at its first word characters
+t deny $'cat > f <<E\\OF\nx\nEOF\nrm f\nE'
+t deny $'cat > f <<"E"OF\nx\nEOF\nrm f\nE'
+t deny $'cat > f <<\'E\'OF\nx\nEOF\nrm f\nE'
+t deny $'cat <<\'EOF\' <<\'X\'\na\nEOF\nb\nX\nrm f'
+t deny $'cat <<\'EOF\'\nhi\nEOF\nrm f'
+t deny $'cat <<\'EOF\' ||\nx\nEOF\nrm f'
+t deny $'git commit -m "$(cat <<\'EOF\'\ncleanup\nrm stale files\nEOF\n)"'
 grep -q 'permissionDecision:"allow"' "$G" && { echo "FAIL guard still has an allow branch"; fail=1; }
 reason="$(jq -n --arg c 'rm f' '{tool_input:{command:$c}}' | bash "$G" | jq -r '.hookSpecificOutput.permissionDecisionReason')"
-case "$reason" in "Deleting is off. Subagent/teammate: put one line per item at column 0 of your report: TO-WASTE: <path> -- <reason>; the lead moves it. Lead: run the research-kit waste helper (bash /PLUG/skills/waste/waste.sh"*"it asks the user. Temp/scratchpad files: leave them. Never rephrase the delete to get around this.") ;;
+case "$reason" in "Deleting is off. Subagent/teammate: put one line per item at column 0 of your report: TO-WASTE: <path> -- <reason>; the lead moves it. Lead: run the research-kit waste helper (bash /PLUG/skills/waste/waste.sh"*"it asks the user. Temp/scratchpad files: leave them. If the delete word is only text (a report, a doc, a commit message), write that file with the Write tool instead of a heredoc. Never rephrase the delete to get around this.") ;;
   *) echo "FAIL deny reason text: $reason"; fail=1;; esac
+case "$reason" in *"write that file with the Write tool"*"TO-WASTE:"*|*"TO-WASTE:"*"write that file with the Write tool"*) ;; *) echo "FAIL deny hint missing: $reason"; fail=1;; esac
 # subagent (agent_id set): waste helper denied, deletes denied, other commands untouched
 ta deny "bash $W sr1 t f"; ta deny "$W sr1 t f"; ta deny 'bash ${CLAUDE_PLUGIN_ROOT}/skills/waste/waste.sh a b c'
 ta deny "bash -c 'bash /x/skills/waste/waste.sh a b c'"; ta deny 'cd /r && ./waste.sh a b c'

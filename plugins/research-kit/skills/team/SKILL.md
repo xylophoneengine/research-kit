@@ -58,9 +58,17 @@ on that tier).
    message per wave; stage waves when an item needs another's output
    (lookups before the build), never spawn it early.
 
-   In a repo with `pm/ledger.jsonl`, open one task per work item before its
-   brief: `python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" add task "<work item>" --owner <name> [--stage S-<n>] [--link D-<n>]...`.
-   Link the decisions that bind the task now. The receipt gives the id. A hook refuses a brief (a message with a
+   In a repo with `pm/ledger.jsonl`, every work item has one task before its
+   brief. An item the stage BRIEF lists already has it (opened with its label
+   when the stage opened): hand it out with `python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" set <label> --owner <name>`,
+   and add no second task. Any other item gets a new one: `python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" add task "<work item>" --owner <name> --note "<the brief's DELIVERABLE and NOT IN SCOPE lines>" [--ref <brief file>] [--label <stage code>/<item>] [--stage S-<n>] [--link D-<n>]...`.
+   The note is required (a task without one is refused): the deliverable and
+   what to leave alone, as in the brief. `--ref` when the brief is saved to a
+   file; `--label` when the stage plan names the item (form `<stage code>/<item>`, e.g. `03b/W4`, the `/` is required; later
+   commands may use it in place of the id). Link the decisions that bind the
+   task now (`--link`). The receipt gives the real id; the brief's `TASK:` line
+   carries that id (or the label, listed first: `TASK: 03b/W2`; a label after
+   other words does not count). A hook refuses a brief (a message with a
    `DELIVERABLE:` line, by spawn or SendMessage) whose `TASK:` line names no
    open task, and marks the task running. Without a ledger, leave out the
    TASK line. Every brief, worker and critic, carries the output of
@@ -120,7 +128,7 @@ on that tier).
 5. **Review.** When workers report, spawn the critics in one message. Give
    them the user's request verbatim, the goal statement and the worker
    report paths (not their contents). Each review round is one `task`
-   entry: open it before briefing (`python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" add task "review round <n>: <what>" --owner lead`); both critic briefs carry its `TASK: T-<n>`, never the
+   entry: open it before briefing (`python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" add task "review round <n>: <what>" --owner lead --note "<what is reviewed, round <n>>"`); both critic briefs carry its `TASK: T-<n>`, never the
    work task under review. Critics write the full review below
    to `<REVIEWS>/<file>` (that file is their report file, no second copy),
    then SendMessage the lead max ~1k chars:

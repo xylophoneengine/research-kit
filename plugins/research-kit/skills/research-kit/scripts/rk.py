@@ -12,21 +12,27 @@ Usage:
   python3 -I rk.py sync <repo_dir> [--write] [--accept-drop]
 
 Ledger store (pm/ledger.jsonl, see ledger.py; every command takes --repo DIR
-and --who NAME):
-  python3 -I rk.py add <type> <title> [--owner NAME] [--stage S] [--note TEXT]
-      [--link ID]... [--ref PATH]... [--status STATUS]
+and --who NAME; every ID argument also takes a label (form <stage code>/<item>,
+e.g. 03b/W4, the / is required) or a stage code such as 03b; receipts print
+the real ID):
+  python3 -I rk.py add <type> <title> [--owner NAME] [--label L] [--stage S]
+      [--note TEXT] [--link ID]... [--ref PATH]... [--status STATUS]
       [--imported --source FILE:LINE [--legacy-id OLD] [--date YYYY-MM-DD]]
+      (title: one line, at most 160 characters; --label L is unique; a stage's
+      title is its folder name and is never renamed; add task without --note is
+      refused, imports exempt; add stage "NN[letter]-kind-topic" also creates
+      the stage folder with its subfolders and records it as ref)
   python3 -I rk.py start ID [--owner NAME]
   python3 -I rk.py close ID --note TEXT [--ref PATH]... [--link ID]...
   python3 -I rk.py drop ID --note TEXT [--link ID]...
   python3 -I rk.py reopen ID --note TEXT
-  python3 -I rk.py set ID [--title T] [--owner N] [--stage S]
+  python3 -I rk.py set ID [--title T] [--owner N] [--label L] [--stage S]
       [--note T | --note-replace T] [--link ID]... [--ref PATH]...
   python3 -I rk.py supersede ID TITLE --owner NAME [--note T] [--link ID]...
       [--ref PATH]...
   python3 -I rk.py list [--type T] [--owner N] [--stage S] [--limit N] [--all]
   python3 -I rk.py show ID
-  python3 -I rk.py search [TEXT] [--source S] [--legacy-id L] [--type T] [--limit N]
+  python3 -I rk.py search [TEXT] [--source S] [--label L] [--type T] [--limit N]
   python3 -I rk.py recent [-n N]
   python3 -I rk.py render
   python3 -I rk.py stage-close S-n --sign-off D-m

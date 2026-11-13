@@ -695,7 +695,7 @@ def test_ledger_end_to_end() -> None:
             return r.stdout
 
         tool("add", "stage", "01-software-x")
-        tool("add", "task", "build", "--owner", "sr1")
+        tool("add", "task", "build", "--owner", "sr1", "--note", "n")
         tool(
             "brief-check", "--who", "hook",
             stdin="You are sr1\nDELIVERABLE: d\nTASK: T-1\n",

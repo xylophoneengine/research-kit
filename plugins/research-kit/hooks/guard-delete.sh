@@ -28,7 +28,7 @@ if hit "${POS}(bash|sh|zsh)$S+(-[a-z]+$S+)*-c$S|${POS}eval$S" &&
    hit "(^|[^[:alnum:]_.-])(rm|rmdir|unlink)($S|\$|[;&|)'\"])"; then del=1; fi
 
 if [ "$del" = 1 ]; then
-  jq -n --arg r "Deleting is off. Subagent/teammate: put one line per item at column 0 of your report: TO-WASTE: <path> -- <reason>; the lead moves it. Lead: run the research-kit waste helper (bash $root/skills/waste/waste.sh <who> \"<reason>\" <path>); it asks the user. Temp/scratchpad files: leave them. Never rephrase the delete to get around this." \
+  jq -n --arg r "Deleting is off. Subagent/teammate: put one line per item at column 0 of your report: TO-WASTE: <path> -- <reason>; the lead moves it. Lead: run the research-kit waste helper (bash $root/skills/waste/waste.sh <who> \"<reason>\" <path>); it asks the user. Temp/scratchpad files: leave them. If the delete word is only text (a report, a doc, a commit message), write that file with the Write tool instead of a heredoc. Never rephrase the delete to get around this." \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null
   exit 0
 fi

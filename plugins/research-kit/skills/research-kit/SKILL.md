@@ -18,7 +18,14 @@ Kinds: `paper`, `software`, `reverse-eng`, `experiment`, `thesis`.
 Script (every mode below): `python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" <mode> <repo_dir> ...`
 
 The ledger commands use the same script (`rk.py add|start|close|list|import|...`); the
-reference is core AGENTS.md 4.2.
+reference is core AGENTS.md 4.2. `add` and `set` take `--label L` (form
+`<stage code>/<item>`, e.g. `03b/W4`, the `/` is required; unique); a stage's
+title is its folder name and is never renamed; every ID argument also takes a
+label or a stage code (`03b`); receipts print the real ID; a `TASK:` line in a
+brief names its tasks by id or by label, listed first (a label after other words
+does not count); titles are one line, 160 characters at most. `add task` without
+`--note` is refused (imports exempt); `add stage "<NN-kind-topic>"` creates the
+stage folder and records it as ref.
 
 The command argument says the mode: init, add-kind, upgrade, sync or close.
 
@@ -35,8 +42,9 @@ The command argument says the mode: init, add-kind, upgrade, sync or close.
      run) first; if it prints "up to date", drop this question and step 5.
 2. Run `init <repo_dir> --kinds <k1,k2> --mode <full|light> --git <user|orchestrator>`.
    Exit 1 = repo already initialised or unknown kind: tell the user, stop.
-3. Follow the kind files' own start-up steps with the user (each kind file
-   says what to ask), then the appendix lines (project name, repo tag).
+3. Follow each kind file's first-session section with the user where it has
+   one (no section = nothing to ask), then the appendix lines (project name,
+   repo tag).
 4. `init` also writes a marked `## Compact Instructions` block into the repo's
    `CLAUDE.md` (created if missing; existing text kept), creates an empty
    `pm/ledger.jsonl`, ignores `pm/STATUS.md` and writes a marked block into

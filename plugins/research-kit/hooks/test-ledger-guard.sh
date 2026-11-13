@@ -27,8 +27,8 @@ reason() {
 
 R="$(mktemp -d)"
 mkdir -p "$R/pm" && : > "$R/pm/ledger.jsonl"
-python3 -I "$RK" add task "work" --owner sr1 --repo "$R" >/dev/null
-python3 -I "$RK" add task "old" --repo "$R" >/dev/null
+python3 -I "$RK" add task "work" --owner sr1 --note n --repo "$R" >/dev/null
+python3 -I "$RK" add task "old" --note n --repo "$R" >/dev/null
 python3 -I "$RK" close T-2 --note done --repo "$R" >/dev/null
 export CLAUDE_PROJECT_DIR="$R"
 
@@ -66,7 +66,7 @@ t deny Edit file_path "$R/pm/./ledger.jsonl"
 t deny Write file_path "$R//pm/.//./STATUS.md"
 
 # tabs and CRLF in a brief: open T-3 passes (and runs), done T-2 is refused
-python3 -I "$RK" add task "crlf" --repo "$R" >/dev/null
+python3 -I "$RK" add task "crlf" --note n --repo "$R" >/dev/null
 t none Agent prompt $'\t\tDELIVERABLE: x\r\n\tTASK: T-3\r\n'
 python3 -I "$RK" show T-3 --repo "$R" | grep -q '^status: running' ||
   { echo "FAIL T-3 not running after a CRLF/tab brief"; fail=1; }
@@ -98,7 +98,7 @@ M="$(mktemp -d)"; W="$(mktemp -d)"
 mkdir -p "$M/pm" "$M/.git/worktrees/wt" "$W/pm"
 : > "$M/pm/ledger.jsonl"; : > "$W/pm/ledger.jsonl"
 printf 'gitdir: %s/.git/worktrees/wt\n' "$M" > "$W/.git"
-(cd "$W" && python3 -I "$RK" add task "fresh in main" >/dev/null)
+(cd "$W" && python3 -I "$RK" add task "fresh in main" --note n >/dev/null)
 CLAUDE_PROJECT_DIR="$W" t none Agent prompt $'DELIVERABLE: x\nTASK: T-1'
 python3 -I "$RK" show T-1 --repo "$M" | grep -q '^status: running' ||
   { echo "FAIL worktree brief did not run T-1 in the main ledger"; fail=1; }

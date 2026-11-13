@@ -37,6 +37,19 @@ TYPE_DECL_RE: re.Pattern[str] = re.compile(
     r"^<!-- rk:type ([a-z][a-z0-9-]*) ([A-Z]{1,3}) -->$"
 )
 NAME_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_.-]+$")
+LABEL_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_./-]{1,40}$")
+TOKEN_SEP_RE: re.Pattern[str] = re.compile(r"[\s,]+")
+STAGE_RE: re.Pattern[str] = re.compile(
+    r"^[0-9]{2,}[a-z]?-[a-z][a-z0-9]*-[A-Za-z0-9_.-]+$"
+)
+STAGE_FORM: str = "NN[letter]-<kind>-<topic>, e.g. 03b-paper-scan"
+# the subfolders of template/AGENTS.md 3.2 (pinned by test_stage_dirs_match_agents)
+STAGE_DIRS: tuple[str, ...] = ("deliverables", "notes", "code", "chat")
+TASK_NOTE: str = (
+    "add task needs --note: the deliverable and its scope, one to three lines "
+    "(what comes out and where, what is not in it); the title alone does not "
+    "explain the task later"
+)
 COMMANDS: frozenset[str] = frozenset(
     {
         "add", "start", "close", "drop", "reopen", "set", "supersede",
@@ -303,20 +316,40 @@ def append(
     return new_state
 
 
-def resolve_stage(state: dict[str, Entry], ref: str) -> str:
-    """Stage entry id for `ref` = a stage id or the exact title of one stage."""
-    e: Entry | None = state.get(ref)
-    if e is not None:
-        if e.type != "stage":
-            raise LedgerError(f"{ref} is a {e.type}, not a stage")
-        return ref
-    hits: list[str] = [
-        x.id for x in state.values() if x.type == "stage" and x.title == ref
+def _matches(state: dict[str, Entry], ref: str) -> list[Entry]:
+    """Entries `ref` names other than by id: its label, or for a stage its exact
+    title or its code (the title up to the first '-', `03b` of `03b-paper-x`)."""
+    return [
+        x
+        for x in state.values()
+        if x.extra.get("legacy_id") == ref
+        or (x.type == "stage" and ref in (x.title, x.title.split("-", 1)[0]))
     ]
-    if len(hits) != 1:
-        what: str = "no" if not hits else "more than one"
-        raise LedgerError(f"{what} stage '{ref}'")
-    return hits[0]
+
+
+def _ambiguous(ref: str, hits: list[Entry]) -> LedgerError:
+    cands: str = "; ".join(f"{x.id} {x.title}" for x in hits)
+    return LedgerError(f"'{ref}' names more than one entry ({cands}); pass the id")
+
+
+def resolve(state: dict[str, Entry], ref: str, stage: bool = False) -> str:
+    """The real id for `ref`: an id (always wins), else the single entry `ref`
+    names by label, stage title or stage code. `stage`: it must be a stage, and
+    only stages count as matches when one does."""
+    e: Entry | None = state.get(ref)
+    if e is None:
+        hits: list[Entry] = _matches(state, ref)
+        if stage:
+            hits = [x for x in hits if x.type == "stage"] or hits
+        if len(hits) > 1:
+            raise _ambiguous(ref, hits)
+        if not hits:
+            raise LedgerError(f"no stage '{ref}'" if stage else f"no such entry {ref}")
+        e = hits[0]
+    if stage and e.type != "stage":
+        name: str = ref if ref == e.id else f"{ref} ({e.id})"
+        raise LedgerError(f"{name} is a {e.type}, not a stage")
+    return e.id
 
 
 def _default_stage(state: dict[str, Entry], typ: str, imported: bool) -> str:
@@ -347,10 +380,70 @@ def _title(value: str) -> str:
     return title
 
 
-def _check_links(state: dict[str, Entry], links: list[str]) -> None:
+def _label(value: str, flag: str) -> str:
+    if not LABEL_RE.match(value):
+        raise LedgerError(
+            f"{flag} '{value}': letters, digits, _ . - / only, at most 40 characters"
+        )
+    if ANY_ID_RE.search(value):  # an id inside it would count on a TASK: line
+        raise LedgerError(
+            f"{flag} '{value}' has the form of an entry id or contains one; use "
+            "the form <stage code>/<work item>, e.g. 03b/W4"
+        )
+    if flag == "--label" and "/" not in value:  # imported legacy ids: free form
+        raise LedgerError(
+            f"--label '{value}': want the form <stage code>/<work item>, e.g. "
+            "03b/W4 (a / is required)"
+        )
+    return value
+
+
+def _check_label(state: dict[str, Entry], label: str, eid: str) -> None:
+    """Refuse a label that already names another entry (label, stage title/code)."""
+    others: list[Entry] = [x for x in _matches(state, label) if x.id != eid]
+    if others:
+        raise LedgerError(
+            f"--label '{label}' already names {others[0].id} ({others[0].title}); "
+            "labels are unique"
+        )
+
+
+def _check_names(
+    state: dict[str, Entry], typ: str, title: str, a: argparse.Namespace
+) -> None:
+    """The other direction of label uniqueness. A new stage's title and code must
+    not name an entry already; an imported one only not a --label label (legacy
+    stage numbers may overlap new ones). An imported legacy id must not name an
+    entry that is not imported (legacy duplicates are tolerated)."""
+    checks: list[tuple[str, str, bool]] = []  # (what, name, labels only)
+    if typ == "stage":
+        what: str = f"stage '{title}'"
+        checks += [(what, n, a.imported) for n in (title, title.split("-", 1)[0])]
+    if a.imported and a.legacy_id is not None:
+        checks.append((f"legacy id '{a.legacy_id}'", a.legacy_id, False))
+    for what, n, labels_only in checks:
+        hits: list[Entry] = [
+            x
+            for x in _matches(state, n)
+            if not (a.imported and _imported(x))
+            and not (labels_only and x.extra.get("legacy_id") != n)
+        ]
+        if hits:
+            raise LedgerError(
+                f"{what}: '{n}' already names {hits[0].id} ({hits[0].title}); "
+                "stage codes, stage titles and labels are unique"
+            )
+
+
+def _links(state: dict[str, Entry], links: list[str]) -> list[str]:
+    """`links` as real ids, each resolved like any id argument; no duplicates."""
+    out: list[str] = []
     for link in links:
-        if link not in state:
-            raise LedgerError(f"--link {link}: no such entry")
+        try:
+            out.append(resolve(state, link))
+        except LedgerError as e:
+            raise LedgerError(f"--link {link}: {e}") from None
+    return list(dict.fromkeys(out))
 
 
 def _note_plus(old: str, text: str) -> str:
@@ -613,18 +706,33 @@ def _add_step(
             f"--status {status}: a stage is logged open and closed with "
             "stage-close; another status only with --imported"
         )
+    if typ == "task" and not a.imported and not a.note.strip():
+        raise LedgerError(TASK_NOTE)
+    if typ == "stage" and not a.imported and not STAGE_RE.match(title):
+        raise LedgerError(
+            f"stage title '{title}' is not a stage folder name; want {STAGE_FORM} "
+            "(letters, digits, _ . - in the topic)"
+        )
+    label: str | None = _label(a.label, "--label") if a.label is not None else None
+    made_folder: bool = typ == "stage" and not a.imported
+    folder: list[str] = [f"pm/stages/{title}/"] if made_folder else []
+    refs: list[str] = list(dict.fromkeys([*folder, *a.ref]))
 
     def step(state: dict[str, Entry]) -> tuple[str, dict[str, object]]:
-        _check_links(
-            state, [x for x in a.link if not (key_links and x.startswith("@"))]
-        )
+        links: list[str] = [  # "@KEY" links stay as given; import resolves them
+            x if key_links and x.startswith("@") else _links(state, [x])[0]
+            for x in a.link
+        ]
         stage: str = (
-            resolve_stage(state, a.stage)
+            resolve(state, a.stage, stage=True)
             if a.stage
             else _default_stage(state, typ, a.imported)
         )
         _check_stage_open(state, stage, status, "pass --stage with an open stage")
         eid: str = next_id(state, types[typ])
+        if label is not None:
+            _check_label(state, label, eid)
+        _check_names(state, typ, title, a)
         f: dict[str, object] = {
             "type": typ,
             "title": title,
@@ -632,9 +740,11 @@ def _add_step(
             "owner": owner,
             "stage": stage,
             "note": a.note,
-            "links": list(dict.fromkeys(a.link)),
-            "refs": list(dict.fromkeys(a.ref)),
+            "links": list(dict.fromkeys(links)),
+            "refs": refs,
         }
+        if label is not None:
+            f["legacy_id"] = label
         if a.imported:
             f["imported"] = True
             f["source"] = a.source
@@ -660,14 +770,26 @@ def _cmd_add(a: argparse.Namespace) -> int:
         made.append(eid)
         return [make_event(who, "add", eid, f)]
 
-    append(repo, build)
-    print(f"logged {made[0]}: {a.title.strip()}")
+    e: Entry = append(repo, build)[made[0]]
+    print(f"logged {e.id}: {e.title}")
+    if e.type == "stage" and not a.imported:  # after the write: a refused add
+        folder: Path = repo / "pm" / "stages" / e.title  # makes no folder
+        try:
+            for sub in STAGE_DIRS:
+                (folder / sub).mkdir(parents=True, exist_ok=True)
+        except OSError as err:
+            raise LedgerError(
+                f"{e.id} is logged, but the folder {folder} could not be made: "
+                f"{err.strerror}; make it by hand"
+            ) from None
+        dirs: str = " ".join(f"{s}/" for s in STAGE_DIRS)
+        print(f"folder pm/stages/{e.title}/ ({dirs})")
     return 0
 
 
 IMPORT_STR_KEYS: tuple[str, ...] = (
-    "type", "title", "source", "owner", "stage", "note", "status", "legacy_id", "date",
-    "key",
+    "type", "title", "source", "owner", "stage", "note", "status", "legacy_id", "label",
+    "date", "key",
 )
 IMPORT_LIST_KEYS: tuple[str, ...] = ("link", "ref")
 IMPORT_DESCRIPTION: str = """\
@@ -676,7 +798,7 @@ checked first; one bad row and nothing is written. Errors print as
 FILE:LINE: message. Each FILE is JSON Lines: one JSON object per line, blank
 lines skipped. Several FILEs are one batch, read in the order given: a stage
 row in an earlier file can be named by "stage" in a later one (--dry-run too).
-"stage" takes a stage id or a stage title, never @KEY; the stage row must come
+"stage" takes a stage id, title or code, never @KEY; the stage row must come
 before the row that names it in the batch (earlier in the same file, or in a
 file given earlier), a stage row further down fails with "no stage".
 """
@@ -690,12 +812,15 @@ list of strings):
   status     open (default; a decision: done), running, done, dropped or
              superseded
   owner      name, default lead; a decision needs it (who decided)
-  stage      a stage id or the exact title of one stage; default: no stage
+  stage      a stage id, the exact title of one stage, its code (03b) or
+             its label; default: no stage
   note       free text
-  legacy_id  the row's id in the old system
+  legacy_id  the row's id in the old system; it is the entry's label
+  label      same as legacy_id (give one of them): letters, digits, _ . - /,
+             at most 40 characters; not checked for uniqueness
   date       YYYY-MM-DD, the original date (becomes the entry's created)
-  link       entry ids; "@KEY" names the row with that key in this batch
-             (it may come later in the batch)
+  link       entry ids or labels; "@KEY" names the row with that key in this
+             batch (it may come later in the batch)
   ref        paths
   key        name for "@KEY" links: letters, digits, _ . - only; unique in
              the batch; not stored in the entry
@@ -730,12 +855,17 @@ def _import_row(obj: object, who: str) -> argparse.Namespace:
         raise LedgerError(f"status '{obj['status']}': one of {', '.join(STATUSES)}")
     if "key" in obj:
         _name(obj["key"], "key")
+    row: dict[str, object] = dict(obj)
+    if "label" in row:
+        if "legacy_id" in row:
+            raise LedgerError("give label or legacy_id, not both")
+        row["legacy_id"] = _label(str(row.pop("label")), "label")
     fields: dict[str, object] = {
         "who": who, "imported": True, "owner": None, "stage": None, "note": "",
-        "link": [], "ref": [], "status": None, "legacy_id": None, "date": None,
-        "key": None,
+        "link": [], "ref": [], "status": None, "legacy_id": None, "label": None,
+        "date": None, "key": None,
     }
-    return argparse.Namespace(**{**fields, **obj})
+    return argparse.Namespace(**{**fields, **row})
 
 
 def _import_key(source: object, legacy: object, title: object) -> tuple[str, str, str]:
@@ -843,11 +973,8 @@ def _cmd_import(a: argparse.Namespace) -> int:
     return 0
 
 
-def _entry(state: dict[str, Entry], eid: str) -> Entry:
-    e: Entry | None = state.get(eid)
-    if e is None:
-        raise LedgerError(f"no such entry {eid}")
-    return e
+def _entry(state: dict[str, Entry], ref: str) -> Entry:
+    return state[resolve(state, ref)]
 
 
 def _need_note(a: argparse.Namespace) -> str:
@@ -903,9 +1030,11 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
     note: str = _need_note(a)
     cmd: str = a.cmd
     new: str = {"close": "done", "drop": "dropped", "reopen": "open"}[cmd]
+    ids: list[str] = []
 
     def build(state: dict[str, Entry]) -> list[dict[str, object]]:
         e: Entry = _entry(state, a.id)
+        ids.append(e.id)
         if e.type == "stage":
             raise LedgerError(f"{e.id} is a stage: use stage-close")
         if cmd in ("close", "reopen") and e.type == "decision":
@@ -927,15 +1056,14 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
         f: dict[str, object] = {"status": new, "note": _note_plus(e.note, note)}
         if cmd == "close" and a.ref:
             f["refs"] = _union(e.refs, a.ref)
-        links: list[str] = [] if cmd == "reopen" else a.link
-        _check_links(state, links)
+        links: list[str] = _links(state, [] if cmd == "reopen" else a.link)
         if links:
             f["links"] = _union(e.links, links)
         return [make_event(who, "set", e.id, f)]
 
     append(repo, build)
     verb: str = {"close": "closed", "drop": "dropped", "reopen": "reopened"}[cmd]
-    print(f"{verb} {a.id}: {_cut(note)}")
+    print(f"{verb} {ids[0]}: {_cut(note)}")
     return 0
 
 
@@ -944,9 +1072,11 @@ def _cmd_set(a: argparse.Namespace) -> int:
     who: str = _name(a.who, "--who")
     title: str | None = _title(a.title) if a.title is not None else None
     owner: str | None = _name(a.owner, "--owner") if a.owner is not None else None
+    label: str | None = _label(a.label, "--label") if a.label is not None else None
     if not (
         title is not None
         or owner is not None
+        or label is not None
         or a.stage is not None
         or a.note is not None
         or a.note_replace is not None
@@ -954,8 +1084,8 @@ def _cmd_set(a: argparse.Namespace) -> int:
         or a.ref
     ):
         raise LedgerError(
-            "nothing to set (give --title, --owner, --stage, --note, --note-replace, "
-            "--link or --ref)"
+            "nothing to set (give --title, --owner, --label, --stage, --note, "
+            "--note-replace, --link or --ref)"
         )
     if a.note is not None and not a.note.strip():
         raise LedgerError(
@@ -963,32 +1093,48 @@ def _cmd_set(a: argparse.Namespace) -> int:
             "--note-replace '' clears the note"
         )
     keys: list[str] = []
+    ids: list[str] = []
 
     def build(state: dict[str, Entry]) -> list[dict[str, object]]:
         e: Entry = _entry(state, a.id)
+        ids.append(e.id)
         f: dict[str, object] = {}
         if title is not None:
+            if e.type == "stage" and not _imported(e):
+                raise LedgerError(
+                    f"{e.id} is a stage: its title is its folder name "
+                    f"(pm/stages/{e.title}/) and gives its code; it is not renamed"
+                )
             f["title"] = title
         if owner is not None:
             f["owner"] = owner
+        if label is not None:
+            old: object = e.extra.get("legacy_id")
+            if _imported(e) and old not in (None, label):
+                raise LedgerError(
+                    f"{e.id} is imported with legacy id '{old}', its label and the "
+                    "key that stops a second import of its row; it keeps it"
+                )
+            _check_label(state, label, e.id)
+            f["legacy_id"] = label
         if a.stage is not None:
-            sid: str = resolve_stage(state, a.stage)
+            sid: str = resolve(state, a.stage, stage=True)
             _check_stage_open(state, sid, e.status, "pick an open stage")
             f["stage"] = sid
         if a.note is not None:
             f["note"] = _note_plus(e.note, a.note)
         elif a.note_replace is not None:
             f["note"] = a.note_replace
-        _check_links(state, a.link)
-        if a.link:
-            f["links"] = _union(e.links, a.link)
+        links: list[str] = _links(state, a.link)
+        if links:
+            f["links"] = _union(e.links, links)
         if a.ref:
             f["refs"] = _union(e.refs, a.ref)
-        keys.extend(f)
+        keys.extend("label" if k == "legacy_id" else k for k in f)
         return [make_event(who, "set", e.id, f)]
 
     append(repo, build)
-    print(f"updated {a.id}: {', '.join(keys)}")
+    print(f"updated {ids[0]}: {', '.join(keys)}")
     return 0
 
 
@@ -1009,7 +1155,7 @@ def _cmd_supersede(a: argparse.Namespace) -> int:
             raise LedgerError(f"{old.id} is a {old.type}, not a decision")
         if old.status != "done":
             raise LedgerError(f"{old.id} is {old.status}, not in force")
-        _check_links(state, a.link)
+        links: list[str] = _links(state, a.link)
         eid: str = next_id(state, BUILTIN_TYPES["decision"])
         f: dict[str, object] = {
             "type": "decision",
@@ -1018,11 +1164,11 @@ def _cmd_supersede(a: argparse.Namespace) -> int:
             "owner": owner,
             "stage": _default_stage(state, "decision", False),
             "note": a.note or "",
-            "links": _union([old.id], a.link),
+            "links": _union([old.id], links),
             "refs": _union([], a.ref),
             "supersedes": old.id,
         }
-        made.append(eid)
+        made.extend([eid, old.id])
         return [
             make_event(who, "add", eid, f),
             make_event(
@@ -1031,7 +1177,7 @@ def _cmd_supersede(a: argparse.Namespace) -> int:
         ]
 
     append(repo, build)
-    print(f"logged {made[0]}: {title} (supersedes {a.id})")
+    print(f"logged {made[0]}: {title} (supersedes {made[1]})")
     return 0
 
 
@@ -1045,7 +1191,7 @@ def _cmd_list(a: argparse.Namespace) -> int:
     repo: Path = _repo(a)
     state: dict[str, Entry] = load(repo)
     typ: str | None = check_type(a.type, known_types(repo)) if a.type else None
-    stage: str | None = resolve_stage(state, a.stage) if a.stage else None
+    stage: str | None = resolve(state, a.stage, stage=True) if a.stage else None
     print(
         format_list(
             state,
@@ -1070,13 +1216,14 @@ def _cmd_show(a: argparse.Namespace) -> int:
     events: list[tuple[int, dict[str, object]]] = read_events(repo)
     state: dict[str, Entry] = fold(events)
     e: Entry = _entry(state, a.id)
-    fields: list[tuple[str, str]] = [
-        ("id", e.id), ("type", e.type), ("title", e.title), ("status", e.status),
+    fields: list[tuple[str, str]] = [  # the legacy_id field shows as label
+        ("id", e.id), ("label", str(e.extra.get("legacy_id", ""))),
+        ("type", e.type), ("title", e.title), ("status", e.status),
         ("owner", e.owner), ("stage", e.stage),
         ("note", e.note.replace("\n", "\\n")),
         ("links", ", ".join(e.links)), ("refs", ", ".join(e.refs)),
         ("created", e.created), ("updated", e.updated),
-        *((k, str(v)) for k, v in e.extra.items()),
+        *((k, str(v)) for k, v in e.extra.items() if k != "legacy_id"),
     ]
     for k, v in fields:
         print(f"{k}: {v}")
@@ -1106,7 +1253,7 @@ def _cmd_search(a: argparse.Namespace) -> int:
     typ: str | None = check_type(a.type, known_types(repo)) if a.type else None
     exact: bool = a.source is not None or a.legacy_id is not None
     if a.text is None and not exact:
-        raise LedgerError("search needs TEXT, --source or --legacy-id")
+        raise LedgerError("search needs TEXT, --source or --label")
     needle: str = (a.text or "").lower()
     hits: list[Entry] = [
         e
@@ -1192,8 +1339,11 @@ def _cmd_stage_close(a: argparse.Namespace) -> int:
     out: list[str] = []
 
     def build(state: dict[str, Entry]) -> list[dict[str, object]]:
-        sid: str = resolve_stage(state, a.id)
+        sid: str = resolve(state, a.id, stage=True)
         stage: Entry = state[sid]
+        sign: str = a.sign_off or ""
+        if sign and sign not in state and _matches(state, sign):
+            sign = resolve(state, sign)  # a label; an unknown ref stays as given
         problems: list[str] = []
         if stage.status != "open":
             problems.append(f"{sid} is {stage.status}, not open")
@@ -1213,15 +1363,15 @@ def _cmd_stage_close(a: argparse.Namespace) -> int:
                 f" (add deferred ... --link {t}, then drop {t} --note"
                 ' "deferred as DF-<k>")'
             )
-        problems += _sign_off_problems(state, sid, a.sign_off)
+        problems += _sign_off_problems(state, sid, sign)
         if problems:
             raise LedgerError(f"stage-close {sid} refused: " + "; ".join(problems))
         f: dict[str, object] = {
             "status": "done",
-            "note": _note_plus(stage.note, f"closed; sign-off {a.sign_off}"),
-            "links": _union(stage.links, [a.sign_off]),
+            "note": _note_plus(stage.note, f"closed; sign-off {sign}"),
+            "links": _union(stage.links, [sign]),
         }
-        out.append(f"closed {sid}: sign-off {a.sign_off}")
+        out.append(f"closed {sid}: sign-off {sign}")
         return [make_event(who, "set", sid, f)]
 
     append(repo, build)
@@ -1242,17 +1392,33 @@ def _cmd_brief_check(a: argparse.Namespace) -> int:
     except LedgerError:
         return 0
     who: str = _name(a.who, "--who")
-    ids: list[str] = list(
-        dict.fromkeys(
-            eid
-            for m in TASK_LINE_RE.finditer(text)
-            for eid in ANY_ID_RE.findall(m.group(1))
-        )
-    )
-    problems: list[str] = [] if ids else ["no TASK: line naming a task"]
+    lines: list[str] = [m.group(1) for m in TASK_LINE_RE.finditer(text)]
+    ids: list[str] = []
+    problems: list[str] = []
     out: list[str] = []
 
     def build(state: dict[str, Entry]) -> list[dict[str, object]]:
+        labels: dict[str, list[Entry]] = {}  # --label labels; legacy ids never
+        for x in state.values():
+            lab: str | bool | None = x.extra.get("legacy_id")
+            if isinstance(lab, str) and not _imported(x):
+                labels.setdefault(lab, []).append(x)
+        for line in lines:
+            ids.extend(ANY_ID_RE.findall(line))  # ids by form anywhere, as before
+            for w in TOKEN_SEP_RE.split(line.strip()):  # leading refs only: the
+                w = w.strip("(),:;.")  # first token neither id nor label ends
+                if ANY_ID_RE.fullmatch(w):
+                    continue
+                hits: list[Entry] = labels.get(w, [])
+                if not hits:
+                    break
+                if len(hits) > 1:  # only via hand edits: --label is unique
+                    problems.append(str(_ambiguous(w, hits)))
+                else:
+                    ids.append(hits[0].id)
+        ids[:] = dict.fromkeys(ids)
+        if not ids and not problems:
+            problems.append("no TASK: line naming a task")
         for eid in ids:
             e: Entry | None = state.get(eid)
             if e is None:
@@ -1276,10 +1442,14 @@ def _cmd_brief_check(a: argparse.Namespace) -> int:
         rk_py: Path = Path(__file__).resolve().with_name("rk.py")
         print(
             f"refused: {'; '.join(problems)}. A brief (a message with a "
-            'DELIVERABLE: line) needs a line "TASK: T-<n>" naming an open task. '
-            f'Open one first: python3 -I {rk_py} add task "<work item>" '
-            "--owner <teammate> [--stage S-n], then put \"TASK: T-<n>\" in the "
-            "brief. Messages without a DELIVERABLE: line are not checked."
+            "DELIVERABLE: line) needs a TASK: line naming an open task by its id "
+            "or by its label, first on the line (TASK: T-<n> or TASK: 03b/W2). "
+            "A work item that already has a task is reused, not added again: "
+            f"python3 -I {rk_py} set <label> --owner <teammate>. Else open one: "
+            f'python3 -I {rk_py} add task "<work item>" --owner <teammate> '
+            '--note "<deliverable and scope, 1-3 lines>" --label '
+            "<stage code>/<item> [--stage S-n]. Messages without a DELIVERABLE: "
+            "line are not checked."
         )
         return 2
     for line in out:
@@ -1304,7 +1474,9 @@ def _parser() -> argparse.ArgumentParser:
     pa.add_argument("--status", choices=STATUSES, default=None)
     pa.add_argument("--imported", action="store_true")
     pa.add_argument("--source", default=None)
-    pa.add_argument("--legacy-id", default=None)
+    lab = pa.add_mutually_exclusive_group()
+    lab.add_argument("--legacy-id", default=None)
+    lab.add_argument("--label", default=None, help="unique; e.g. 03b/W4")
     pa.add_argument("--date", default=None)
     ps: argparse.ArgumentParser = sub.add_parser("start", parents=[common])
     ps.add_argument("id")
@@ -1321,6 +1493,7 @@ def _parser() -> argparse.ArgumentParser:
     pt.add_argument("id")
     pt.add_argument("--title", default=None)
     pt.add_argument("--owner", default=None)
+    pt.add_argument("--label", default=None, help="unique; e.g. 03b/W4")
     pt.add_argument("--stage", default=None)
     notes = pt.add_mutually_exclusive_group()
     notes.add_argument("--note", default=None, help="added as a new line of the note")
@@ -1347,7 +1520,10 @@ def _parser() -> argparse.ArgumentParser:
     pq: argparse.ArgumentParser = sub.add_parser("search", parents=[common])
     pq.add_argument("text", nargs="?", default=None)
     pq.add_argument("--source", default=None, help="exact source of an imported entry")
-    pq.add_argument("--legacy-id", default=None, help="exact legacy id")
+    pq.add_argument(
+        "--label", "--legacy-id", dest="legacy_id", default=None, metavar="LABEL",
+        help="exact label (= legacy id)",
+    )
     pq.add_argument("--type", default=None)
     pq.add_argument("--limit", type=int, default=SEARCH_LIMIT)
     pr: argparse.ArgumentParser = sub.add_parser("recent", parents=[common])

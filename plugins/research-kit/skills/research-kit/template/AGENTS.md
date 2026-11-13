@@ -1,4 +1,4 @@
-<!-- research-kit: 2026-11-13d -->
+<!-- research-kit: 2026-11-13e -->
 # AGENTS.md - how we work on a research project (research-kit core)
 
 Generic working method for every project kind (paper, software, reverse engineering, experiment, thesis), distilled from completed projects. Installed and updated by the `research-kit` plugin (`/rk-init`, `/rk-add-kind`, `/rk-upgrade`, `/rk-sync`, `/rk-close`). Everything above "Project appendix" is generic and replaced on sync: never edit it in a repo copy; repo-specific lines go into the appendix. Kind rules live in `pm/kinds/<kind>.md`, one file per active kind, listed in the kinds block of the appendix; they add to this file, never relax it. Every rule carries a one-clause reason so a later session can judge an edge case instead of obeying blind. Placeholders: `<ID>` = short project id (session prefix, appendix), `NN` = stage number, `<kind>` = kind id, `<topic>` = stage topic.
@@ -16,7 +16,7 @@ Generic working method for every project kind (paper, software, reverse engineer
 1. `/rk-init` asks kinds, mode and git policy, then creates the `pm/` tree, the appendix fields, the kinds block and the `.gitignore` block. Verify they exist; never hand-build a second tree.
 2. Root `CLAUDE.md` = two-line pointer: "read AGENTS.md and pm/README.md; AGENTS.md is the agent file, not CLAUDE.md". Add `**/.cache/` and credential files to `.gitignore` before the first fetch or import. Why: API keys land in caches and transcripts.
 3. Skeleton file, headings only (lead): `pm/living/GOALS.md`.
-4. Fill the rest of the appendix with the user via AskUserQuestion; open questions (title) stay plain text. No silent defaults: an unanswered item -> `rk add deferred "<item>" --owner user`. Why: a guessed default becomes an unrecorded decision.
+4. Fill the rest of the appendix with the user via AskUserQuestion; open questions (title) stay plain text. No silent defaults: an unanswered item -> `rk add deferred "<item>" --owner user` (title: one line, 160 characters at most). Why: a guessed default becomes an unrecorded decision.
 5. Run the first-session steps of each active kind file.
 6. `pm/living/GOALS.md` (goal, scope, claims or targets; open questions are deferred entries, `--owner user`) is agreed with the user before any scan, build or run starts; the kind's stage table says which stage writes it (paper: after an optional seed). Why: work is screened against the goals.
 
@@ -54,9 +54,9 @@ Critic lenses (always exactly two, always opus):
 
 1. **Goal statement** (lead): problem or question, intended outcome, how to check (metric / test / observable behaviour; or question answered + decision it informs). Decompose into work items, tag each jr/sr/exp.
 2. **Size + confirm**: propose sizes via AskUserQuestion (first option = proposal, recommended, with work-item split; plus one smaller, one larger). Confirmation also authorizes team to read user's code and files for this task. No further ask inside task.
-3. **Spawn**: first one task per work item, `rk add task "<item>" --owner <name> [--stage S-<n>] [--link D-<n>]...`, linking every decision that binds it; the brief's `TASK:` line names it. Then all workers in one message with brief template (2.3). A hook refuses a brief (a message with a `DELIVERABLE:` line, spawn or SendMessage) without an open task, and marks the task running.
+3. **Spawn**: first one task per work item. An item the stage BRIEF lists already has its task (3.3): `rk set <label> --owner <name>`. Any other item: `rk add task "<item>" --owner <name> --note "<deliverable, scope>" [--label <stage code>/<item>] [--ref <brief file>] [--stage S-<n>]` (no `--note`: refused). Link every decision that binds the task (`--link D-<n>`); the brief's `TASK:` line names it by id or label, listed first (`TASK: T-12` or `TASK: 03b/W2, T-3`; a label after other words does not count). Then all workers in one message with brief template (2.3). A hook refuses a brief (a message with a `DELIVERABLE:` line, spawn or SendMessage) without an open task, and marks the task running.
 4. **Work**: teammates talk via `SendMessage` only when their work touches another's. One writer per shared file. Concurrency cap: <= 7 sonnet + <= 5 opus at once.
-5. **Review**: when workers report, the lead opens one review task for the round (`rk add task "review <what> r<k>" --owner lead`), then spawns `crit1` + `crit2` in one message. Both critic briefs carry its `TASK: T-<n>`, never the work task under review. They get user's original request verbatim, goal statement, worker report paths. The lead closes the review task with the verdicts and review file paths (`rk close T-<n> --note "<verdicts>" --ref <review file>`). Each critic writes ONE review file:
+5. **Review**: when workers report, the lead opens one review task for the round (`rk add task "review <what> r<k>" --owner lead --note "<what is reviewed, round k>"`), then spawns `crit1` + `crit2` in one message. Both critic briefs carry its `TASK: T-<n>`, never the work task under review. They get user's original request verbatim, goal statement, worker report paths. The lead closes the review task with the verdicts and review file paths (`rk close T-<n> --note "<verdicts>" --ref <review file>`). Each critic writes ONE review file:
    ```
    VERDICT (each: YES / PARTIAL / NO + evidence)
    - solves the stated problem / answers the question asked?
@@ -113,7 +113,7 @@ Every step producing deliverables (scan, build, run, draft) is its OWN stage wit
 - At most one open stage per kind; stages of different kinds may run in parallel. `/rk-close` names the stage it closes.
 - Stage sequence: the stage table in each kind file. Adapt the stage set per project; keep each row's Done when.
 - **Done when**: every stage opens with a mechanical exit check, written in `BRIEF.md` (file exists, check exits 0, counts match, both critics YES, user sign-off = a user decision linking the stage, 5.3). Why: completion by judgment call cannot be verified by the lead.
-- Opening a stage = `rk add stage "NN-<kind>-<topic>"` plus the folder; never `rk start` a stage. The stage entry is the only record of its state; only `rk stage-close` closes it.
+- Opening a stage = `rk add stage "NN-<kind>-<topic>"` (it creates the folder with its subfolders and records it as the stage ref); never `rk start` a stage. The stage entry is the only record of its state; only `rk stage-close` closes it.
 - Legacy stage paths (appendix `Legacy stages:`) are frozen and read-only; new stages go to `pm/stages/`. Why: closed stages are cited by path.
 
 ### 3.2 Stage folder
@@ -133,7 +133,7 @@ pm/stages/NN-<kind>-<topic>/
 
 ### 3.3 Briefing a stage
 
-`BRIEF.md` (lead) = inputs, Done when, rules, kind skill + mode if the kind file names one. Its decisions and work packages live in the ledger (4.2), not in a hand-kept id list: `rk list --stage S-<n> --all`, `rk search <text>`. Update in place with dated "update" sections. Decisions made in conversation: `rk add decision` at once, and show the user the receipt line. Why: conversation is lost at compaction; the ledger is not.
+`BRIEF.md` (lead) = inputs, Done when, rules, kind skill + mode if the kind file names one. Its decisions live in the ledger (4.2), not in a hand-kept id list: `rk list --stage S-<n> --all`, `rk search <text>`. When the stage opens, every work item of the BRIEF gets a task `rk add task "<item>" --label <stage code>/<item> --note "<deliverable and scope, 1-3 lines>" --ref <the stage BRIEF.md>`, owner `lead` until work is handed out (2.2 step 3 reuses it), and the BRIEF's work-item list carries the task id next to each label. Titles, notes and messages may use a label only if it exists in the ledger. Why: a label that names nothing cannot be resolved later. Update in place with dated "update" sections. Decisions made in conversation: `rk add decision` at once, and show the user the receipt line. Why: conversation is lost at compaction; the ledger is not.
 
 ### 3.4 Stage close (user says "close stage"; `/rk-close`)
 
@@ -145,7 +145,7 @@ Checklist, this order, each step with owner. Chat archive LAST: session JSONL is
 5. User sign-off: the lead asks the user; only after the user gave it, `rk add decision "<sign-off>" --owner user --link S-<n>` (lead).
 6. `rk stage-close S-<n> --sign-off D-<m>` (lead). Refused -> fix what it names, rerun. Stage table, open list and task view are generated from the ledger; nothing to rewrite by hand.
 7. Kind-specific freeze steps named in the kind file (owner as named there).
-8. Chat archive into the stage's `chat/` (sr, copy only, never digest in `notes/`):
+8. Chat archive into the stage's `chat/` (lead, copy only, never digest in `notes/`; a teammate copying `~/.claude` transcripts is refused by the permission classifier):
    - raw session JSONL `~/.claude/projects/<sanitized-cwd>/<session-id>.jsonl`;
    - teammate transcripts `~/.claude/projects/<sanitized-cwd>/<session-id>/subagents/agent-*.jsonl` + `*.meta.json`; plus `tasks/*.output` from any scratchpad `tasks/` dir if present (team session may have none; write that into INDEX.md instead of leaving it silent);
    - rendered `session.md` and `INDEX.md` (what was copied, what was absent);
@@ -186,16 +186,16 @@ Kind-specific folders (e.g. a paper's library and manuscript) are named in the k
 - One ledger per repo, in the main checkout. `rk` = `python3 -I <path>/rk.py`, run from the repo root; inside a git worktree it finds the main checkout's `pm/ledger.jsonl` by itself (no path to pass). The path is in the SessionStart line `[research-kit] Ledger tool ...` (skills spell it in full). Teammates add `--who <name>`. Every write prints a receipt line (`logged D-4: ...`): show it to the user.
 - Types (id prefix): task T, decision D, deferred DF, fetch F, debt DB, handoff H, stage S; a kind file may declare more with `<!-- rk:type <name> <PREFIX> -->`. Statuses: open, running, done, dropped, superseded. `imported` entries are unverified.
 - Granularity: an entry is a unit of work or a ruling; a file edit, a one-line fix or a test rerun is not. The user's own work: `rk add task "<what>" --owner user --status done --note ...`. Never hand-edit `ledger.jsonl` or `STATUS.md` (a hook blocks it); corrections are new events. `ledger.jsonl` is committed together with the work (section 7); the tool never runs git.
-- `rk add <type> "<title>" [--owner N] [--stage S-<n>] [--note T] [--link ID]... [--ref PATH]... [--status S]`: new entry
+- `rk add <type> "<title>" [--owner N] [--label L] [--stage S-<n>] [--note T] [--link ID]... [--ref PATH]... [--status S]`: new entry. A `task` without `--note` is refused (imports exempt); `rk add stage` also creates the folder (3.1)
 - `rk start ID`: open -> running, for tasks and other work entries, never a stage (the brief hook does it for the brief's `TASK:` ids)
 - `rk close ID --note "<outcome>" [--ref PATH] [--link ID]`: done; not for stages (`stage-close`) or decisions (`supersede` / `drop`)
-- `rk drop ID --note "<why>" [--link ID]`: dropped
-- `rk reopen ID --note "<why>"`: done / dropped -> open
-- `rk set ID [--title T] [--owner N] [--stage S-<n>] [--note T | --note-replace T] [--link ID] [--ref PATH]`: change fields, status kept. Every `--note` (set, close, drop, reopen) appends a line to the entry's note; only `--note-replace T` replaces it
+- `rk drop ID --note "<why>" [--link ID]`: dropped; `rk reopen ID --note "<why>"`: done / dropped -> open
+- Label `L` = `<stage code>/<item>` (e.g. `03b/W4`; the `/` is required): unique, stored on the entry, never containing an ID form (`03b/T-1` is refused); a stage's title is its folder name and is never renamed (`set --title` on a stage is refused); every command that takes an ID also takes a label or a stage code (`03b`); an ID always wins; ambiguity is refused; a label resolves only as written (`03b/W2`, not `W2`; `rk search W2` finds it); receipts print the real ID
+- `rk set ID [--title T] [--owner N] [--label L] [--stage S-<n>] [--note T | --note-replace T] [--link ID] [--ref PATH]`: change fields, status kept. Every `--note` (set, close, drop, reopen) appends a line to the entry's note; only `--note-replace T` replaces it
 - `rk supersede D-<n> "<new>" --owner N [--note T]`: replaces a decision in one call
 - `rk list [--type T] [--owner N] [--stage S-<n>] [--all]`: open entries, short (`--all` adds closed ones)
 - `rk show ID`: fields, history, and one line (id, status, title) per linked entry, both directions (it links, links it)
-- `rk search TEXT`: titles and notes, every status
+- `rk search TEXT`: titles, notes and labels (partial text), every status
 - `rk recent [-n N]`: entries with the newest events
 - `rk stage-close S-<n> --sign-off D-<m>`: the only way to close a stage (3.4)
 
