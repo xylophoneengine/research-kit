@@ -1,0 +1,198 @@
+import { useMemo, useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { IdLink, Linked } from "@/components/IdLink";
+import { TypeBadge } from "@/components/TypeBadge";
+import { age, backlinks, byId, type Entry, type Ev, type Ledger } from "@/lib/ledger";
+
+const pad = (n: number): string => String(n).padStart(2, "0");
+
+// local time "YYYY-MM-DD HH:MM"; a date-only or unparsable value stays as is
+function fmtTs(ts: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(ts)) return ts;
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// cut at 80 characters, but never inside an id (T-20 would be a different entry)
+function cut80(s: string): number {
+  let n = 80;
+  while (n < 92 && n < s.length && /[A-Za-z0-9-]/.test(s[n - 1]) && /[A-Za-z0-9-]/.test(s[n])) n++;
+  return n;
+}
+
+function Val({ v, ids }: { v: unknown; ids: Set<string> }) {
+  const [more, setMore] = useState(false);
+  const s = typeof v === "string" ? v : JSON.stringify(v);
+  const n = cut80(s);
+  if (s.length <= n) {
+    return (
+      <span className="whitespace-pre-wrap">
+        <Linked text={s} ledgerIds={ids} />
+      </span>
+    );
+  }
+  return (
+    <span className="whitespace-pre-wrap">
+      <Linked text={more ? s : s.slice(0, n) + "\u2026"} ledgerIds={ids} />{" "}
+      <button
+        type="button"
+        className="text-primary hover:underline"
+        onClick={() => setMore(!more)}
+      >
+        {more ? "less" : "more"}
+      </button>
+    </span>
+  );
+}
+
+function HistoryLine({ ev, ids }: { ev: Ev; ids: Set<string> }) {
+  return (
+    <li className="text-xs">
+      <span className="font-mono text-muted-foreground">{fmtTs(ev.ts)}</span> {ev.who}{" "}
+      <span className="font-semibold">{ev.ev}</span>
+      {Object.entries(ev.f).map(([k, v]) => (
+        <span key={k} className="ml-2">
+          <span className="text-muted-foreground">{k}=</span>
+          <Val v={v} ids={ids} />
+        </span>
+      ))}
+    </li>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="mt-4">
+      <h3 className="mb-1 text-xs font-semibold uppercase text-muted-foreground">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+export function EntryDetail({ ledger, id }: { ledger: Ledger; id: string }) {
+  const idx = useMemo(() => byId(ledger), [ledger]);
+  const back = useMemo(() => backlinks(ledger), [ledger]);
+  const ids = useMemo(() => new Set(idx.keys()), [idx]);
+  // which linked rows show their note ("links:D-1", "from:D-1"); per detail view
+  const [open, setOpen] = useState<Set<string>>(new Set());
+  const e: Entry | undefined = idx.get(id);
+  if (!e) return <p className="p-4 text-sm">no such entry: {id}</p>;
+
+  const toggle = (k: string): void =>
+    setOpen((o) => {
+      const n = new Set(o);
+      if (!n.delete(k)) n.add(k);
+      return n;
+    });
+
+  const line = (sec: string, x: string) => {
+    const t = idx.get(x);
+    const k = `${sec}:${x}`;
+    const shown = open.has(k);
+    return (
+      <li key={x} className="text-sm">
+        {t && (
+          <button
+            type="button"
+            aria-expanded={shown}
+            aria-label={`${shown ? "hide" : "show"} note of ${x}`}
+            title={shown ? "hide note" : "show note"}
+            className="mr-1 inline-block w-3 text-xs text-muted-foreground hover:text-foreground"
+            onClick={() => toggle(k)}
+          >
+            {shown ? "\u25BE" : "\u25B8"}
+          </button>
+        )}
+        <IdLink id={x} ledgerIds={ids} />
+        {t && (
+          <>
+            {" "}
+            <Badge variant="outline">{t.status}</Badge> <Linked text={t.title} ledgerIds={ids} />
+          </>
+        )}
+        {t && shown && (
+          <div className="mt-1 mb-2 ml-4 border-l pl-2 text-xs break-words whitespace-pre-wrap">
+            {t.note ? (
+              <Linked text={t.note} ledgerIds={ids} />
+            ) : (
+              <span className="text-muted-foreground">(no note)</span>
+            )}
+          </div>
+        )}
+      </li>
+    );
+  };
+  const stage = e.stage ? idx.get(e.stage) : undefined;
+  const fields: [string, React.ReactNode][] = [
+    ["owner", e.owner || "-"],
+    [
+      "stage",
+      e.stage ? (
+        <>
+          <IdLink id={e.stage} ledgerIds={ids} /> {stage && <Linked text={stage.title} ledgerIds={ids} />}
+        </>
+      ) : (
+        "-"
+      ),
+    ],
+    ["created", fmtTs(e.created)],
+    ["updated", fmtTs(e.updated)],
+    ["age", age(e, new Date())],
+  ];
+  for (const k of ["source", "legacy_id", "date"]) {
+    const v = e.extra[k];
+    if (typeof v === "string") fields.push([k, v]);
+  }
+  const from = back.get(e.id) ?? [];
+  const events = ledger.events.filter((v) => v.id === e.id);
+
+  return (
+    <div className="p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-mono text-lg font-semibold">{e.id}</span>
+        <TypeBadge type={e.type} />
+        <Badge variant={e.status === "running" ? "default" : "outline"}>{e.status}</Badge>
+        {e.extra.imported === true && <Badge variant="outline">imported</Badge>}
+      </div>
+      <h2 className="mt-2 text-base font-medium">
+        <Linked text={e.title} ledgerIds={ids} />
+      </h2>
+      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+        {fields.map(([k, v]) => (
+          <div key={k} className="contents">
+            <dt className="text-muted-foreground">{k}</dt>
+            <dd className="break-words">{v}</dd>
+          </div>
+        ))}
+      </dl>
+      <Section title="note">
+        {e.note ? (
+          <p className="break-words whitespace-pre-wrap text-sm">
+            <Linked text={e.note} ledgerIds={ids} />
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground">(no note)</p>
+        )}
+      </Section>
+      {e.links.length > 0 && <Section title="links"><ul>{e.links.map((x) => line("links", x))}</ul></Section>}
+      {from.length > 0 && <Section title="linked from"><ul>{from.map((x) => line("from", x))}</ul></Section>}
+      {e.refs.length > 0 && (
+        <Section title="refs">
+          <ul>
+            {e.refs.map((r, i) => (
+              <li key={i} className="break-all font-mono text-xs">{r}</li>
+            ))}
+          </ul>
+        </Section>
+      )}
+      <Section title="history">
+        <ul className="space-y-1">
+          {events.map((v) => (
+            <HistoryLine key={v.line} ev={v} ids={ids} />
+          ))}
+        </ul>
+      </Section>
+    </div>
+  );
+}

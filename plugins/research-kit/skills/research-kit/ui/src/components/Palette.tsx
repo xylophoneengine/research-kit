@@ -1,0 +1,61 @@
+import { useEffect, useState } from "react";
+import {
+  Command,
+  CommandDialog,
+  CommandEmpty,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { matches, pinExact, type Entry } from "@/lib/ledger";
+
+// Cmd-K / Ctrl-K: the same search as the header box, over the whole ledger
+// (no filters), first 50 hits
+export function Palette({
+  entries,
+  onOpen,
+}: {
+  entries: Entry[];
+  onOpen: (id: string) => void;
+}) {
+  const [show, setShow] = useState(false);
+  const [input, setInput] = useState("");
+
+  useEffect(() => {
+    const on = (ev: KeyboardEvent): void => {
+      if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "k") {
+        ev.preventDefault();
+        setInput("");
+        setShow((s) => !s);
+      }
+    };
+    window.addEventListener("keydown", on);
+    return () => window.removeEventListener("keydown", on);
+  }, []);
+
+  const hits = pinExact(entries.filter((e) => matches(e, input)), input).slice(0, 50);
+  return (
+    <CommandDialog open={show} onOpenChange={setShow} title="Search" description="Find an entry">
+      <Command shouldFilter={false}>
+        <CommandInput value={input} onValueChange={setInput} placeholder="search id, title, note..." />
+        <CommandList>
+          <CommandEmpty>no match</CommandEmpty>
+          {hits.map((e) => (
+            <CommandItem
+              key={e.id}
+              value={e.id}
+              onSelect={() => {
+                onOpen(e.id);
+                setShow(false);
+              }}
+            >
+              <span className="font-mono">{e.id}</span>
+              <span className="text-muted-foreground">{e.status}</span>
+              <span className="truncate">{e.title}</span>
+            </CommandItem>
+          ))}
+        </CommandList>
+      </Command>
+    </CommandDialog>
+  );
+}

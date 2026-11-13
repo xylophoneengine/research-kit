@@ -59,6 +59,7 @@ entries are exempt):
       (imported history, all or nothing; rows: type, title, source; optional
       owner, stage, note, link, ref, status, legacy_id, date, key; see
       `rk.py import --help`)
+  python3 -I rk.py ui [--repo DIR] [--port N] [--no-open]   (read-only browser)
 """
 
 from __future__ import annotations
@@ -101,13 +102,12 @@ GI_START: str = "# >>> research-kit"
 GI_END: str = "# <<< research-kit"
 
 
-def _load_ledger() -> ModuleType:
-    """ledger.py next to this file: python3 -I drops the script dir from sys.path."""
-    name: str = "rk_ledger"
+def _load_sibling(name: str, file: str) -> ModuleType:
+    """`file` next to this file: python3 -I drops the script dir from sys.path."""
     if name in sys.modules:
         return sys.modules[name]
     spec: ModuleSpec | None = importlib.util.spec_from_file_location(
-        name, Path(__file__).with_name("ledger.py")
+        name, Path(__file__).with_name(file)
     )
     assert spec is not None and spec.loader is not None
     mod: ModuleType = importlib.util.module_from_spec(spec)
@@ -116,7 +116,7 @@ def _load_ledger() -> ModuleType:
     return mod
 
 
-ledger: ModuleType = _load_ledger()
+ledger: ModuleType = _load_sibling("rk_ledger", "ledger.py")
 STAMP_RE: re.Pattern[str] = ledger.STAMP_RE  # one pattern for sync and doctor
 
 
@@ -617,6 +617,8 @@ def cmd_sync(repo_dir: Path, write: bool, accept_drop: bool) -> int:
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "ui":
+        return _load_sibling("rk_ui", "ui.py").main(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] in ledger.COMMANDS:
         return ledger.main(sys.argv[1:])
     p: argparse.ArgumentParser = argparse.ArgumentParser(
@@ -643,6 +645,7 @@ def main() -> int:
     pg.add_argument("--write", action="store_true")
     for name in sorted(ledger.COMMANDS):  # listed in --help; main() dispatches them
         sub.add_parser(name, add_help=False)
+    sub.add_parser("ui", add_help=False)  # dispatched in main() to ui.py
     a: argparse.Namespace = p.parse_args()
     if a.cmd == "init":
         kinds: list[str] = [k.strip() for k in a.kinds.split(",") if k.strip()]
