@@ -169,6 +169,17 @@ on that tier).
 - While teammates run, open with **Done** / **Running** (names) / **Needs
   you**. Keep user messages to ~10 lines unless asked.
 - When a teammate finishes, route its next item or ask the user at once.
+- A decision you need from the user always goes through `AskUserQuestion`,
+  in a call of its own, never inside a status message: chat text gets
+  buried under teammate notifications. No discrete options: offer your
+  recommended answer plus one alternative ("Other" covers the rest). Under
+  **Needs you** write only a pointer to what you asked.
+- A question that does not block yet: in a repo with `pm/ledger.jsonl` log
+  it (`rk add deferred "<question>" --owner user`, shown under STATUS
+  "Needs you"); ask when it starts to block or at the next natural stop,
+  all pending ones in one call (max 4).
+- Idle pings and duplicate notifications get no user-facing message. Write
+  to the user only when something finished, failed, or needs them.
 - Before saying you are waiting, run `ListAgents`; if nobody runs, say so
   and act. After a resume, assume teammates are gone.
 
