@@ -46,7 +46,9 @@ applies) or `drop`; `close`, `start` and a second `shelve` are refused. `add
 `close`, `drop`, `shelve` and `reopen` also store their `--note` as the field
 `reason` (why the entry has its current status; the next one replaces it; the
 note still appends as before); `show` prints `reason: ...`, the stage record
-shows it beside dropped and shelved entries. Old entries have none and print none.
+shows it beside dropped and shelved entries. Old entries have none and print none;
+a viewer may fall back to the last line of the note for entries written before the
+field existed.
 `set <id> --ref-drop <path>` (repeatable) removes a wrong ref. `show` takes
 several ids and prints, under each history line, the kit version, session id and
 rule stamps the tool wrote. `doctor [--stage S] [--limit N]` (N lines per group, default 20, 0 = all) is read-only: HARD findings

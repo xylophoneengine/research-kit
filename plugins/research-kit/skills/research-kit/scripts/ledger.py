@@ -1905,7 +1905,8 @@ G_LATE: str = (
     "(set ID --stage S-n; an open entry only into an open stage)"
 )
 G_RUNNING: str = (
-    f"task running over {RUNNING_MAX_H} h (close or drop it, or set ID --note why)"
+    f"task running over {RUNNING_MAX_H} h (close, drop or shelve it, or set ID "
+    "--note why)"
 )
 G_IMPORTED: str = (
     "missing refs of imported entries (rk set ID --ref-drop PATH, or rk reref "
@@ -2348,7 +2349,11 @@ def _parser() -> argparse.ArgumentParser:
     for name in ("close", "drop", "shelve", "reopen"):
         pc: argparse.ArgumentParser = sub.add_parser(name, parents=[common])
         pc.add_argument("id")
-        pc.add_argument("--note", default=None, help="added as a new line of the note")
+        pc.add_argument(
+            "--note", default=None,
+            help="required: added as a new line of the note and stored as the "
+            "entry's `reason` (why it has this status now)",
+        )
         pc.add_argument("--ref", action="append", default=[])
         if name != "reopen":
             pc.add_argument("--link", action="append", default=[])

@@ -2658,6 +2658,38 @@ def test_stage_record_golden() -> None:
     assert L.render_stage_record(events, "S-1") == text
 
 
+def test_stage_record_dropped_without_reason() -> None:
+    """An old-style dropped entry (no `reason`, or an empty one) gets no tail."""
+    for reason in (None, ""):
+        rows: list[str] = stage_ledger_lines()
+        ev: dict[str, Any] = json.loads(rows[7])  # the set that drops DB-1
+        assert ev["id"] == "DB-1" and ev["f"]["status"] == "dropped", ev
+        if reason is None:
+            del ev["f"]["reason"]
+        else:
+            ev["f"]["reason"] = reason
+        rows[7] = json.dumps(ev)
+        events: list[tuple[int, dict[str, object]]] = L._parse(
+            ("\n".join(rows) + "\n").encode()
+        )
+        text: str = L.render_stage_record(events, "S-1")
+        assert "- DB-1 debt dropped (lead) old path [no stage]\n" in text, text
+        assert "reason" not in text and "None" not in text, text
+
+
+def test_status_commands_help_names_reason() -> None:
+    for cmd in ("close", "drop", "shelve", "reopen"):
+        buf: io.StringIO = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                L.main([cmd, "--help"])
+        except SystemExit:
+            pass
+        text: str = " ".join(buf.getvalue().split())
+        assert "required" in text and "stored as the entry's `reason`" in text, text
+    assert "shelve" in L.G_RUNNING  # the over-24h hint names it too
+
+
 def test_stage_close_writes_record() -> None:
     with tempfile.TemporaryDirectory() as d:
         repo: Path = new_repo(Path(d))

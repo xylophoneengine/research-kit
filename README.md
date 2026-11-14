@@ -115,6 +115,10 @@ clone), run `claude plugin marketplace update research-kit`, then
 `/plugin` -> update `research-kit` (and `research-kit-lit`), and restart.
 Then bring each repo along: [After a kit update](#after-a-kit-update).
 
+From 0.2.1: a ledger that holds a shelved entry needs kit 0.2.1 or newer in
+every session that opens the repo. An older kit refuses it with an
+unknown-status error: update the kit, do not edit the ledger line.
+
 ## Kinds
 
 One file per kind, copied to `pm/kinds/<kind>.md` in your repo. Add kinds as
