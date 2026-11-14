@@ -550,15 +550,21 @@ without a new stamp; the anon check; every `test-*.sh` / `test_*.py` under
 `plugins/` and `scripts/`, run on the pushed commit; `claude plugin validate`
 for the marketplace and each plugin.
 
-`scripts/anon_check.sh` scans what a push publishes (added lines, added file
-names, messages, author and committer of each commit, annotated tags pointing
-into the range; `--all` for all history) for home and temp paths, email
-addresses, secret shapes and session ids, and for the terms in the private
-denylist `docs/private/denylist.txt` of the main checkout (any worktree finds
-it; `ANON_DENYLIST` overrides). Without a denylist it fails; `--no-denylist`
-runs the pattern scans only and says so. Binary files are listed, not scanned.
+`scripts/anon_check.sh` scans what a push publishes (added lines of every file,
+also those git treats as binary; added file names; messages, author and
+committer of each commit; annotated tags pointing into the range; and, from
+the hook, the local and remote name of every pushed ref and each pushed tag;
+`--all` for all history) for home and temp paths (also in `file://` URLs),
+email addresses, secret shapes and session ids, and for the terms in the
+private denylist `docs/private/denylist.txt` of the main checkout (any worktree
+finds it; `ANON_DENYLIST` overrides). A multi-word term is also found when a
+line wrap splits it. Without a denylist it fails; `--no-denylist` runs the
+pattern scans only and says so. An added file that is not UTF-8 text (NUL
+byte, other encoding) is a hit unless a `binary:<glob>` entry names it.
 Owner rule of this repo: one pseudonymous identity publishes, so every commit
 must carry the author and committer of `origin/main`'s tip. Accepted pattern
 hits go into `scripts/anon_allow.txt`, one per line with a comment why; an
 entry excuses only the exact text it matches, and a denylist hit cannot be
-excused (change the denylist instead).
+excused (change the denylist instead). The gate and the hook read the
+allowlist from the commit being pushed, a manual `anon_check.sh` from the
+working tree; the output names which.

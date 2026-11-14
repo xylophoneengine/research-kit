@@ -536,38 +536,74 @@ def _is_path(ref: str) -> bool:
     return "://" not in ref and not NON_PATH_RE.match(ref)
 
 
+def _worktree(repo: Path) -> Path | None:
+    """The git worktree checkout the cwd is in, when its ledger was redirected
+    to `repo`, the main checkout (find_repo); else None."""
+    for d in [Path.cwd().resolve(), *Path.cwd().resolve().parents]:
+        if (d / LEDGER_REL).is_file():
+            main: Path = _main_checkout(d).resolve()
+            return d if d != repo.resolve() and main == repo.resolve() else None
+    return None
+
+
+def _abs_rel(r: str, roots: list[Path]) -> str | None:
+    """Absolute path `r` relative to the first of `roots` it lies under (a
+    trailing / kept); None if under none."""
+    for root in roots:
+        try:
+            rel: str = Path(r).resolve().relative_to(root.resolve()).as_posix()
+        except ValueError:
+            continue
+        return rel + ("/" if r.endswith("/") and rel != "." else "")
+    return None
+
+
+def _outside(ref: str) -> bool:
+    """A stored path ref that breaks in a clone: absolute, or above the root."""
+    return _is_path(ref) and (
+        Path(ref).is_absolute() or os.path.normpath(ref).split("/")[0] == ".."
+    )
+
+
 def _rel_refs(
     repo: Path, refs: list[str], flag: str = "--ref", strict: bool = True
 ) -> list[str]:
-    """`refs` with absolute paths under the repo root made repo-relative (the
-    ledger is committed: no home paths in it). `strict`: refuse an empty ref and
-    a path outside the repo (absolute or ../); else such a ref stays as given
-    (--ref-drop must be able to name an old bad ref)."""
-    root: Path = repo.resolve()
+    """`refs` with absolute paths under the repo root (or under the worktree the
+    cwd is in) made repo-relative (the ledger is committed: no home paths in
+    it). `strict`: refuse an empty ref and a path outside the repo (absolute or
+    ../); else such a ref stays as given (--ref-drop must be able to name an
+    old bad ref)."""
+    wt: Path | None = _worktree(repo)
+    roots: list[Path] = [repo] if wt is None else [repo, wt]
     out: list[str] = []
     for r in refs:
         if strict and not r.strip():
             raise LedgerError(f"{flag} '': empty; give a path, a URL or doi:...")
         rel: str = r
         if _is_path(r) and Path(r).is_absolute():
-            try:
-                rel = Path(r).resolve().relative_to(root).as_posix()
-                rel += "/" if r.endswith("/") and rel != "." else ""
-            except ValueError:
-                rel = r if not strict else ".."
-        if strict and _is_path(r) and os.path.normpath(rel).split("/")[0] == "..":
+            rel = _abs_rel(r, roots) or r
+        if strict and _outside(rel):
             raise LedgerError(
-                f"{flag} {r}: outside the repo {root}; a ref is a path relative "
-                "to the repo root, a URL (://) or doi:..."
+                f"{flag} {r}: outside the repo {repo.resolve()}; a ref is a path "
+                "relative to the repo root, a URL (://) or doi:..."
             )
         out.append(rel)
     return out
 
 
 def _check_refs(repo: Path, refs: list[str]) -> list[str]:
-    """`refs` made repo-relative (_rel_refs); refused if a path does not exist."""
+    """`refs` made repo-relative (_rel_refs); refused if a path does not exist
+    in the checkout that holds the ledger."""
     refs = _rel_refs(repo, refs)
     missing: list[str] = [r for r in refs if _is_path(r) and not (repo / r).exists()]
+    wt: Path | None = _worktree(repo)
+    only_wt: list[str] = [r for r in missing if wt is not None and (wt / r).exists()]
+    if only_wt:
+        raise LedgerError(
+            f"--ref {', '.join(only_wt)}: exists in this worktree {wt} but not in "
+            f"the main checkout {repo}, which holds the ledger: merge first, then "
+            "add the ref"
+        )
     if missing:
         raise LedgerError(
             f"--ref {', '.join(missing)}: no such file or folder (relative to the "
@@ -1343,8 +1379,10 @@ def _cmd_reref(a: argparse.Namespace) -> int:
     who: str = _name(a.who, "--who")
     if not a.old.strip() or not a.new.strip():
         raise LedgerError("reref needs a non-empty OLD and NEW")
-    old: str = os.path.normpath(a.old)
-    new: str = os.path.normpath(a.new)
+    # NEW as any --ref (absolute inside the repo made relative; outside refused);
+    # OLD made relative the same way, but may name an old ref outside the repo
+    old: str = os.path.normpath(_rel_refs(repo, [a.old], "OLD", strict=False)[0])
+    new: str = os.path.normpath(_rel_refs(repo, [a.new], "NEW")[0])
     if new == old or new.startswith(old + "/"):
         raise LedgerError(
             f"reref: NEW {a.new} lies inside OLD {a.old}; a second run would apply "
@@ -1356,7 +1394,7 @@ def _cmd_reref(a: argparse.Namespace) -> int:
         normpath, so ./pm/x matches pm/x) replaced by NEW; None if no match."""
         if not _is_path(r):
             return None
-        n: str = os.path.normpath(r)
+        n: str = os.path.normpath(_rel_refs(repo, [r], strict=False)[0])
         if n != old and not n.startswith(old + "/"):
             return None
         return new + n[len(old):] + ("/" if r.endswith("/") else "")
@@ -1680,6 +1718,18 @@ G_IMPORTED: str = (
 G_WASTE_GONE: str = (
     "ref into the waste folder, file gone (rk set ID --ref-drop PATH)"
 )
+G_IGNORED_GONE: str = (
+    "ref to a git-ignored file that is not here (a clone has none; if gone for "
+    "good: rk set ID --ref-drop PATH)"
+)
+G_FOLDER_EMPTY: str = (
+    "stage folder not here, and git has no file of it (a clone has no empty "
+    "folders; mkdir it when work starts)"
+)
+G_OUTSIDE: str = (
+    "ref outside the repo or absolute (breaks in a clone: rk set ID --ref-drop "
+    "PATH --ref <repo-relative path>, or rk reref)"
+)
 G_STAMPS: str = "rule file behind the kit (run /rk-sync)"
 G_DECISIONS: str = "decisions of the stage not owned by user (for the sign-off)"
 
@@ -1747,6 +1797,20 @@ def _close_line(events: list[tuple[int, dict[str, object]]], sid: str) -> int | 
     return line
 
 
+def _ignored(repo: Path, refs: list[str]) -> set[str]:
+    """Those of `refs` git ignores (`check-ignore`; works for missing files too;
+    tracked files are never ignored). Empty set when git cannot tell."""
+    paths: list[str] = list(dict.fromkeys(refs))
+    if not paths:
+        return set()
+    res: subprocess.CompletedProcess[bytes] | None = _git(
+        repo, ["check-ignore", "--stdin", "-z"], "\0".join(paths).encode() + b"\0"
+    )
+    if res is None or res.returncode not in (0, 1):  # 1: none ignored
+        return set()
+    return set(res.stdout.decode(errors="replace").split("\0")) - {""}
+
+
 def _waste(ref: str) -> bool:
     return (os.path.normpath(ref) + "/").startswith(WASTE_DIRS)
 
@@ -1773,45 +1837,58 @@ def _findings(
     stages: list[Entry] = [e for e in entries if e.type == "stage" and not _imported(e)]
     present: list[tuple[str, str]] = []  # (id, ref) of refs that exist
     imp: list[tuple[str, str]] = []
+    gone: list[tuple[str, str]] = []  # missing, not imported, not in waste
     for e in entries:
         own: str = f"pm/stages/{e.title}/" if e.type == "stage" else ""
         for r in e.refs:
             if not _is_path(r) or r == own:  # own folder: the folder check
                 continue
-            if (repo / r).exists():
+            if _outside(r):  # absolute or ../: breaks in a clone, never checked
+                out.append((False, G_OUTSIDE, _clip(f"{e.id} {r}", TITLE_MAX)))
+            elif (repo / r).exists():
                 present.append((e.id, r))
             elif _imported(e):
                 imp.append((e.id, r))
             elif _waste(r):  # an older kit put reports there; the user empties it
                 out.append((False, G_WASTE_GONE, _clip(f"{e.id} {r}", TITLE_MAX)))
             else:
-                out.append((True, G_REF, _clip(f"{e.id} {r}", TITLE_MAX)))
+                gone.append((e.id, r))
+    # a clone has no git-ignored files: such a missing ref is no damage
+    ign: set[str] = set() if skip else _ignored(repo, [r for _, r in gone])
+    for i, r in gone:
+        txt: str = _clip(f"{i} {r}", TITLE_MAX)
+        if r in ign or KIT_IGNORED_RE.match(os.path.normpath(r)):
+            out.append((False, G_IGNORED_GONE, txt))
+        else:
+            out.append((True, G_REF, txt))
     out += [
         (False, G_IGNORED, _clip(f"{i} {r} (waste)", TITLE_MAX))
         for i, r in present if _waste(r)
     ]
     cand: list[tuple[str, str]] = [  # the kit's own ignored places: by design
         (i, r) for i, r in present
-        if not _waste(r) and not Path(r).is_absolute() and not r.startswith("..")
-        and not KIT_IGNORED_RE.match(os.path.normpath(r))
+        if not _waste(r) and not KIT_IGNORED_RE.match(os.path.normpath(r))
     ]
     if not skip and cand:
-        paths: list[str] = list(dict.fromkeys(r for _, r in cand))
-        res: subprocess.CompletedProcess[bytes] | None = _git(
-            repo, ["check-ignore", "--stdin", "-z"], "\0".join(paths).encode() + b"\0"
-        )
-        if res is not None and res.returncode in (0, 1):  # 1: none ignored
-            ignored: set[str] = set(res.stdout.decode(errors="replace").split("\0"))
-            out += [(False, G_IGNORED, _clip(f"{i} {r} (ignored)", TITLE_MAX))
-                    for i, r in cand
-                    if r in ignored]
+        ignored: set[str] = _ignored(repo, [r for _, r in cand])
+        out += [(False, G_IGNORED, _clip(f"{i} {r} (ignored)", TITLE_MAX))
+                for i, r in cand
+                if r in ignored]
     if imp:
         n: int = len({i for i, _ in imp})
         out.append((False, G_IMPORTED, f"{len(imp)} refs of {n} imported entries "
                     f"missing, e.g. {imp[0][0]} {imp[0][1]}"))
     for st in stages:
         folder: str = f"pm/stages/{st.title}/"
-        if not (repo / folder).is_dir():
+        if (repo / folder).is_dir():
+            continue
+        tracked: subprocess.CompletedProcess[bytes] | None = (
+            None if skip else _git(repo, ["ls-files", "--", folder])
+        )
+        if tracked is not None and tracked.returncode == 0 and not tracked.stdout:
+            # git keeps no empty folder: a clone of a stage with no files yet
+            out.append((False, G_FOLDER_EMPTY, f"{st.id} {folder}"))
+        else:
             out.append((True, G_FOLDER, f"{st.id} {folder}"))
     done: list[Entry] = [st for st in stages if st.status == "done"]
     if not skip and (done or ledger_wide):
@@ -1920,15 +1997,19 @@ def _print_findings(
 
 
 def _doctor_start(a: argparse.Namespace) -> int:
-    """Session start: kit line, then up to two rule files behind the kit."""
+    """Session start, at most 3 lines (the hook cuts at 3): kit line, then up to
+    two rule files behind the kit; with more than two, one and '+N more'."""
     print(f"kit {kit_version()}")
     try:
         repo: Path = _repo(a)
         behind: list[tuple[str, str, str]] = stamps_behind(repo)
     except (LedgerError, OSError):
         return 0
-    for rel, have, want in behind[:2]:
+    shown: list[tuple[str, str, str]] = behind[:2] if len(behind) <= 2 else behind[:1]
+    for rel, have, want in shown:
         print(f"{rel} {have}, kit {want}: run /rk-sync")
+    if len(shown) < len(behind):
+        print(f"+{len(behind) - len(shown)} more: rk doctor")
     return 0
 
 

@@ -2059,18 +2059,27 @@ def test_doctor_start() -> None:
         code, out = lrun(repo, "doctor", "--start")
         assert code == 0 and out == f"{kit}\n", out
         (repo / "AGENTS.md").write_text("<!-- research-kit: 2000-01-01a -->\n")
-        for k in ("paper", "software"):
-            (repo / f"pm/kinds/{k}.md").write_text(
-                f"<!-- research-kit-kind {k}: 2000-01-01a -->\n"
-            )
+        (repo / "pm/kinds/paper.md").write_text(
+            "<!-- research-kit-kind paper: 2000-01-01a -->\n"
+        )
         (repo / L.LEDGER_REL).write_text("{torn\n")  # no fold: still fine
         code, out = lrun(repo, "doctor", "--start")
         a_kit: str | None = L._line1_stamp(L.TEMPLATE_DIR / "AGENTS.md")
         p_kit: str | None = L._line1_stamp(L.TEMPLATE_DIR / "kinds/paper.md")
-        assert code == 0 and out.splitlines() == [
+        assert code == 0 and out.splitlines() == [  # two behind: both shown
             kit,
             f"AGENTS.md 2000-01-01a, kit {a_kit}: run /rk-sync",
             f"pm/kinds/paper.md 2000-01-01a, kit {p_kit}: run /rk-sync",
+        ], out
+        for k in ("software", "thesis"):
+            (repo / f"pm/kinds/{k}.md").write_text(
+                f"<!-- research-kit-kind {k}: 2000-01-01a -->\n"
+            )
+        code, out = lrun(repo, "doctor", "--start")
+        assert code == 0 and out.splitlines() == [  # more: still 3 lines (hook)
+            kit,
+            f"AGENTS.md 2000-01-01a, kit {a_kit}: run /rk-sync",
+            "+3 more: rk doctor",
         ], out
 
 
@@ -2307,6 +2316,143 @@ def test_compat_previous_ledger_doctor_no_hard() -> None:
         assert "doctor: 0 hard," in out, out
         code, out = doctor(repo, "--stage", "S-2")
         assert code == 0 and "HARD" not in out, out
+
+
+# ---- follow-up round: clones, ref rules everywhere, worktrees (blind1 1-3) ----
+
+
+def clone_of(repo: Path, dst: Path) -> Path:
+    """`repo` committed (all files, its .gitignore applies) and cloned to `dst`."""
+    commit_all(repo)
+    git(repo, "clone", "-q", str(repo), str(dst))
+    return dst
+
+
+def test_doctor_in_fresh_clone() -> None:
+    """blind1 1: a clone has no git-ignored files and no empty folders; refs
+    there and such stage folders are SOFT. A ledger of the new kit and one of
+    the previous release (0.1.8) both give 0 hard in the clone."""
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root / "a")
+        (repo / ".gitignore").write_text("pm/waste/\npm/reviews/\npm/stages/*/chat/\n")
+        lrun(repo, "add", "stage", "01-paper-goal")  # subfolders, no file
+        chat: Path = repo / "pm/stages/01-paper-goal/chat/INDEX.md"
+        chat.write_text("x")
+        (repo / "pm/reviews").mkdir()
+        (repo / "pm/reviews/crit.md").write_text("x")
+        (repo / "kept.md").write_text("x")
+        lrun(repo, "add", "task", "archive", "--note", "n", "--ref",
+             "pm/stages/01-paper-goal/chat/INDEX.md", "--ref", "pm/reviews/crit.md",
+             "--ref", "kept.md")
+        code, out = doctor(repo)
+        assert code == 0 and "HARD" not in out, out
+        with env(**GIT_ENV):
+            cl: Path = clone_of(repo, root / "clone")
+        code, out = doctor(cl)
+        assert code == 0 and "HARD" not in out, out
+        assert group(out, L.G_IGNORED_GONE) == [
+            "T-1 pm/stages/01-paper-goal/chat/INDEX.md", "T-1 pm/reviews/crit.md"
+        ], out
+        assert group(out, L.G_FOLDER_EMPTY) == ["S-1 pm/stages/01-paper-goal/"], out
+        (cl / "kept.md").rename(root / "moved.md")  # tracked, then gone: damage
+        assert group(doctor(cl)[1], "missing ref") == ["T-1 kept.md"]
+        old: Path = new_repo(root / "b")  # the previous release's ledger
+        lines: list[dict[str, object]] = [*COMPAT_0_1_8, {
+            "ts": "2026-11-13T18:00:00+01:00", "who": "lead", "ev": "add",
+            "id": "S-3", "f": {"type": "stage", "title": "03-paper-empty",
+                               "status": "open", "owner": "lead", "stage": "",
+                               "note": "", "links": [], "refs": []}}, {
+            "ts": "2026-11-13T18:01:00+01:00", "who": "lead", "ev": "add",
+            "id": "T-4", "f": {"type": "task", "title": "chat archive",
+                               "status": "done", "owner": "lead", "stage": "S-3",
+                               "note": "", "links": [],
+                               "refs": ["pm/stages/03-paper-empty/chat/INDEX.md"]}},
+        ]  # fmt: skip
+        (old / L.LEDGER_REL).write_text("".join(json.dumps(e) + "\n" for e in lines))
+        for rel in ("pm/waste/team/run1/sr1-r1.md", "pm/waste/team/02/sr1-r1.md",
+                    "pm/stages/02-paper-new/notes/x.md",
+                    "pm/stages/03-paper-empty/chat/INDEX.md"):
+            (old / rel).parent.mkdir(parents=True, exist_ok=True)
+            (old / rel).write_text("x")
+        (old / ".gitignore").write_text("pm/waste/\npm/stages/*/chat/\n")
+        assert doctor(old)[0] == 0
+        with env(**GIT_ENV):
+            ocl: Path = clone_of(old, root / "oclone")
+        code, out = doctor(ocl)
+        assert code == 0 and "HARD" not in out, out
+        assert group(out, L.G_FOLDER_EMPTY) == ["S-3 pm/stages/03-paper-empty/"], out
+        tracked: Path = ocl / "pm/stages/02-paper-new"  # had a tracked file
+        tracked.rename(root / "moved-stage")
+        assert group(doctor(ocl)[1], "missing stage folder") == [
+            "S-2 pm/stages/02-paper-new/"
+        ]
+
+
+def test_reref_and_doctor_ref_rules() -> None:
+    """blind1 2: reref NEW follows the --ref rules; an absolute OLD inside the
+    repo is made relative; doctor reports stored absolute and ../ refs."""
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d).resolve()
+        repo: Path = new_repo(root / "r")
+        for rel in ("old/a.md", "new/a.md"):
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text("x")
+        lrun(repo, "add", "task", "t", "--note", "n", "--ref", "old/a.md")
+        n: int = len(jl(repo))
+        for bad in (str(root / "elsewhere"), "../elsewhere"):
+            code, out = lrun(repo, "reref", "old", bad)
+            assert code == 1 and "NEW" in out and "outside the repo" in out, out
+        assert len(jl(repo)) == n
+        code, out = lrun(repo, "reref", str(repo / "old"), str(repo / "new") + "/")
+        assert code == 0 and out.splitlines()[0] == "T-1 old/a.md -> new/a.md", out
+        assert L.load(repo)["T-1"].refs == ["new/a.md"]
+        with (repo / L.LEDGER_REL).open("a") as fh:  # what an older tool stored
+            ev: dict[str, object] = L.make_event(
+                "lead", "set", "T-1",
+                {"refs": [str(repo / "new/a.md"), "../up.md", "new/a.md"]},
+            )
+            fh.write(json.dumps(ev) + "\n")
+        code, out = doctor(repo)
+        assert code == 0 and group(out, L.G_OUTSIDE) == [
+            f"T-1 {repo / 'new/a.md'}", "T-1 ../up.md"
+        ], out
+        code, out = lrun(repo, "reref", str(repo / "new"), "old")
+        assert code == 0, out  # the absolute stored ref matched as well
+        assert L.load(repo)["T-1"].refs == ["old/a.md", "../up.md"]
+
+
+def test_ref_from_worktree_only() -> None:
+    """blind1 3: a ref to a file that exists only in the worktree says so."""
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d).resolve()
+        main: Path = new_repo(root)
+        (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+        wt: Path = new_repo(root / "wt")
+        (wt / ".git").write_text(f"gitdir: {main}/.git/worktrees/wt\n")
+        (wt / "only.md").write_text("x")
+        (wt / "both.md").write_text("x")
+        (main / "both.md").write_text("x")
+        cwd: Path = Path.cwd()
+        outs: list[tuple[int, str]] = []
+        try:
+            os.chdir(wt)
+            for argv in (
+                ["add", "task", "a", "--note", "n", "--ref", "only.md"],
+                ["add", "task", "b", "--note", "n", "--ref", str(wt / "only.md")],
+                ["add", "task", "c", "--note", "n", "--ref", str(wt / "both.md")],
+            ):
+                buf: io.StringIO = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    outs.append((L.main(argv), buf.getvalue()))
+        finally:
+            os.chdir(cwd)
+        for code, out in outs[:2]:
+            assert code == 1 and "exists in this worktree" in out, out
+            assert f"main checkout {main}" in out and "merge first" in out, out
+        assert outs[2][0] == 0, outs[2]
+        assert [e["f"]["refs"] for e in jl(main)] == [["both.md"]]
+        assert jl(wt) == []
 
 
 def main() -> int:

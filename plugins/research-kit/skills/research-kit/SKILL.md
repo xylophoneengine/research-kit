@@ -36,7 +36,8 @@ rule stamps the tool wrote. `doctor [--stage S] [--limit N]` (N lines per group,
 (ledger line that does not parse, missing ref, missing stage folder, ledger not
 append-only against HEAD) exit 1; SOFT ones (ref in an ignored or waste folder, waste ref whose file is gone,
 done stage not in HEAD, entry without a stage, task running over 24 h, imported
-entries with missing refs, rule file behind the kit, and with `--stage` the
+entries with missing refs, ignored or outside-the-repo refs a clone would
+lack, stage folder absent in a clone, rule file behind the kit, and with `--stage` the
 decisions not owned by the user) are listed; no git repo: git checks are skipped.
 `reref OLD NEW [--dry-run]` replaces a leading path prefix in every ref that
 starts with it, all or nothing (refuses and writes nothing if a new path does

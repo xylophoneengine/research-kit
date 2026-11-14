@@ -1,22 +1,30 @@
 #!/usr/bin/env python3
 """Anonymity gate over what git would publish. Run it via scripts/anon_check.sh.
 
-usage: anon_check.sh [--no-denylist] [--tag NAME]... [--all | REV-LIST-ARGS...]
+usage: anon_check.sh [--no-denylist] [--allow-from REV] [--name TEXT]...
+                     [--tag NAME]... [--all | REV-LIST-ARGS...]
 
-Scans every commit of a range: added lines, added file names, the message,
-author and committer. Default range: commits on HEAD that are on no origin/*
-ref. --all: all history. REV-LIST-ARGS: e.g. origin/main..HEAD.
+Scans every commit of a range: added lines (as text, also files marked -diff),
+added file names, the message, author and committer. Default range: commits on
+HEAD that are on no origin/* ref. --all: all history. REV-LIST-ARGS: e.g.
+origin/main..HEAD. A multi-word denylist term is also found across a line wrap
+(within one hunk or message). An added file that is not UTF-8 text (NUL byte,
+invalid UTF-8) is a hit unless a "binary:<glob>" allowlist entry names its path.
 Denylist: <main checkout>/docs/private/denylist.txt (found from any worktree),
 or $ANON_DENYLIST; one term per line, case-insensitive, '#' comments.
 Missing or empty denylist: exit 2, unless --no-denylist (pattern scans only).
-Allowlist: scripts/anon_allow.txt (fixed string, case-insensitive, or "re:"
-regex). An entry excuses a hit only when it matches exactly the hit's span; an
-entry that matches the empty string or a denylist term is refused (exit 2), so
-denylist hits cannot be excused. Denylist matches inside a lockfile integrity
-hash (random base64) are skipped.
+Allowlist: scripts/anon_allow.txt of the working tree, or of REV with
+--allow-from REV (the gate passes the pushed tip); the output names the source.
+Entries: fixed string (case-insensitive), "re:" regex, or "binary:<glob>". An
+entry excuses a hit only when it matches exactly the hit's span; an entry that
+matches the empty string or a denylist term is refused (exit 2), so denylist
+hits cannot be excused. Denylist matches inside a lockfile integrity hash
+(random base64) are skipped.
 Annotated tags that point into the range: message and tagger are scanned.
 --tag NAME (the pre-push hook passes each pushed tag): that tag's name, and for
 an annotated tag its tagger and message, are scanned wherever it points.
+--name TEXT: scan TEXT, e.g. a pushed ref name (the pre-push hook passes the
+local and the remote ref name of every pushed ref).
 Owner rule: every commit carries the author and committer identity of
 origin/main's tip (one pseudonymous identity publishes).
 Exit 0 clean, 1 hits, 2 setup error.
@@ -28,6 +36,7 @@ import os
 import re
 import subprocess
 import sys
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import NoReturn
 
@@ -36,7 +45,9 @@ UUID: str = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
         "home-path",
-        re.compile(r"(?<![\w$}./-])(?:/Users|/home)/[A-Za-z][A-Za-z0-9._-]*"),
+        re.compile(
+            r"(?:(?<![\w$}./-])|(?<=file://))(?:/Users|/home)/[A-Za-z][A-Za-z0-9._-]*"
+        ),
     ),
     ("windows-path", re.compile(r"\b[A-Za-z]:\\{1,2}Users\\{1,2}[A-Za-z0-9._-]+")),
     ("temp-path", re.compile(r"/tmp/claude-[0-9]|/var/folders/[A-Za-z0-9_+-]{2}/")),
@@ -68,6 +79,7 @@ CONTEXT: int = 60
 INTEGRITY: re.Pattern[str] = re.compile(
     r'"integrity": "sha(?:1|256|384|512)-[A-Za-z0-9+/=]{20,}"'
 )
+COMMIT_MARK: bytes = b"\x00\x01"
 
 
 def die(msg: str) -> NoReturn:
@@ -75,51 +87,63 @@ def die(msg: str) -> NoReturn:
     sys.exit(2)
 
 
-def git(*args: str) -> str:
+def git_bytes(*args: str) -> bytes:
     r: subprocess.CompletedProcess[bytes] = subprocess.run(
         ["git", "-c", "core.quotePath=false", *args], capture_output=True
     )
     if r.returncode != 0:
         err: str = r.stderr.decode("utf-8", errors="replace").strip()
         die(f"git {' '.join(args)}: {err}")
-    return r.stdout.decode("utf-8", errors="replace")
+    return r.stdout
 
 
-def entries(path: Path) -> list[tuple[int, str]]:
+def git(*args: str) -> str:
+    return git_bytes(*args).decode("utf-8", errors="replace")
+
+
+def entries(text: str) -> list[tuple[int, str]]:
     """Non-blank, non-comment lines with their line numbers."""
     out: list[tuple[int, str]] = []
-    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for n, line in enumerate(text.splitlines(), 1):
         s: str = line.strip()
         if s and not s.startswith("#"):
             out.append((n, s))
     return out
 
 
+def squash(text: str) -> str:
+    return " ".join(text.split()).lower()
+
+
 class Scanner:
     def __init__(
         self, terms: list[tuple[int, str]], allow: list[re.Pattern[str]]
     ) -> None:
-        self.term_line: dict[str, int] = {t.lower(): n for n, t in terms}
+        self.term_line: dict[str, int] = {squash(t): n for n, t in terms}
         alt: str = "|".join(re.escape(t) for _, t in terms)
         self.deny: re.Pattern[str] | None = re.compile(alt, re.I) if terms else None
+        words: list[list[str]] = [t.split() for _, t in terms if len(t.split()) > 1]
+        multi: str = "|".join(r"\s+".join(map(re.escape, w)) for w in words)
+        self.multi: re.Pattern[str] | None = re.compile(multi, re.I) if words else None
         self.allow: list[re.Pattern[str]] = allow
         self.hits: int = 0
 
     def mask(self, text: str) -> str:
         """Hide denylist terms, so output and logs never repeat them."""
-        if self.deny is None:
-            return text
 
         def sub(m: re.Match[str]) -> str:
-            return f"<denylist:{self.term_line.get(m.group().lower(), '?')}>"
+            return f"<denylist:{self.term_line.get(squash(m.group()), '?')}>"
 
-        return self.deny.sub(sub, text)
+        for pat in (self.multi, self.deny):
+            if pat is not None:
+                text = pat.sub(sub, text)
+        return text
 
     def report(self, rule: str, where: str, text: str, start: int, end: int) -> None:
         ws: int = max(0, start - CONTEXT)
         we: int = end + CONTEXT
-        if self.deny is not None:  # never cut a term in half at the window edge
-            for m in self.deny.finditer(text):
+        for pat in (self.multi, self.deny):  # never cut a term at the window edge
+            for m in pat.finditer(text) if pat is not None else []:
                 if m.start() < ws < m.end():
                     ws = m.start()
                 if m.start() < we < m.end():
@@ -145,12 +169,35 @@ class Scanner:
                     self.report(rule, where, text, m.start(), m.end())
                     break
 
+    def scan_wrapped(self, lines: list[str], where: str) -> None:
+        """Multi-word terms split across lines; single-line forms were scanned."""
+        if self.multi is None or len(lines) < 2:
+            return
+        flat: str = " ".join(lines)
+        joins: list[int] = []  # offsets of the spaces that replaced line breaks
+        pos: int = 0
+        for ln in lines[:-1]:
+            pos += len(ln)
+            joins.append(pos)
+            pos += 1
+        for m in self.multi.finditer(flat):
+            if any(m.start() <= j < m.end() for j in joins):
+                self.report("denylist", where, flat, m.start(), m.end())
+                return
 
-def load_allow(path: Path, terms: list[tuple[int, str]]) -> list[re.Pattern[str]]:
-    if not path.is_file():
-        return []
+
+def load_allow(
+    text: str, source: str, terms: list[tuple[int, str]]
+) -> tuple[list[re.Pattern[str]], list[str]]:
     out: list[re.Pattern[str]] = []
-    for n, s in entries(path):
+    globs: list[str] = []
+    for n, s in entries(text):
+        if s.startswith("binary:"):
+            g: str = s[7:]
+            if not g or fnmatch("x", g) or fnmatch("a/b.c", g):
+                die(f"{source}:{n}: binary glob too wide: {g!r}")
+            globs.append(g)
+            continue
         try:
             a: re.Pattern[str] = (
                 re.compile(s[3:])
@@ -158,48 +205,81 @@ def load_allow(path: Path, terms: list[tuple[int, str]]) -> list[re.Pattern[str]
                 else re.compile(re.escape(s), re.I)
             )
         except re.error as e:
-            die(f"{path}:{n}: bad regex: {e}")
+            die(f"{source}:{n}: bad regex: {e}")
         if a.search(""):
-            die(f"{path}:{n}: entry matches the empty string")
+            die(f"{source}:{n}: entry matches the empty string")
         for tn, t in terms:
             if a.search(t):
-                die(f"{path}:{n}: entry matches denylist term {tn}; remove one of them")
+                die(f"{source}:{n}: entry matches denylist term {tn}; drop one")
         out.append(a)
-    return out
+    return out, globs
 
 
-def scan_diffs(sc: Scanner, rng: list[str]) -> None:
-    out: str = git(
-        "log", "-p", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames",
-        "-U0", "--src-prefix=a/", "--dst-prefix=b/", "--diff-merges=first-parent",
-        "--format=%x00%H", *rng,
+def scan_file(
+    sc: Scanner, where: str, lines: list[tuple[int, bytes]], globs: list[str]
+) -> None:
+    data: bytes = b"\n".join(b for _, b in lines)
+    path: str = where.split(" ", 1)[1]
+    try:
+        if b"\0" in data:
+            raise ValueError("NUL byte")
+        data.decode("utf-8")
+    except (UnicodeDecodeError, ValueError):
+        if any(fnmatch(path, g) for g in globs):
+            print(f"NOTE binary not scanned (allowlisted): {where}")
+            return
+        msg: str = "not UTF-8 text, cannot be scanned; allowlist it as binary:<glob>"
+        sc.report("binary", where, msg, 0, len(msg))
+        return
+    hunk: list[str] = []
+    prev: int = -2
+    for n, b in lines:
+        t: str = b.decode("utf-8")
+        sc.scan(t, f"{where}:{n}")
+        if n != prev + 1:
+            sc.scan_wrapped(hunk, f"{where}:{prev}")
+            hunk = []
+        hunk.append(t)
+        prev = n
+    sc.scan_wrapped(hunk, f"{where}:{prev}")
+
+
+def scan_diffs(sc: Scanner, rng: list[str], globs: list[str]) -> None:
+    out: bytes = git_bytes(
+        "log", "-p", "--text", "--no-color", "--no-ext-diff", "--no-textconv",
+        "--no-renames", "-U0", "--src-prefix=a/", "--dst-prefix=b/",
+        "--diff-merges=first-parent", "--format=%x00%x01%H", *rng,
     )
     sha: str = ""
     path: str = ""
     lineno: int = 0
     header: bool = False
-    for line in out.split("\n"):
-        if line.startswith("\0"):
-            sha, header = line[1:9], False
-        elif line.startswith("diff --git "):
-            header, path = True, line.rsplit(" b/", 1)[-1]
-        elif header:
-            if line.startswith("+++ b/"):
-                path = line[6:]
-            elif line.startswith('+++ "b/'):
-                path = line[7:-1]
-            elif line.startswith("Binary files"):
-                print(f"NOTE binary not scanned: {sha} {path}")
-            elif line.startswith("@@"):
-                header = False
-                m: re.Match[str] | None = re.match(r"@@ -\S+ \+(\d+)", line)
-                lineno = int(m.group(1)) if m else 0
-        elif line.startswith("@@"):
-            m2: re.Match[str] | None = re.match(r"@@ -\S+ \+(\d+)", line)
-            lineno = int(m2.group(1)) if m2 else 0
-        elif line.startswith("+"):
-            sc.scan(line[1:], f"{sha} {path}:{lineno}")
+    lines: list[tuple[int, bytes]] = []
+
+    def flush() -> None:
+        if lines:
+            scan_file(sc, f"{sha} {path}", lines, globs)
+        lines.clear()
+
+    for raw in out.split(b"\n"):
+        if raw.startswith(COMMIT_MARK):
+            flush()
+            sha, header = raw[2:10].decode(), False
+        elif raw.startswith(b"diff --git "):
+            flush()
+            header = True
+            path = raw.decode("utf-8", errors="replace").rsplit(" b/", 1)[-1]
+        elif header and raw.startswith(b"+++ "):
+            p: str = raw[4:].decode("utf-8", errors="replace")
+            path = p[3:-1] if p.startswith('"b/') else p.removeprefix("b/")
+        elif raw.startswith(b"@@"):
+            header = False
+            m: re.Match[bytes] | None = re.match(rb"@@ -\S+ \+(\d+)", raw)
+            lineno = int(m.group(1)) if m else 0
+        elif not header and raw.startswith(b"+"):
+            lines.append((lineno, raw[1:]))
             lineno += 1
+    flush()
 
 
 def scan_names(sc: Scanner, rng: list[str]) -> None:
@@ -236,6 +316,7 @@ def scan_meta(sc: Scanner, rng: list[str], wanted: set[str]) -> None:
         sc.scan(committer, f"{sha} committer")
         for line in body.splitlines():
             sc.scan(line, f"{sha} message")
+        sc.scan_wrapped(body.splitlines(), f"{sha} message")
     tags: str = git(
         "for-each-ref", "refs/tags",
         "--format=%(objecttype)%1f%(*objectname)%1f%(refname)"
@@ -256,12 +337,15 @@ def scan_meta(sc: Scanner, rng: list[str], wanted: set[str]) -> None:
         sc.scan(tagger, f"tag {name} tagger")
         for line in body.splitlines():
             sc.scan(line, f"tag {name} message")
+        sc.scan_wrapped(body.splitlines(), f"tag {name} message")
 
 
 def main(argv: list[str]) -> int:
     no_deny: bool = False
     rng: list[str] = []
     wanted: set[str] = set()
+    names: list[str] = []
+    allow_from: str = ""
     args: list[str] = list(argv)
     while args:
         a: str = args.pop(0)
@@ -269,6 +353,10 @@ def main(argv: list[str]) -> int:
             no_deny = True
         elif a == "--tag" and args:
             wanted.add(args.pop(0).removeprefix("refs/tags/"))
+        elif a == "--name" and args:
+            names.append(args.pop(0))
+        elif a == "--allow-from" and args:
+            allow_from = args.pop(0)
         elif a in ("-h", "--help"):
             print(__doc__)
             return 0
@@ -284,24 +372,44 @@ def main(argv: list[str]) -> int:
     common: str = git("rev-parse", "--path-format=absolute", "--git-common-dir").strip()
     default: Path = Path(common).parent / "docs/private/denylist.txt"
     deny_path: Path = Path(env) if env else default
-    terms: list[tuple[int, str]] = entries(deny_path) if deny_path.is_file() else []
+    terms: list[tuple[int, str]] = (
+        entries(deny_path.read_text(encoding="utf-8")) if deny_path.is_file() else []
+    )
     if not terms and not no_deny:
         die(
             f"denylist {deny_path} is missing or has no terms. Create it, set "
             "ANON_DENYLIST, or pass --no-denylist to run the pattern scans only."
         )
-    allow: list[re.Pattern[str]] = load_allow(top / "scripts/anon_allow.txt", terms)
+    rel: str = "scripts/anon_allow.txt"
+    if allow_from:
+        source: str = f"{allow_from}:{rel}"
+        found: bool = subprocess.run(
+            ["git", "cat-file", "-e", source], capture_output=True
+        ).returncode == 0
+        allow_text: str = git("show", source) if found else ""
+    else:
+        source = f"working tree {rel}"
+        found = (top / rel).is_file()
+        allow_text = (top / rel).read_text(encoding="utf-8") if found else ""
+    allow, globs = load_allow(allow_text, source, terms)
     git("rev-parse", "-q", "--verify", "origin/main^{commit}")  # author reference
     n: str = git("rev-list", "--count", *rng).strip()
-    print(f"anon_check: {n} commits ({' '.join(rng)}), {len(allow)} allowlist entries")
+    print(f"anon_check: {n} commits ({' '.join(rng)})")
+    state: str = "" if found else ", file absent"
+    print(
+        f"anon_check: allowlist from {source} ({len(allow)} entries, "
+        f"{len(globs)} binary globs{state})"
+    )
     sc: Scanner = Scanner(terms, allow)
     if terms:
         print(f"anon_check: denylist {sc.mask(str(deny_path))} ({len(terms)} terms)")
     else:
         print("anon_check: WARNING no denylist: private terms are NOT checked")
+    for name in names:
+        sc.scan(name, f"ref name {name}")
     scan_meta(sc, rng, wanted)
     scan_names(sc, rng)
-    scan_diffs(sc, rng)
+    scan_diffs(sc, rng, globs)
     if sc.hits:
         print(f"anon_check: FAIL {sc.hits} hits")
         return 1

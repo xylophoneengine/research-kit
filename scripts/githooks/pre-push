@@ -18,13 +18,15 @@ while read -r lref lsha rref rsha; do
     *) range="origin/main..$lsha" ;; # new branch
   esac
   echo "pre-push: $lref -> $rref: release_check $range"
-  case "$lref" in # a tag may point at a commit that is already public
-    refs/tags/*)
-      bash "$PWD/scripts/anon_check.sh" --tag "$lref" "$range" </dev/null || {
-        echo "pre-push: push refused ($lref): tag text" >&2
-        exit 1
-      } ;;
-  esac
+  # Ref names are published too; a tag may point at an already public commit.
+  # Ref names hold no spaces, so $tag splits safely.
+  tag=""
+  case "$lref" in refs/tags/*) tag="--tag $lref" ;; esac
+  bash "$PWD/scripts/anon_check.sh" --allow-from "$lsha" --name "$lref" \
+    --name "$rref" $tag "$range" </dev/null || {
+    echo "pre-push: push refused ($lref): ref name or tag text" >&2
+    exit 1
+  }
   bash "$gate" "$range" </dev/null || {
     echo "pre-push: push refused ($lref); rerun: scripts/release_check.sh $range" >&2
     exit 1

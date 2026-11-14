@@ -58,7 +58,7 @@ DEMO="demo@""corp.example.org" # assembled, so this file holds no address
 printf '%s\n' '# test identity' 'pat@example.invalid' '# accepted example' "$DEMO" \
   >scripts/anon_allow.txt
 printf 'docs/\n' >.gitignore
-printf '# invented terms\nzorblax\nquuxington\n' >docs/private/denylist.txt
+printf '# invented terms\nzorblax\nquuxington\nblue heron farm\n' >docs/private/denylist.txt
 put plugins/research-kit/.claude-plugin/plugin.json '{"name": "research-kit", "version": "0.1.0"}'
 put "$TPL/AGENTS.md" '<!-- research-kit: 2026-01-01a -->'
 printf 'rule one\n' >>"$TPL/AGENTS.md"
@@ -149,6 +149,36 @@ expect 1 'HIT email' 'email address' anon
 branch patterns
 commit notes.txt "session 1b2c3d4e-0000-4abc-8def-""0123456789ab" 'notes: sid'
 expect 1 'HIT session-id' 'session id' anon
+branch fileurl
+commit notes.txt "open file:///Us""ers/alice/notes.pdf" 'notes: file url'
+expect 1 'HIT home-path' 'home path in a file:// URL' anon
+
+# a multi-word term split by a line wrap
+branch wrapped
+commit notes.txt "$(printf 'we met the Blue Heron\n  farm people')" 'notes: wrapped'
+expect 1 'HIT denylist .*<denylist:4>' 'multi-word term across a line wrap' anon
+
+# files git would call binary: -diff and NUL bytes are scanned or fail
+branch binary
+put .gitattributes '*.txt -diff'
+commit notes.txt 'we used zorblax' 'notes: -diff file'
+expect 1 'HIT denylist .* notes.txt:1' 'term in a -diff file' anon
+branch binary
+printf 'head\000tail\n' >blob.bin
+git add -A
+git commit -qm 'data: blob'
+expect 1 'HIT binary .* blob.bin' 'file with a NUL byte fails' anon
+printf 'binary:*.bin\n' >>scripts/anon_allow.txt
+expect 0 'NOTE binary not scanned \(allowlisted\)' 'binary glob in the allowlist' anon
+git checkout -q -- scripts/anon_allow.txt
+
+# the gate reads the allowlist from the tip, not from the working tree
+branch allowtip
+commit notes.txt "mail eve@""corp.example.org" 'notes: mail'
+printf '%s\n' "eve@""corp.example.org" >>scripts/anon_allow.txt
+expect 0 'allowlist from working tree' 'anon alone uses the working tree' anon
+expect nz 'allowlist from [0-9a-f]+:scripts/anon_allow.txt' 'gate ignores an uncommitted entry' gate
+git checkout -q -- scripts/anon_allow.txt
 
 # author and committer must match origin/main's tip
 branch author
@@ -208,6 +238,7 @@ expect 0 'release_check: PASS' 'template change with stamp' gate
 # a linked worktree finds the main checkout's denylist
 git worktree add -q "$T/wt" -b wt origin/main
 (
+  failed=0 # the subshell reports only its own failures
   cd "$T/wt"
   commit notes.txt 'plain' 'notes: wt'
   expect 0 "denylist $R/docs/private/denylist.txt" 'worktree finds the denylist' anon
@@ -237,6 +268,10 @@ expect nz 'push refused' 'hook refuses a tag name on a pushed commit' git push -
 git tag -a v7 -m 'release' origin/main
 expect 0 - 'hook passes a clean tag on a pushed commit' git push -q origin v7
 git tag -d v8 zorblax-1 >/dev/null
+git branch -q quuxington-notes clean
+expect nz 'push refused' 'hook refuses a branch name with a term' git push -q origin quuxington-notes
+expect nz 'push refused' 'hook refuses a remote ref name with a term' \
+  git push -q origin clean:refs/heads/zorblax-x
 
 # the gate never acts on the repo named by inherited GIT_* variables: a suite
 # that runs git in its own temp dir must not commit into the pushing repo

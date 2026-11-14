@@ -8,7 +8,8 @@
 #   1. version: a plugin changed under plugins/<name>/ has a plugin.json
 #      version that differs from origin/main's
 #   2. stamp: a changed template file with a stamp line has a new stamp
-#   3. anon check (scripts/anon_check.sh) over the range
+#   3. anon check (scripts/anon_check.sh) over the range, allowlist read
+#      from the tip being checked, not from the working tree
 #   4. every test-*.sh / test_*.py under plugins/ and scripts/, run on an
 #      export of the range's tip commit (not the working tree)
 #   5. claude plugin validate for the marketplace and each plugin (skipped
@@ -64,7 +65,7 @@ done
 echo "release_check: stamps ok"
 
 # 3. anon check
-bash "$here/anon_check.sh" "$@" || fail "anon check (hits above)"
+bash "$here/anon_check.sh" --allow-from "$tip" "$@" || fail "anon check (hits above)"
 
 # 4. suites, on an export of the tip
 work="$(mktemp -d)"

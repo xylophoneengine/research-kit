@@ -27,7 +27,19 @@ mkrepo() {
   printf 'pm/waste/\nWASTE/\n' > "$1/.gitignore"
   if [ "${2:-}" = pm ]; then mkdir -p "$1/pm"; fi
 }
-stamps() { local i; for i in 0 1 2 3 4 5 6 7 8; do date -u -v+"${i}"S +%Y%m%dT%H%M%SZ; done; }
+# run_at <stamp> <want: ok|no> <name> <args...>: like run, but the helper's clock is fixed to
+# <stamp> (a stub `date` first on PATH, test only; waste.sh is untouched). Cases that
+# pre-create a destination need a stamp that cannot move: a window of "the next few
+# seconds" breaks under load or when the clock ticks while it is built.
+REAL_DATE="$(command -v date)"
+mkdir -p "$T/clock"
+printf '#!/bin/sh\nif [ "$*" = "-u +%%Y%%m%%dT%%H%%M%%SZ" ] && [ -n "${WASTE_TEST_STAMP:-}" ]; then echo "$WASTE_TEST_STAMP"; else exec "%s" "$@"; fi\n' "$REAL_DATE" > "$T/clock/date"
+chmod +x "$T/clock/date"
+run_at() {
+  local stamp="$1" want="$2" name="$3"; shift 3
+  if WASTE_TEST_STAMP="$stamp" PATH="$T/clock:$PATH" bash "$W" "$@" >"$LOG" 2>&1; then got=ok; else got=no; fi
+  [ "$got" = "$want" ] || bad "$name: want $want, got $got"
+}
 
 # ---- basics -------------------------------------------------------------------
 r="$T/basic"; mkrepo "$r" pm; echo v > "$r/f.txt"; mkdir -p "$r/d"; echo x > "$r/d/g"
@@ -100,8 +112,8 @@ run no F3_pm_symlink crit3 t "$r/secret"
 r="$T/f3d"; mkrepo "$r" pm; mkdir -p "$out/pw"; ln -s "$out/pw" "$r/pm/waste"; echo s > "$r/secret"
 run no F3_pm_waste_symlink crit3 t "$r/secret"
 r="$T/f3e"; mkrepo "$r" pm; mkdir -p "$out/st" "$r/pm/waste"; echo s > "$r/secret"
-for s in $(stamps); do ln -s "$out/st" "$r/pm/waste/$s"; done
-run no F3_symlink_in_destination crit3 t "$r/secret"
+ln -s "$out/st" "$r/pm/waste/20260101T000000Z"
+run_at 20260101T000000Z no F3_symlink_in_destination crit3 t "$r/secret"
 [ -z "$(ls -A "$out/st")" ] || bad "F3_symlink_in_destination: wrote outside"
 [ -z "$(find "$out/w" "$out/p" "$out/pw" -mindepth 1)" ] || bad "F3: something landed outside"
 for s in "$r/secret"; do exists F3 "$s"; done
@@ -153,10 +165,15 @@ run ok F6_legacy_ignore_pattern tester t "$r/f"
 
 # ---- F8: never overwrite an existing destination --------------------------------
 r="$T/f8"; mkrepo "$r" pm; echo new > "$r/f"
-for s in $(stamps); do mkdir -p "$r/pm/waste/$s"; echo old > "$r/pm/waste/$s/f"; done
-run no F8_destination_exists tester t "$r/f"
+mkdir -p "$r/pm/waste/20260101T000000Z"; echo old > "$r/pm/waste/20260101T000000Z/f"
+run_at 20260101T000000Z no F8_destination_exists tester t "$r/f"
 [ "$(cat "$r/f")" = new ] || bad "F8: source changed"
-for s in $(stamps); do [ "$(cat "$r/pm/waste/$s/f")" = old ] || bad "F8: old copy overwritten"; done
+[ "$(cat "$r/pm/waste/20260101T000000Z/f")" = old ] || bad "F8: old copy overwritten"
+grep -q 'destination exists' "$LOG" || bad "F8: refused for another reason than the existing destination"
+# the stub only fixes the stamp: another stamp (the real clock) still wastes the file
+run ok F8_other_stamp_still_works tester t "$r/f"
+gone F8_other_stamp "$r/f"
+[ "$(cat "$r/pm/waste/20260101T000000Z/f")" = old ] || bad "F8: old copy changed by a later run"
 
 # ---- crit3 r2: N1-N5, U1 ------------------------------------------------------
 mkrepo "$T/evil"; mkdir -p "$T/home/docs"; echo d > "$T/home/docs/a"
