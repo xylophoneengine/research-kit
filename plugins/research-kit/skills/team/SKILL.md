@@ -40,16 +40,19 @@ verbatim and the goal statement. `blind<round>` names it and its report.
 round); `critics=N` (N >= 2) = one disposable plus N-1 loop critics. Why:
 worker reports anchor a critic on their framing; a fresh one judges the outcome.
 
-**Architect.** Staff `arch1` only when the work items of two or more
-workers meet at an interface (one consumes what another produces); else
-write into the affected briefs yourself `INTERFACES:` (producer, consumer,
-exact format, example) and `RULES CHANGED:` (each changed rule, every place
-that encodes it, its owner). It thinks and designs: a design and interface
-sheet at the path you give, before any worker starts. It never routes,
-spawns or implements; it stays reachable for interface questions (via you)
-and after integration checks the result against its design, reporting
-deviations to you. Why: interfaces fixed first keep workers from building
-to different formats; an architect that routes or builds is a second lead.
+**Architect.** Staff `arch1` when the work items of two or more workers
+meet at an interface (one consumes what another produces), or when the task
+changes or relaxes a rule that tests, code or texts already encode. On a
+small task write the two blocks into the affected briefs yourself instead:
+`INTERFACES:` (producer, consumer, exact format, example) and `RULES
+CHANGED:` (each changed rule, every place that encodes it, its owner).
+Brief `arch1` from `architect-brief.md` in this folder. It thinks and
+designs: one design file at the path you give, before any worker starts.
+It never routes, spawns or implements; it stays reachable for interface
+questions (via you) and after integration checks the result against its
+design, reporting deviations to you. Why: interfaces fixed first keep
+workers from building to different formats; a rule changed in one place
+stays stale elsewhere; an architect that routes or builds is a second lead.
 
 ## Steps
 
@@ -59,9 +62,9 @@ to different formats; an architect that routes or builds is a second lead.
    observable behavior; research: the question answered, the decision it
    informs). Decompose into work items; tag each junior / senior / expert
    by how defined it is. Between two tiers, take the higher. Note where
-   items meet at an interface: that decides the architect (Roster).
+   items meet at an interface or change a rule: that decides the architect.
 2. **Size the team.** Default: 2 juniors, 2 seniors, 1 expert, 1 loop
-   critic, 1 disposable critic; plus `arch1` when step 1 found an interface.
+   critic, 1 disposable critic; plus `arch1` when step 1 found a trigger.
    Sizes or a roster in the invocation (`/team juniors=3 critics=1 <task>`,
    "5 Opus critics, no seniors") override the defaults and are final: skip
    to 4. Otherwise propose sizes from the work items.
@@ -175,7 +178,9 @@ to different formats; an architect that routes or builds is a second lead.
 5. **Review.** When workers report, brief the critics in one message.
    Both get the user's request verbatim and the goal statement; `crit1`
    also gets the worker report paths (not their contents), the disposable
-   critic only the diff or deliverable paths. Each review round is one `task`
+   critic only the diff or deliverable paths. With `arch1`, `crit1` also
+   gets the design file and checks the result against its REQUIREMENTS AND
+   CHECKS block. Each review round is one `task`
    entry: open it before briefing (`python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" add task "review round <n>: <what>" --owner lead --note "<what is reviewed, round <n>>"`); both critic briefs carry its `TASK: T-<n>`, never the
    work task under review. Critics write the full review below
    to `<REVIEWS>/<file>` (that file is their report file, no second copy),
