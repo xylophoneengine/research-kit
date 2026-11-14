@@ -1,4 +1,4 @@
-<!-- research-kit-kind reverse-eng: 2026-11-14a -->
+<!-- research-kit-kind reverse-eng: 2026-11-14b -->
 # Kind: reverse-eng
 
 Applies to reimplementing a vendor-closed component (driver, protocol, file
@@ -27,9 +27,9 @@ supersedes. Light mode: the table is a checklist, no folders.
 |---|-------|-----------|
 | 1 | Goal, non-goals, why not use the vendor stack, scope statement | User agreed to the scope statement |
 | 2 | Recon: inventory of vendor material, sha256 pins, executable bitness, list of vendor calls actually used | Inventory reviewed by the user and every file has a hash |
-| 3 | Static analysis notes with tagged claims and cites, `PROTOCOL.md` draft | Both critics YES after re-checking the notes against the raw evidence |
+| 3 | Static analysis notes with tagged claims and cites, `PROTOCOL.md` draft | No BLOCKING critic finding open after re-checking the notes against the raw evidence |
 | 4 | Capture plan with predictions, then capture (user-run), then capture-tool review | The reader test parses every captured file |
-| 5 | Implement test-first on the fake transport, safety guards in the first commit | Gate green and both critics YES |
+| 5 | Implement test-first on the fake transport, safety guards in the first commit | Gate green and no BLOCKING critic finding open |
 | 6 | Replay and oracle comparison with an allowed-difference list | Zero unexplained differences |
 | 7 | Hardware day (user-run), read-only first, every transfer logged as a fixture | Every checklist row ticked or stopped on the first surprise |
 | 8 | Reconcile: `PROTOCOL.md` corrections, known divergences, open risks | Unverified list is current and each open risk names the step that settles it |

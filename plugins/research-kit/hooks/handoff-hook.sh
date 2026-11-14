@@ -7,6 +7,9 @@
 # In a repo with pm/ledger.jsonl all three also print research-kit ledger lines
 # (the rk() function line, doctor --start output when rk.py has it, a notice when jq is
 # missing, the open list; after a compact the newest entries to compare with the summary).
+# In such a repo "pre" also writes pm/handoffs/compact/auto-<UTC stamp>.md (rk list, rk recent -n 30,
+# git status --short), machine-made, so a compact nobody announced still leaves a state file;
+# "post" names the newest one. A failed write is silent and never changes the exit code.
 set -u
 mode="${1:-}"
 root="${CLAUDE_PROJECT_DIR:-$PWD}"
@@ -25,6 +28,31 @@ ledger_block() {
   d="$(cd "$root" && python3 -I "$rk" doctor --start 2>/dev/null)" && [ -n "$d" ] && printf '%s\n' "$d" | head -n 3
   command -v jq >/dev/null 2>&1 || echo "jq not found: delete guard and brief check are OFF"
   (cd "$root" && python3 -I "$rk" list 2>&1)  # no --repo: a worktree reads the main ledger
+}
+
+auto_state() {
+  # Machine-made state file at PreCompact. Each part keeps its own error text (2>&1), so a failing
+  # rk.py shows in the file, never in the hook output.
+  [ -n "$ledger" ] || return 0
+  dir="$root/pm/handoffs/compact"
+  mkdir -p "$dir" || return 0
+  {
+    echo "# Auto state $(date -u '+%Y-%m-%d %H:%M:%S') UTC (written by the PreCompact hook, not hand-kept)"
+    echo "## rk list"
+    (cd "$root" && python3 -I "$rk" list 2>&1)
+    echo "## rk recent -n 30"
+    (cd "$root" && python3 -I "$rk" recent -n 30 2>&1)
+    echo "## git status --short"
+    git -C "$root" status --short 2>&1
+  } > "$dir/auto-$(date -u '+%Y%m%dT%H%M%SZ').md" 2>/dev/null
+  return 0
+}
+
+newest_auto() {
+  last=""
+  for f in "$root"/pm/handoffs/compact/auto-*.md; do [ -f "$f" ] && last="$f"; done
+  [ -n "$last" ] && echo "$last"
+  return 0
 }
 
 newest=""
@@ -49,6 +77,7 @@ fi
 
 case "$mode" in
   pre)
+    auto_state >/dev/null 2>&1 || true
     echo "Instructions for this summary (surviving-compaction hook):"
     if [ -n "$newest" ]; then
       echo "1. First line of the summary: \"Handoff file: $newest (modified $when). Read it before any other step.\""
@@ -71,6 +100,8 @@ case "$mode" in
       echo "[surviving-compaction] Context was just compacted and no handoff file (handoff-YYYY-MM-DD.md) was found under $root. Treat statements in the summary about running agents, running commands and uncommitted work as unverified; check them before acting."
     fi
     if [ -n "$ledger" ]; then
+      a="$(newest_auto 2>/dev/null)"
+      [ -n "$a" ] && echo "[surviving-compaction] State file written by the PreCompact hook (ledger lists and git status as of the compact, machine-made): $a. Read it next to the handoff file."
       ledger_block
       echo "Compare the summary's \"Decisions and done work\" section with these newest entries; log what is missing (rk add decision ... / rk close ...) and show the user each receipt:"
       (cd "$root" && python3 -I "$rk" recent -n 15 2>&1)

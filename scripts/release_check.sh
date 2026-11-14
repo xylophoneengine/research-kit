@@ -2,8 +2,9 @@
 # Release gate over the commits about to be published. Stops at the first
 # failure with a one-line reason. Run from any worktree of this repo.
 #   bash scripts/release_check.sh [REV-LIST-ARGS]
-# Default range: commits on HEAD that are on no origin/* ref. The pre-push
-# hook (scripts/githooks/pre-push) passes exactly the pushed range.
+# Default range: what a push of this branch to its upstream would send
+# (@{upstream}..HEAD; origin/main..HEAD when the branch has no upstream).
+# The pre-push hook (scripts/githooks/pre-push) passes exactly the pushed range.
 # Checks, in order:
 #   1. version: a plugin changed under plugins/<name>/ has a plugin.json
 #      version that differs from origin/main's
@@ -11,15 +12,20 @@
 #   3. anon check (scripts/anon_check.sh) over the range, allowlist read
 #      from the tip being checked, not from the working tree
 #   4. every test-*.sh / test_*.py under plugins/ and scripts/, run on an
-#      export of the range's tip commit (not the working tree)
+#      export of the range's tip commit (not the working tree); run a second
+#      time with /bin/bash and /usr/bin/python3 in a bare environment when
+#      those differ from the bash and python3 on PATH
 #   5. claude plugin validate for the marketplace and each plugin (skipped
 #      with a warning when the claude binary is absent)
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 fail() { echo "release_check: FAIL $*" >&2; exit 1; }
-[ $# -gt 0 ] || set -- HEAD --not --remotes=origin
 cd "$(git rev-parse --show-toplevel)"
+if [ $# -eq 0 ]; then
+  up="$(git rev-parse -q --symbolic-full-name '@{upstream}' 2>/dev/null)" || up=""
+  set -- "${up:-origin/main}..HEAD"
+fi
 git rev-parse -q --verify 'origin/main^{commit}' >/dev/null ||
   fail "no origin/main ref to compare with (git fetch origin)"
 count="$(git rev-list --count "$@")" || fail "bad range: $*"
@@ -80,16 +86,36 @@ tests="$(for d in plugins scripts; do
   [ -d "$d" ] && find "$d" -type f \( -name 'test-*.sh' -o -name 'test_*.py' \) \
     -not -path '*/node_modules/*'
 done | sort)"
-for t in $tests; do
-  case "$t" in
-    *.py) run=(python3 -I "$t") ;;
-    *) run=(bash "$t") ;;
-  esac
-  if ! "${run[@]}" >"$work/log" 2>&1 </dev/null; then
-    tail -n 20 "$work/log" >&2
-    fail "suite $t (last lines above)"
-  fi
-  echo "release_check: suite ok $t"
+# Second pass with the system tools (macOS: bash 3.2, Python 3.9). Why: a
+# push from a GUI client runs the hook with them, and they found bugs that
+# every run with the tools on PATH had passed. Tests may point these elsewhere.
+sys_bash="${RK_SYSTEM_BASH:-/bin/bash}"
+sys_py="${RK_SYSTEM_PYTHON:-/usr/bin/python3}"
+passes="path"
+if [ ! -x "$sys_bash" ] || [ ! -x "$sys_py" ]; then
+  echo "release_check: no $sys_bash or $sys_py, system pass SKIPPED"
+elif [ "$(command -v bash)" -ef "$sys_bash" ] &&
+  [ "$(command -v python3)" -ef "$sys_py" ]; then
+  echo "release_check: bash and python3 on PATH are the system ones, one pass"
+else
+  passes="path system"
+fi
+for pass in $passes; do
+  for t in $tests; do
+    case "$pass:$t" in
+      path:*.py) run=(python3 -I "$t") ;;
+      path:*) run=(bash "$t") ;;
+      *.py) run=(env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$HOME" "$sys_py" -I "$t") ;;
+      *) run=(env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$HOME" "$sys_bash" "$t") ;;
+    esac
+    tag=""
+    [ "$pass" = path ] || tag=" ($pass)"
+    if ! "${run[@]}" >"$work/log" 2>&1 </dev/null; then
+      tail -n 20 "$work/log" >&2
+      fail "suite $t$tag (last lines above)"
+    fi
+    echo "release_check: suite ok $t$tag"
+  done
 done
 
 # 5. plugin validate

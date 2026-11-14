@@ -27,6 +27,7 @@ assert _spec is not None and _spec.loader is not None
 rk: ModuleType = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(rk)
 L: ModuleType = rk.ledger
+CLOSED_D1: str = "closed S-1: sign-off D-1\nwrote pm/stages/"  # stage-close receipt
 
 
 def new_repo(root: Path) -> Path:
@@ -369,7 +370,7 @@ def test_status_cycle() -> None:
             "--ref", "a.md", "--ref", "b.md",
         )
         e: Any = L.load(repo)["T-1"]
-        assert out == "closed T-1: loader works\n", out
+        assert out == "closed T-1: loader works (no stage)\n", out
         assert e.status == "done" and e.refs == ["a.md", "b.md"], e
         assert lrun(repo, "close", "T-1", "--note", "again")[0] == 1
         assert lrun(repo, "start", "T-1")[0] == 1  # use reopen
@@ -384,7 +385,7 @@ def test_status_cycle() -> None:
         assert code == 0 and L.load(repo)["T-2"].owner == "sr2", out
         long: str = "x" * 70 + "\nsecond line"
         out = lrun(repo, "close", "T-2", "--note", long)[1]
-        assert out == f"closed T-2: {'x' * 60}\n", out
+        assert out == f"closed T-2: {'x' * 60} (no stage)\n", out
         assert lrun(repo, "close", "T-9", "--note", "x")[0] == 1  # unknown id
 
 
@@ -478,7 +479,7 @@ def test_set_appends_lists() -> None:
             repo, "set", "T-1", "--ref", "a.md", "--ref", "c.md", "--owner", "sr2"
         )
         e: Any = L.load(repo)["T-1"]
-        assert code == 0 and out == "updated T-1: owner, refs\n", out
+        assert code == 0 and out == "updated T-1: owner, refs (no stage)\n", out
         assert e.refs == ["a.md", "b.md", "c.md"] and e.owner == "sr2", e
         assert e.status == "open"
         lrun(repo, "add", "task", "u", "--note", "n")
@@ -764,7 +765,7 @@ def test_stage_close_refusals() -> None:
         code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-4")
         assert code == 1 and "superseded" in out, out
         code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
-        assert code == 0 and out.endswith("\nclosed S-1: sign-off D-1\n"), out
+        assert code == 0 and CLOSED_D1 in out, out
         assert "SOFT entry without stage" in out and "D-2 (S-1) lead ok" in out, out
         s: Any = L.load(repo)["S-1"]
         assert s.status == "done" and "D-1" in s.links, s
@@ -785,7 +786,9 @@ def test_stage_close_sign_off_needs_link() -> None:
         assert len(jl(repo)) == n and L.load(repo)["S-1"].status == "open"
         lrun(repo, "add", "decision", "01 done", "--owner", "user", "--link", "S-1")
         code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-2")
-        assert code == 0 and out == "closed S-1: sign-off D-2\n", out
+        assert code == 0 and out == (
+            "closed S-1: sign-off D-2\nwrote pm/stages/01-software-a/LEDGER.md\n"
+        ), out
 
 
 def test_brief_check() -> None:
@@ -1034,7 +1037,7 @@ def test_notes_append() -> None:
             pass
         assert len(jl(repo)) == n
         code, out = lrun(repo, "set", "T-1", "--note-replace", "new")
-        assert code == 0 and out == "updated T-1: note\n", out
+        assert code == 0 and out == "updated T-1: note (no stage)\n", out
         assert L.load(repo)["T-1"].note == "new"
         assert lrun(repo, "set", "T-1", "--note-replace", "")[0] == 0
         assert L.load(repo)["T-1"].note == ""
@@ -1211,7 +1214,7 @@ def test_label_add_set_unique() -> None:
         code, out = lrun(repo, "set", "T-2", "--label", "03b/W4")
         assert code == 1 and "T-1" in out, out
         code, out = lrun(repo, "set", "T-2", "--label", "03b/W7")
-        assert code == 0 and out == "updated T-2: label\n", out
+        assert code == 0 and out == "updated T-2: label (no stage)\n", out
         assert lrun(repo, "set", "T-1", "--label", "03b/W4")[0] == 0  # its own
         try:
             with contextlib.redirect_stderr(io.StringIO()):
@@ -1255,11 +1258,16 @@ def test_resolver_labels_and_stage_codes() -> None:
         assert e.stage == "S-1" and e.links == ["T-1"], e
         assert lrun(repo, "set", "03b/W7", "--link", "03b/W4", "--stage", "03b")[
             1
-        ] == "updated T-2: stage, links\n"
-        assert lrun(repo, "close", "03b/W4", "--note", "ok")[1] == "closed T-1: ok\n"
-        assert lrun(repo, "reopen", "03b/W4", "--note", "x")[1] == "reopened T-1: x\n"
+        ] == "updated T-2: links (stage S-1)\n"  # same stage again: not an event
+        assert lrun(repo, "close", "03b/W4", "--note", "ok")[1] == (
+            "closed T-1: ok (stage S-1)\n"
+        )
+        assert lrun(repo, "reopen", "03b/W4", "--note", "x")[1] == (
+            "reopened T-1: x (stage S-1)\n"
+        )
         out = lrun(repo, "drop", "03b/W4", "--note", "y", "--link", "03b/W7")[1]
-        assert out == "dropped T-1: y\n" and L.load(repo)["T-1"].links == ["T-2"]
+        assert out == "dropped T-1: y (stage S-1)\n"
+        assert L.load(repo)["T-1"].links == ["T-2"]
         assert "T-2" in lrun(repo, "list", "--stage", "03b")[1]
         lrun(repo, "close", "T-2", "--note", "ok")
         lrun(repo, "add", "decision", "m", "--owner", "user", "--label", "03b/D1")
@@ -1269,7 +1277,7 @@ def test_resolver_labels_and_stage_codes() -> None:
              "--label", "03b/signoff")
         assert L.load(repo)["D-3"].links == ["S-1"]
         code, out = lrun(repo, "stage-close", "03b", "--sign-off", "03b/signoff")
-        assert code == 0 and out == "closed S-1: sign-off D-3\n", out
+        assert code == 0 and out.startswith("closed S-1: sign-off D-3\n"), out
         assert "D-3" in L.load(repo)["S-1"].links
         # real ids win; a non-stage is no stage; more than one match is refused
         lrun(repo, "add", "task", "z", "--imported", "--source", "a:1",
@@ -1647,7 +1655,7 @@ def test_ref_drop() -> None:
         lrun(repo, "add", "task", "t", "--note", "n", "--ref", "a.md", "--ref", "b.md")
         (repo / "a.md").rename(Path(d) / "moved.md")  # moved away: the ref is stale
         code, out = lrun(repo, "set", "T-1", "--ref-drop", "a.md", "--ref", "c.md")
-        assert code == 0 and out == "updated T-1: refs\n", out
+        assert code == 0 and out == "updated T-1: refs (no stage)\n", out
         assert L.load(repo)["T-1"].refs == ["b.md", "c.md"]
         show: str = lrun(repo, "show", "T-1")[1]
         assert '"a.md"' in show.split("history:")[1], show  # history keeps it
@@ -1875,7 +1883,8 @@ def test_doctor_done_stage_not_in_head() -> None:
         code, out = doctor(repo)
         assert code == 0, out
         assert group(out, L.G_UNCOMMITTED) == [
-            "S-1 01-paper-x: 2 ledger lines and 1 folder files not in HEAD"
+            # the note and the LEDGER.md that stage-close wrote
+            "S-1 01-paper-x: 2 ledger lines and 2 folder files not in HEAD"
         ], out
         commit_all(repo)
         assert group(doctor(repo)[1], L.G_UNCOMMITTED) == []
@@ -2035,7 +2044,7 @@ def test_stage_close_runs_stage_checks() -> None:
         assert len(jl(repo)) == n + 1, out
         (Path(d) / "moved").rename(folder)
         code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
-        assert code == 0 and out.endswith("closed S-1: sign-off D-1\n"), out
+        assert code == 0 and CLOSED_D1 in out, out
         assert "SOFT decisions of the stage not owned by user" in out, out
         assert "D-2 (lead) cut" in out, out
 
@@ -2171,7 +2180,7 @@ def test_ref_fix_on_imported_and_done_stage() -> None:
         assert st["S-1"].status == "done"
         for eid, old in (("T-1", "gone.md"), ("DB-1", "x.md")):
             code, out = lrun(repo, "set", eid, "--ref-drop", old, "--ref", "y.md")
-            assert code == 0 and out == f"updated {eid}: refs\n", (eid, out)
+            assert code == 0 and out.startswith(f"updated {eid}: refs ("), (eid, out)
             assert L.load(repo)[eid].refs == ["y.md"], eid
 
 
@@ -2234,7 +2243,7 @@ def test_compat_emptied_waste_is_soft() -> None:
             "T-1 pm/waste/team/run1/sr1-r1.md", "T-2 pm/waste/team/02/sr1-r1.md"
         ], out
         code, out = lrun(repo, "stage-close", "S-2", "--sign-off", "D-1")
-        assert code == 0 and out.endswith("closed S-2: sign-off D-1\n"), out
+        assert code == 0 and "\nclosed S-2: sign-off D-1\nwrote " in out, out
         assert "SOFT ref into the waste folder, file gone" in out, out
         (repo / "x.md").write_text("x")
         lrun(repo, "add", "task", "new", "--note", "n", "--ref", "x.md")
@@ -2453,6 +2462,226 @@ def test_ref_from_worktree_only() -> None:
         assert outs[2][0] == 0, outs[2]
         assert [e["f"]["refs"] for e in jl(main)] == [["both.md"]]
         assert jl(wt) == []
+
+
+# ---- 0.2.1: receipts, status-word titles, stage record ----------------------
+
+
+def test_receipts_name_stage_or_none() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "task", "loose", "--note", "n")
+        assert lrun(repo, "set", "T-1", "--owner", "sr1")[1] == (
+            "updated T-1: owner (no stage)\n"
+        )
+        assert lrun(repo, "close", "T-1", "--note", "ok")[1] == (
+            "closed T-1: ok (no stage)\n"
+        )
+        assert lrun(repo, "reopen", "T-1", "--note", "again")[1] == (
+            "reopened T-1: again (no stage)\n"
+        )
+        assert lrun(repo, "drop", "T-1", "--note", "no")[1] == (
+            "dropped T-1: no (no stage)\n"
+        )
+        lrun(repo, "add", "stage", "01-paper-x")
+        lrun(repo, "add", "task", "in", "--note", "n")
+        assert lrun(repo, "set", "T-2", "--owner", "sr2")[1] == (
+            "updated T-2: owner (stage S-1)\n"
+        )
+        assert lrun(repo, "set", "T-1", "--stage", "S-1")[1] == (
+            "updated T-1: stage (stage S-1)\n"
+        )
+        assert lrun(repo, "close", "T-2", "--note", "ok")[1] == (
+            "closed T-2: ok (stage S-1)\n"
+        )
+        assert lrun(repo, "reopen", "T-1", "--note", "x")[1].endswith(" (stage S-1)\n")
+        assert lrun(repo, "drop", "T-1", "--note", "no")[1].endswith(" (stage S-1)\n")
+
+
+def test_set_same_stage_is_unchanged() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "01-paper-x")
+        lrun(repo, "add", "task", "a", "--note", "n")
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "set", "T-1", "--stage", "S-1")
+        assert code == 0 and out == "unchanged T-1 (stage S-1)\n", out
+        assert len(jl(repo)) == n  # no event
+        code, out = lrun(repo, "set", "T-1", "--stage", "01", "--note", "more")
+        assert code == 0 and out == "updated T-1: note (stage S-1)\n", out
+        ev: dict[str, Any] = jl(repo)[-1]
+        assert ev["f"] == {"note": "n\nmore"}, ev  # the stage is not rewritten
+        lrun(repo, "add", "stage", "02-paper-y")
+        out = lrun(repo, "set", "T-1", "--stage", "S-2")[1]
+        assert out == "updated T-1: stage (stage S-2)\n", out
+
+
+def test_add_receipt_closed_stage_link() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "01-paper-x")
+        lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1")
+        assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 0
+        out: str = lrun(repo, "add", "decision", "late", "--owner", "lead",
+                        "--link", "S-1")[1]
+        want: str = "(no stage: S-1 is closed; rk set D-2 --stage S-1)"
+        assert out == f"logged D-2: late {want}\n", out
+        assert L.load(repo)["D-2"].stage == ""  # the rule is kept
+        out = lrun(repo, "set", "D-2", "--stage", "S-1")[1]
+        assert out == "updated D-2: stage (stage S-1)\n", out
+        # an open entry cannot go into a closed stage: no hint to do it
+        out = lrun(repo, "add", "fetch", "smith", "--link", "S-1")[1]
+        assert out == "logged F-1: smith (no stage)\n", out
+        # a link to something that is not a stage, or to an open stage
+        out = lrun(repo, "add", "decision", "again", "--owner", "lead",
+                   "--link", "D-1")[1]
+        assert out == "logged D-3: again (no stage)\n", out
+
+
+def test_doctor_status_word_titles() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        for k, title in enumerate(["OPEN: scan the rest", "todo port it",
+                                   "Done reading", "opening move", "Doneness"]):
+            lrun(repo, "add", "task", title, "--imported", "--source", f"A.md:{k}")
+        lrun(repo, "add", "fetch", "open access check", "--status", "done")
+        lrun(repo, "add", "fetch", "open-source licence", "--status", "done")
+        lrun(repo, "add", "fetch", "open question for later")  # open: fine
+        lrun(repo, "add", "task", "todo later", "--note", "n")  # not imported: fine
+        out: str = doctor(repo)[1]
+        assert group(out, L.G_STATUS_WORD) == [
+            "T-1 (open) OPEN: scan the rest",
+            "T-2 (open) todo port it",
+            "T-3 (open) Done reading",
+        ], out
+        assert group(out, L.G_DONE_OPEN) == ["F-1 open access check"], out
+        assert doctor(repo)[0] == 0  # soft only
+        lrun(repo, "set", "T-1", "--title", "scan the rest")
+        assert len(group(doctor(repo)[1], L.G_STATUS_WORD)) == 2
+
+
+def stage_ledger_lines() -> list[str]:
+    """A hand-made ledger with fixed timestamps: stage S-1 from line 2 to 9."""
+    rows: list[tuple[str, str, str, dict[str, object], dict[str, object]]] = [
+        ("01", "add", "DB-1", {"type": "debt", "title": "old path", "status": "open",
+                               "owner": "lead", "stage": "", "note": "",
+                               "links": [], "refs": []}, {"kit": "0.2.0"}),
+        ("02", "add", "S-1", {"type": "stage", "title": "01-paper-x",
+                              "status": "open", "owner": "lead", "stage": "",
+                              "note": "", "links": [], "refs": []},
+         {"kit": "0.2.0", "sid": "s1", "rules": {"AGENTS.md": "2026-11-01a"}}),
+        ("03", "add", "T-1", {"type": "task", "title": "Loader", "status": "open",
+                              "owner": "sr1", "stage": "S-1", "note": "n",
+                              "links": [], "refs": []}, {"kit": "0.2.0", "sid": "s1"}),
+        ("04", "add", "D-1", {"type": "decision", "title": "use dE00",
+                              "status": "done", "owner": "user", "stage": "S-1",
+                              "note": "", "links": ["S-1"], "refs": []},
+         {"kit": "0.2.0", "sid": "s1"}),
+        ("05", "add", "D-2", {"type": "decision", "title": "cut scope",
+                              "status": "done", "owner": "lead", "stage": "S-1",
+                              "note": "", "links": [], "refs": []},
+         {"kit": "0.2.1", "sid": "s2"}),
+        ("06", "set", "T-1", {"status": "done"}, {"kit": "0.2.1", "sid": "s2"}),
+        ("07", "add", "F-1", {"type": "fetch", "title": "smith2020",
+                              "status": "open", "owner": "user", "stage": "S-1",
+                              "note": "", "links": [], "refs": []}, {"kit": "0.2.1"}),
+        ("08", "set", "DB-1", {"status": "dropped"}, {"kit": "0.2.1", "sid": "s2"}),
+        ("09", "set", "S-1", {"status": "done", "links": ["D-1"]},
+         {"kit": "0.2.1", "sid": "s2", "rules": {"AGENTS.md": "2026-11-14a",
+                                                 "pm/kinds/paper.md": "2026-11-14a"}}),
+        ("10", "add", "T-2", {"type": "task", "title": "after", "status": "open",
+                              "owner": "lead", "stage": "", "note": "n",
+                              "links": [], "refs": []}, {"kit": "0.2.1"}),
+    ]
+    out: list[str] = []
+    for day, kind, eid, f, extra in rows:
+        ev: dict[str, object] = {
+            "ts": f"2026-11-{day}T10:00:00+00:00", "who": "lead", "ev": kind,
+            "id": eid, "f": f, **extra,
+        }
+        out.append(json.dumps(ev))
+    return out
+
+
+STAGE_RECORD_GOLDEN: str = """\
+# Ledger of stage S-1 01-paper-x (generated)
+
+Generated from pm/ledger.jsonl by rk.py when the stage was closed; frozen
+with the stage. Do not edit: hand edits are blocked.
+Window: ledger lines 2 to 9, 2026-11-02T10:00:00+00:00 to 2026-11-09T10:00:00+00:00.
+
+## Entries of the stage (4)
+- T-1 task done (sr1) Loader
+- D-1 decision done (user) use dE00
+- D-2 decision done (lead) cut scope
+- F-1 fetch open (user) smith2020
+
+## Entries touched in the window, not of the stage (1)
+- DB-1 debt dropped (lead) old path [no stage]
+
+## Decisions by owner
+### lead
+- D-2 cut scope
+### user
+- D-1 use dE00
+
+## Left open
+- F-1 fetch open (user) smith2020
+
+## Seen in the window
+kit: 0.2.0, 0.2.1
+sid: s1, s2
+rules at open: AGENTS.md 2026-11-01a
+rules at close: AGENTS.md 2026-11-14a, pm/kinds/paper.md 2026-11-14a
+"""
+
+
+def test_stage_record_golden() -> None:
+    events: list[tuple[int, dict[str, object]]] = L._parse(
+        ("\n".join(stage_ledger_lines()) + "\n").encode()
+    )
+    text: str = L.render_stage_record(events, "S-1")
+    assert text == STAGE_RECORD_GOLDEN, text
+    # frozen: lines after the close do not change it, nor does a rerun
+    assert L.render_stage_record(events[:9], "S-1") == text
+    assert L.render_stage_record(events, "S-1") == text
+
+
+def test_stage_close_writes_record() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "01-paper-x")
+        rec: Path = repo / "pm/stages/01-paper-x/LEDGER.md"
+        lrun(repo, "add", "task", "t", "--note", "n")
+        lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1")
+        assert not rec.exists()  # nothing but stage-close writes it
+        assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 1
+        assert not rec.exists()  # a refused close writes nothing
+        lrun(repo, "close", "T-1", "--note", "ok")
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 0 and out == (
+            "closed S-1: sign-off D-1\nwrote pm/stages/01-paper-x/LEDGER.md\n"
+        ), out
+        text: str = rec.read_text()
+        assert text == L.render_stage_record(L.read_events(repo), "S-1")
+        assert text.startswith("# Ledger of stage S-1 01-paper-x (generated)\n")
+        assert "- T-1 task done (lead) t\n" in text and "### user\n- D-1 ok" in text
+        assert not (rec.parent / "LEDGER.md.tmp").exists()
+        lrun(repo, "add", "task", "later", "--note", "n")  # other commands: untouched
+        lrun(repo, "set", "T-2", "--owner", "sr1")
+        assert rec.read_text() == text
+
+
+def test_stage_close_record_imported_stage_without_folder() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "01-pilot", "--imported", "--source", "A.md:1")
+        lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1")
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 0 and out.endswith(
+            "no LEDGER.md: S-1 has no folder pm/stages/01-pilot/\n"
+        ), out
+        assert not (repo / "pm/stages").exists()  # no folder made for it
 
 
 def main() -> int:

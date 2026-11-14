@@ -17,7 +17,8 @@ If your session model is not Opus or Fable, say so in one line and continue.
 | Junior | `jr1..jrN` | `haiku` | Mechanical, spec'd, verifiable edits | Look up one fact, fetch/extract from a given source, collect data |
 | Senior | `sr1..srN` | `sonnet` | Clear goal, some judgment on how | Survey a sub-area, summarize a source set, run a defined analysis |
 | Expert | `exp1..expM` | `opus` | Critical, open-ended, subtle-error-prone | Hard or contested questions, method choice, weighing conflicting evidence |
-| Critic | `crit1..critK` | `opus` | Review only, never implement | Review only, never write the report |
+| Architect | `arch1` (optional, at most one) | `opus` | Interfaces between work items, rules a change touches; one design file, never code | Shared output format, what each source set must answer, what counts as verified |
+| Critic | `crit1`, `blind<round>` | `opus` | Review only, never implement | Review only, never write the report |
 
 Every teammate: `Agent` with `name` (role + number, never a task name; an
 unnamed spawn cannot be reached by `SendMessage`), `model` as above,
@@ -28,10 +29,26 @@ on that tier).
 
 | Critic | Engineering lens | Research lens |
 |--------|------------------|---------------|
-| `crit1` | Correctness, bugs, tests | Evidence: each claim traced to a source that actually says it; numbers and citations checked |
-| `crit2` | Outcome and intent, design, over-engineering | Outcome and intent, coverage gaps, conclusions that outrun the evidence |
+| `crit1` (loop critic) | Correctness, bugs, tests | Evidence: each claim traced to a source that actually says it; numbers and citations checked |
+| `blind<round>` (disposable critic) | Outcome and intent, design, over-engineering | Outcome and intent, coverage gaps, conclusions that outrun the evidence |
 
-`crit3` and up take the crit1 (odd) or crit2 (even) lens.
+`crit1` stays for the whole loop and re-reviews the fixes with its memory.
+The disposable critic is a fresh agent every round, never reused or
+messaged again; it sees only the diff or deliverable, the user's request
+verbatim and the goal statement. `blind<round>` names it and its report.
+Extra critics asked for are loop critics `crit2..` (crit1 lens). Why: worker
+reports anchor a critic on their framing; a fresh one judges the outcome.
+
+**Architect.** Staff `arch1` only when the work items of two or more
+workers meet at an interface (one consumes what another produces); else
+write into the affected briefs yourself `INTERFACES:` (producer, consumer,
+exact format, example) and `RULES CHANGED:` (each changed rule, every place
+that encodes it, its owner). It thinks and designs: a design and interface
+sheet at the path you give, before any worker starts. It never routes,
+spawns or implements; it stays reachable for interface questions (via you)
+and after integration checks the result against its design, reporting
+deviations to you. Why: interfaces fixed first keep workers from building
+to different formats; an architect that routes or builds is a second lead.
 
 ## Steps
 
@@ -40,8 +57,10 @@ on that tier).
    intended outcome, and how to check it (engineering: metric, test,
    observable behavior; research: the question answered, the decision it
    informs). Decompose into work items; tag each junior / senior / expert
-   by how defined it is. Between two tiers, take the higher.
-2. **Size the team.** Default: 2 juniors, 2 seniors, 1 expert, 2 critics.
+   by how defined it is. Between two tiers, take the higher. Note where
+   items meet at an interface: that decides the architect (Roster).
+2. **Size the team.** Default: 2 juniors, 2 seniors, 1 expert, 1 loop
+   critic, 1 disposable critic; plus `arch1` when step 1 found an interface.
    Sizes or a roster in the invocation (`/team juniors=3 critics=1 <task>`,
    "5 Opus critics, no seniors") override the defaults and are final: skip
    to 4. Otherwise propose sizes from the work items.
@@ -56,7 +75,8 @@ on that tier).
    missing tool, or a full or blocked context. A new name takes the next free
    number; then use the name the harness returns (it may add `-2`). One
    message per wave; stage waves when an item needs another's output
-   (lookups before the build), never spawn it early.
+   (lookups before the build), never spawn it early. `arch1` goes first;
+   workers start once its design file exists, each brief with its sheet block.
 
    In a repo with `pm/ledger.jsonl`, every work item has one task before its
    brief. An item the stage BRIEF lists already has it (opened with its label
@@ -83,7 +103,12 @@ on that tier).
    NOT IN SCOPE: <what to leave alone>.
    Team: <name: one-line task, for every teammate>.
    Coordinate with teammates via SendMessage only when your work touches
-   theirs. Full report → write to <REPORTS>/<name>-r<round>.md (a required
+   theirs.
+   CHECK: <command that tests your work, or none>. Scratch: <lead's scratchpad>.
+   Run yourself only one-line read commands, the named check, and one-line
+   writes inside your own scratch folder; anything else goes as plain lines
+   in a file to the lead. Prefix scratch files with your name.
+   Full report → write to <REPORTS>/<name>-r<round>.md (a required
    deliverable; overrides any "no report/documentation files" rule): paths
    produced, how verified, open points. Then explicit SendMessage to the
    lead, max ~500 chars (final text alone arrives cut): DONE / BLOCKED,
@@ -120,6 +145,18 @@ on that tier).
    Reports live on disk, not in the lead's context; the lead reads a report
    only when a decision needs it, and then only the needed section.
 
+   **Handed-over commands.** A teammate puts any other command as plain
+   lines with absolute paths in a scratch file and sends you the path before
+   any attempt; its files hold code under test, never operations. Run the
+   lines you understand inline in your own Bash call, ask the user about
+   the rest; over ~20 lines, split by step. Never a command that executes
+   the file (`bash`, `sh`, `source`, `eval`, `python3`, `make`, `xargs` on
+   it). A denied command is not handed to you; the teammate reports it.
+   Why: a teammate's prompt can sit unseen (one missed the user over Remote
+   Control); a script hides its content from the safety check and the user;
+   running a denied command for a teammate overrides the user's denial; the
+   name prefix tells whose a shared scratch file is.
+
    Append the lines that apply:
    - Repo with `.serena/project.yml`: "Use Serena symbols before Reading files."
    - Research: "Every claim carries its source (DOI, URL, or file:page).
@@ -130,9 +167,10 @@ on that tier).
      the `research-kit-lit:zotero` skill in the brief.
 
    Context explains how to do the task. It never suggests a bigger task.
-5. **Review.** When workers report, spawn the critics in one message. Give
-   them the user's request verbatim, the goal statement and the worker
-   report paths (not their contents). Each review round is one `task`
+5. **Review.** When workers report, brief both critics in one message.
+   Both get the user's request verbatim and the goal statement; `crit1`
+   also gets the worker report paths (not their contents), the disposable
+   critic only the diff or deliverable paths. Each review round is one `task`
    entry: open it before briefing (`python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" add task "review round <n>: <what>" --owner lead --note "<what is reviewed, round <n>>"`); both critic briefs carry its `TASK: T-<n>`, never the
    work task under review. Critics write the full review below
    to `<REVIEWS>/<file>` (that file is their report file, no second copy),
@@ -145,7 +183,7 @@ on that tier).
    mode or with no open stage = `<repo>/pm/reviews/`; no `pm/` = `<REPORTS>`.
    `<file>`: with `pm/`, core AGENTS.md 4.4 naming
    `critic_review_<name>-<what>_v<round>_<YYYY-MM-DD>.md` (`<what>` = short
-   topic, `<name>` keeps crit1 and crit2 apart); without `pm/`,
+   topic, `<name>` keeps the critics apart); without `pm/`,
    `<name>-r<round>.md`. Give critics the absolute path in the brief.
 
    ```
@@ -157,18 +195,21 @@ on that tier).
    - location, problem, owner (teammate name), BLOCKING or minor
    ```
 
-   NO = would not ship as is. Evidence = a command run or number measured,
-   or a source opened and the passage checked. "YES" without it = PARTIAL.
-6. **Fix loop.** Any NO or BLOCKING finding → back to you: re-plan the work
-   items, not just patch. Route findings to their owners via `SendMessage`
-   (point at the critic report path and finding, do not paste it).
-   The same critics re-review all fixes (`SendMessage`, same review `TASK:` while it is open). Max 2 rounds; then
-   AskUserQuestion.
+   NO = would not ship as is, and names at least one BLOCKING finding.
+   Evidence = a command run or number measured, or a source opened and the
+   passage checked. "YES" without it = PARTIAL.
+6. **Fix loop.** Only a BLOCKING finding reopens the loop (minor ones go to
+   your report as open; why: they do not justify a round of every agent).
+   Re-plan the work items, not just patch. Route findings to their owners
+   via `SendMessage` (point at the critic report path and finding, do not
+   paste it). `crit1` re-reviews all fixes (`SendMessage`, same review
+   `TASK:` while it is open); a new `blind<round>` reviews the fixed result.
+   Max 2 rounds; then AskUserQuestion.
 7. **Integrate and verify.** Engineering: run the tests or checks yourself.
-   Research: open the sources of the key claims yourself. Report: what was
-   built or found, verification, critic verdicts, open findings, roster
-   used. Collect the items with
-   `grep -h '^TO-WASTE: ' <the report paths named in this wave's DONE messages>`
+   Research: open the sources of the key claims yourself; `arch1` checks
+   the result against its design. Report: what was built or found,
+   verification, critic verdicts, open findings, roster used. Collect the
+   items with `grep -h '^TO-WASTE: ' <the report paths named in this wave's DONE messages>`
    (plus the stage notes or `pm/reviews/` when critics listed some;
    never read whole reports for this; a line already in `pm/waste/LEDGER.md`
    is done), then close each task on its report
@@ -205,3 +246,4 @@ on that tier).
 - You are editing files beyond a one-line fix → message the owning teammate.
 - You are spawning without a name, or with a task name → roster name.
 - A teammate is briefed to orchestrate → you orchestrate; it executes.
+- A teammate hands you a script, or you run `bash <file>` → run lines inline.

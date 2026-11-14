@@ -8,14 +8,16 @@ Scans every commit of a range: added lines (as text, also files marked -diff),
 added file names, the message, author and committer. Default range: commits on
 HEAD that are on no origin/* ref. --all: all history. REV-LIST-ARGS: e.g.
 origin/main..HEAD. A multi-word denylist term is also found across a line wrap
-(within one hunk or message). An added file that is not UTF-8 text (NUL byte,
-invalid UTF-8) is a hit unless a "binary:<glob>" allowlist entry names its path.
+(within one hunk or message, also into unchanged neighbour lines, line prefixes
+such as "# ", "> ", "* ", "// ", "% " dropped). An added file that is not UTF-8
+text (NUL byte, invalid UTF-8) is a hit unless a "binary:<dir>/<glob>" allowlist
+entry names it: <dir> holds no wildcard and <glob> matches the file name only.
 Denylist: <main checkout>/docs/private/denylist.txt (found from any worktree),
 or $ANON_DENYLIST; one term per line, case-insensitive, '#' comments.
 Missing or empty denylist: exit 2, unless --no-denylist (pattern scans only).
 Allowlist: scripts/anon_allow.txt of the working tree, or of REV with
 --allow-from REV (the gate passes the pushed tip); the output names the source.
-Entries: fixed string (case-insensitive), "re:" regex, or "binary:<glob>". An
+Entries: fixed string (case-insensitive), "re:" regex, or "binary:<dir>/<glob>". An
 entry excuses a hit only when it matches exactly the hit's span; an entry that
 matches the empty string or a denylist term is refused (exit 2), so denylist
 hits cannot be excused. Denylist matches inside a lockfile integrity hash
@@ -36,7 +38,7 @@ import os
 import re
 import subprocess
 import sys
-from fnmatch import fnmatch
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import NoReturn
 
@@ -80,6 +82,8 @@ INTEGRITY: re.Pattern[str] = re.compile(
     r'"integrity": "sha(?:1|256|384|512)-[A-Za-z0-9+/=]{20,}"'
 )
 COMMIT_MARK: bytes = b"\x00\x01"
+# Comment, quote and list marks at a line start; a wrapped term continues after.
+WRAP_PREFIX: re.Pattern[str] = re.compile(r"^[#>*/%\s-]+")
 
 
 def die(msg: str) -> NoReturn:
@@ -125,6 +129,9 @@ class Scanner:
         words: list[list[str]] = [t.split() for _, t in terms if len(t.split()) > 1]
         multi: str = "|".join(r"\s+".join(map(re.escape, w)) for w in words)
         self.multi: re.Pattern[str] | None = re.compile(multi, re.I) if words else None
+        # unchanged lines a wrapped term can reach into from an added line
+        # ponytail: a split with blank lines between its words reaches further
+        self.reach: int = max((len(w) for w in words), default=1) - 1
         self.allow: list[re.Pattern[str]] = allow
         self.hits: int = 0
 
@@ -169,19 +176,28 @@ class Scanner:
                     self.report(rule, where, text, m.start(), m.end())
                     break
 
-    def scan_wrapped(self, lines: list[str], where: str) -> None:
-        """Multi-word terms split across lines; single-line forms were scanned."""
+    def scan_wrapped(
+        self, lines: list[str], where: str, added: list[bool] | None = None
+    ) -> None:
+        """Multi-word terms split across lines; single-line forms were scanned.
+
+        added marks the new lines among unchanged context lines: a match must
+        touch one of them, since the context alone was published before.
+        """
         if self.multi is None or len(lines) < 2:
             return
-        flat: str = " ".join(lines)
-        joins: list[int] = []  # offsets of the spaces that replaced line breaks
+        parts: list[str] = [WRAP_PREFIX.sub("", ln) for ln in lines]
+        flat: str = " ".join(parts)
+        spans: list[tuple[int, int]] = []
         pos: int = 0
-        for ln in lines[:-1]:
-            pos += len(ln)
-            joins.append(pos)
-            pos += 1
+        for p in parts:
+            spans.append((pos, pos + len(p)))
+            pos += len(p) + 1
         for m in self.multi.finditer(flat):
-            if any(m.start() <= j < m.end() for j in joins):
+            touched: list[int] = [
+                i for i, (a, b) in enumerate(spans) if a < m.end() and m.start() < b
+            ]
+            if len(touched) > 1 and (added is None or any(added[i] for i in touched)):
                 self.report("denylist", where, flat, m.start(), m.end())
                 return
 
@@ -194,8 +210,11 @@ def load_allow(
     for n, s in entries(text):
         if s.startswith("binary:"):
             g: str = s[7:]
-            if not g or fnmatch("x", g) or fnmatch("a/b.c", g):
-                die(f"{source}:{n}: binary glob too wide: {g!r}")
+            d, _, b = g.rpartition("/")
+            # Why: a wildcard in the folder, or no folder, leaves binary files
+            # of the whole repo unscanned (fnmatch's * also crosses "/").
+            if not d or not b or any(c in d for c in "*?["):
+                die(f"{source}:{n}: binary glob must be <dir>/<glob>: {g!r}")
             globs.append(g)
             continue
         try:
@@ -215,46 +234,63 @@ def load_allow(
     return out, globs
 
 
+def binary_allowed(path: str, globs: list[str]) -> bool:
+    """A glob's folder must equal the path's; its pattern sees the name only."""
+    d, _, b = path.rpartition("/")
+    return any(
+        g.rpartition("/")[0] == d and fnmatchcase(b, g.rpartition("/")[2])
+        for g in globs
+    )
+
+
 def scan_file(
-    sc: Scanner, where: str, lines: list[tuple[int, bytes]], globs: list[str]
+    sc: Scanner, where: str, lines: list[tuple[int, bytes, bool]], globs: list[str]
 ) -> None:
-    data: bytes = b"\n".join(b for _, b in lines)
+    """lines: (line number, text, added); not added = unchanged context."""
+    if not any(new for _, _, new in lines):
+        return  # context only: the hunks removed lines
+    data: bytes = b"\n".join(b for _, b, new in lines if new)
     path: str = where.split(" ", 1)[1]
     try:
         if b"\0" in data:
             raise ValueError("NUL byte")
         data.decode("utf-8")
     except (UnicodeDecodeError, ValueError):
-        if any(fnmatch(path, g) for g in globs):
+        if binary_allowed(path, globs):
             print(f"NOTE binary not scanned (allowlisted): {where}")
             return
-        msg: str = "not UTF-8 text, cannot be scanned; allowlist it as binary:<glob>"
+        msg: str = (
+            "not UTF-8 text, cannot be scanned; allowlist it as binary:<dir>/<glob>"
+        )
         sc.report("binary", where, msg, 0, len(msg))
         return
     hunk: list[str] = []
+    added: list[bool] = []
     prev: int = -2
-    for n, b in lines:
-        t: str = b.decode("utf-8")
-        sc.scan(t, f"{where}:{n}")
+    for n, b, new in lines:
+        t: str = b.decode("utf-8", errors="replace")
+        if new:
+            sc.scan(t, f"{where}:{n}")
         if n != prev + 1:
-            sc.scan_wrapped(hunk, f"{where}:{prev}")
-            hunk = []
+            sc.scan_wrapped(hunk, f"{where}:{prev}", added)
+            hunk, added = [], []
         hunk.append(t)
+        added.append(new)
         prev = n
-    sc.scan_wrapped(hunk, f"{where}:{prev}")
+    sc.scan_wrapped(hunk, f"{where}:{prev}", added)
 
 
 def scan_diffs(sc: Scanner, rng: list[str], globs: list[str]) -> None:
     out: bytes = git_bytes(
         "log", "-p", "--text", "--no-color", "--no-ext-diff", "--no-textconv",
-        "--no-renames", "-U0", "--src-prefix=a/", "--dst-prefix=b/",
+        "--no-renames", f"-U{sc.reach}", "--src-prefix=a/", "--dst-prefix=b/",
         "--diff-merges=first-parent", "--format=%x00%x01%H", *rng,
     )
     sha: str = ""
     path: str = ""
     lineno: int = 0
     header: bool = False
-    lines: list[tuple[int, bytes]] = []
+    lines: list[tuple[int, bytes, bool]] = []
 
     def flush() -> None:
         if lines:
@@ -276,8 +312,8 @@ def scan_diffs(sc: Scanner, rng: list[str], globs: list[str]) -> None:
             header = False
             m: re.Match[bytes] | None = re.match(rb"@@ -\S+ \+(\d+)", raw)
             lineno = int(m.group(1)) if m else 0
-        elif not header and raw.startswith(b"+"):
-            lines.append((lineno, raw[1:]))
+        elif not header and raw[:1] in (b"+", b" "):
+            lines.append((lineno, raw[1:], raw[:1] == b"+"))
             lineno += 1
     flush()
 

@@ -157,6 +157,21 @@ expect 1 'HIT home-path' 'home path in a file:// URL' anon
 branch wrapped
 commit notes.txt "$(printf 'we met the Blue Heron\n  farm people')" 'notes: wrapped'
 expect 1 'HIT denylist .*<denylist:4>' 'multi-word term across a line wrap' anon
+branch wrapped
+commit notes.txt "$(printf 'intro\nfarm people')" 'notes: two lines'
+commit notes.txt "$(printf 'we met the Blue Heron\nfarm people')" 'notes: intro'
+expect 1 'HIT denylist .*<denylist:4>' 'wrapped term into an unchanged line' anon
+branch wrapped
+commit notes.txt "$(printf 'the Blue Heron\nfarm\n\n\nend')" 'notes: published'
+git update-ref refs/remotes/origin/ctx HEAD
+commit notes.txt "$(printf 'the Blue Heron\nfarm\nnew line\n\nend')" 'notes: next'
+expect 0 'anon_check: clean' 'wrapped term in unchanged lines only' anon
+git update-ref -d refs/remotes/origin/ctx
+for pre in '# ' '> ' '// ' '% ' ' * ' '- '; do
+  branch wrapped
+  commit notes.txt "$(printf '%sthe Blue Heron\n%sfarm people' "$pre" "$pre")" 'notes: prefixed'
+  expect 1 'HIT denylist .*<denylist:4>' "wrapped term behind line prefix '$pre'" anon
+done
 
 # files git would call binary: -diff and NUL bytes are scanned or fail
 branch binary
@@ -164,12 +179,24 @@ put .gitattributes '*.txt -diff'
 commit notes.txt 'we used zorblax' 'notes: -diff file'
 expect 1 'HIT denylist .* notes.txt:1' 'term in a -diff file' anon
 branch binary
-printf 'head\000tail\n' >blob.bin
+mkdir -p data/sub
+printf 'head\000tail\n' >data/blob.bin
 git add -A
 git commit -qm 'data: blob'
-expect 1 'HIT binary .* blob.bin' 'file with a NUL byte fails' anon
-printf 'binary:*.bin\n' >>scripts/anon_allow.txt
+expect 1 'HIT binary .* data/blob.bin' 'file with a NUL byte fails' anon
+printf 'binary:data/*.bin\n' >>scripts/anon_allow.txt
 expect 0 'NOTE binary not scanned \(allowlisted\)' 'binary glob in the allowlist' anon
+for bad in 'binary:*.bin' 'binary:*/blob.bin' 'binary:d?ta/blob.bin' 'binary:data/'; do
+  git checkout -q -- scripts/anon_allow.txt
+  printf '%s\n' "$bad" >>scripts/anon_allow.txt
+  expect 2 'binary glob must be <dir>/<glob>' "binary glob refused: $bad" anon
+done
+git checkout -q -- scripts/anon_allow.txt
+printf 'head\000tail\n' >data/sub/blob.bin
+git add -A
+git commit -qm 'data: nested blob'
+printf 'binary:data/*\n' >>scripts/anon_allow.txt
+expect 1 'HIT binary .* data/sub/blob.bin' 'binary glob does not reach into subfolders' anon
 git checkout -q -- scripts/anon_allow.txt
 
 # the gate reads the allowlist from the tip, not from the working tree
@@ -234,6 +261,51 @@ printf 'rule one, changed\n' >>"$TPL/AGENTS.md"
 git add -A
 git commit -qm 'template: stamp'
 expect 0 'release_check: PASS' 'template change with stamp' gate
+
+# default range: what a push to the upstream sends, also commits that another
+# remote branch already holds
+branch held
+put plugins/research-kit/.claude-plugin/plugin.json '{"name": "research-kit", "version": "0.1.1"}'
+put "$TPL/AGENTS.md" '<!-- research-kit: 2026-01-01a -->'
+printf 'rule one, held\n' >>"$TPL/AGENTS.md"
+git add -A
+git commit -qm 'template: held'
+git update-ref refs/remotes/origin/other HEAD
+expect 1 'FAIL .*AGENTS.md changed but its stamp' 'default range keeps commits another remote branch holds' gate
+git update-ref -d refs/remotes/origin/other
+git branch -q upbase HEAD
+git config branch.held.remote .
+git config branch.held.merge refs/heads/upbase
+expect 0 'no commits in range \(refs/heads/upbase\.\.HEAD\)' 'default range starts at the upstream' gate
+git config --remove-section branch.held
+
+# system pass: suites run again with /bin/bash and /usr/bin/python3 in a bare
+# environment when the tools on PATH are others; PROBE_LEAK marks the PATH pass
+SYSPATH=/usr/bin:/bin:/usr/sbin:/sbin
+branch syspass
+put scripts/test-env.sh '[ -n "${PROBE_LEAK:-}" ] || { [ "$BASH" = /bin/bash ] && [ "$PATH" = '"$SYSPATH"' ]; }'
+commit scripts/test_env.py 'import os, sys; sys.exit(0 if "PROBE_LEAK" in os.environ or os.environ["PATH"] == "'"$SYSPATH"'" else 1)' \
+  'scripts: env suites'
+mkdir "$T/other" # a python3 that is not the system file, so the tools differ
+printf '#!/bin/sh\nexec /usr/bin/python3 "$@"\n' >"$T/other/python3"
+chmod +x "$T/other/python3"
+if [ -x /bin/bash ] && [ -x /usr/bin/python3 ]; then
+  expect 0 'suite ok scripts/test_env.py \(system\)' 'system pass when the PATH tools differ' \
+    env PROBE_LEAK=1 PATH="$T/other:$PATH" bash scripts/release_check.sh
+  expect 0 'are the system ones, one pass' 'one pass when the PATH tools are the system ones' \
+    env PROBE_LEAK=1 PATH="$SYSPATH:$T/bin" bash scripts/release_check.sh
+  # suites that pass only while PROBE_LEAK is set: the system pass must fail
+  commit scripts/test_leak.py 'import os, sys; sys.exit(0 if "PROBE_LEAK" in os.environ else 1)' \
+    'scripts: leak suite (python)'
+  expect 1 'FAIL suite scripts/test_leak.py \(system\)' 'python suite: bare environment in the system pass' \
+    env PROBE_LEAK=1 PATH="$T/other:$PATH" bash scripts/release_check.sh
+  git rm -q scripts/test_leak.py # so the failure below is the bash suite's
+  commit scripts/test-leak.sh '[ -n "${PROBE_LEAK:-}" ]' 'scripts: leak suite (bash)'
+  expect 1 'FAIL suite scripts/test-leak.sh \(system\)' 'bash suite: bare environment in the system pass' \
+    env PROBE_LEAK=1 PATH="$T/other:$PATH" bash scripts/release_check.sh
+fi
+expect 0 'system pass SKIPPED' 'no system python: system pass skipped' \
+  env PROBE_LEAK=1 RK_SYSTEM_PYTHON="$T/none" bash scripts/release_check.sh
 
 # a linked worktree finds the main checkout's denylist
 git worktree add -q "$T/wt" -b wt origin/main

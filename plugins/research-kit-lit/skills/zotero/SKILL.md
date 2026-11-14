@@ -191,6 +191,17 @@ new repo, new session; R9 still applies to every attach, this one too):
   `search_all_libraries=true` needs the sqlite backend; the error "global
   search requires the SQLite backend" = env var lost: report it, then
   search one library at a time. Quote errors before blaming Zotero.
+- No merge tool: duplicate items are merged by hand in the desktop client.
+  Report both keys, attach to neither, hand over the pair.
+- `relations` is not a settable field of `zotero_update_item` (refused):
+  related-item links are set by hand in the desktop client.
+- `zotero_update_search_database` can leave pending writes behind; semantic
+  search then fails ("Error finding id"). Check
+  `zotero_get_search_database_status` first; with pending writes do not call
+  it, ask the user.
+- `force_rebuild` is refused without `--allow-mass-deletion`, a flag the MCP
+  does not have: stop and ask the user to run the rebuild by CLI outside the
+  MCP. Never retry the call.
 - Per-item MCP metadata calls for 100+ items are slow; use R6.
 - Process name is lowercase `zotero` on macOS (`pgrep -x Zotero` misses it).
 - prefs.js is a snapshot (written on pref change / exit).

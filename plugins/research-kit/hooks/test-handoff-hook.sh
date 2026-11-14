@@ -48,6 +48,43 @@ command -v jq >/dev/null 2>&1 && lacks start-jq "jq not found" "$out"
 out="$(bash "$H" post)"; has post "[surviving-compaction]" "$out"; has post "Decisions and done work" "$out"
 has post "T-1" "$out"; has post "Ledger tool" "$out"
 out="$(bash "$H" pre)"; has pre "Decisions and done work" "$out"; last pre "5. End with the single next step." "$out"
+# P8: pre writes pm/handoffs/compact/auto-<UTC stamp>.md in a repo with a ledger; post names it
+A="$R/pm/handoffs/compact"
+# (the pre run above already wrote it: stdout holds no path, only the instructions)
+lacks pre-auto "auto-" "$out"
+n="$(ls "$A" 2>/dev/null | grep -c '^auto-[0-9]\{8\}T[0-9]\{6\}Z\.md$')"
+[ "$n" -ge 1 ] || { echo "FAIL pre wrote no auto-<stamp>.md in $A"; fail=1; }
+af="$(for x in "$A"/auto-*.md; do echo "$x"; done | tail -n 1)"
+body="$(cat "$af" 2>/dev/null)"
+has auto-file "## rk list" "$body"; has auto-file "T-1" "$body"
+has auto-file "## rk recent -n 30" "$body"; has auto-file "## git status --short" "$body"
+out="$(bash "$H" post)"; has post-auto "$af" "$out"; has post-auto "PreCompact hook" "$out"
+# newest by name wins, an older one is not named
+A3="$(mktemp -d)"; mkdir -p "$A3/pm" "$A3/pm/handoffs/compact"; : > "$A3/pm/ledger.jsonl"
+: > "$A3/pm/handoffs/compact/auto-20200101T000000Z.md"; : > "$A3/pm/handoffs/compact/auto-20300101T000000Z.md"
+out="$(CLAUDE_PROJECT_DIR="$A3" bash "$H" post)"
+has post-newest "auto-20300101T000000Z.md" "$out"; lacks post-newest "auto-2020" "$out"
+# the file is named next to the hand-kept handoff
+printf '# h\n' > "$A3/pm/handoffs/compact/handoff-2026-01-01.md"
+out="$(CLAUDE_PROJECT_DIR="$A3" bash "$H" post)"
+has post-both "handoff-2026-01-01.md" "$out"; has post-both "auto-20300101T000000Z.md" "$out"
+# git status goes into the file in a git repo
+G="$(mktemp -d)"; mkdir -p "$G/pm"; : > "$G/pm/ledger.jsonl"; git init -q "$G" 2>/dev/null
+CLAUDE_PROJECT_DIR="$G" bash "$H" pre >/dev/null
+body="$(cat "$G"/pm/handoffs/compact/auto-*.md 2>/dev/null)"; has auto-git "?? pm/" "$body"
+# no ledger: no file, no folder
+E="$(mktemp -d)"; mkdir -p "$E/pm"
+CLAUDE_PROJECT_DIR="$E" bash "$H" pre >/dev/null
+[ -e "$E/pm/handoffs" ] && { echo "FAIL pre without ledger created pm/handoffs"; fail=1; }
+out="$(CLAUDE_PROJECT_DIR="$E" bash "$H" post)"; lacks post-no-ledger "State file written" "$out"
+# a write that fails: silent, exit 0, the usual instructions still printed
+F="$(mktemp -d)"; mkdir -p "$F/pm"; : > "$F/pm/ledger.jsonl"; : > "$F/pm/handoffs"   # a file where the folder must go
+out="$(CLAUDE_PROJECT_DIR="$F" bash "$H" pre 2>&1)"; rc=$?
+[ "$rc" = 0 ] || { echo "FAIL pre with blocked folder exit $rc"; fail=1; }
+has pre-blocked "Instructions for this summary" "$out"; lacks pre-blocked "mkdir" "$out"; lacks pre-blocked "File exists" "$out"
+# rk.py missing: file still written (with the error text inside), hook output unchanged, exit 0
+out="$(CLAUDE_PLUGIN_ROOT="$(mktemp -d)" CLAUDE_PROJECT_DIR="$A3" bash "$H" pre 2>&1)"; rc=$?
+[ "$rc" = 0 ] || { echo "FAIL pre without rk.py exit $rc"; fail=1; }; lacks pre-no-rk "Traceback" "$out"; lacks pre-no-rk "No such file" "$out"
 # session in a git worktree: the open list and recent entries come from the main ledger
 M="$(mktemp -d)"; W="$(mktemp -d)"
 mkdir -p "$M/pm" "$M/.git/worktrees/wt" "$W/pm"

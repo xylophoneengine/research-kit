@@ -24,6 +24,8 @@ One file per session, named `handoff-<YYYY-MM-DD>.md`, in `pm/handoffs/compact/`
 ## Next step                  (one action, with its precondition)
 ```
 
+In a repo with `pm/ledger.jsonl` the PreCompact hook also writes `pm/handoffs/compact/auto-<UTC stamp>.md` (`rk list`, `rk recent -n 30`, `git status --short`) and the post-compact hook names the newest one; it is machine-made, never edit it, and it does not replace the hand-kept file. Why: a compact nobody announced still leaves the ledger state on disk.
+
 ## As you go
 
 | When | Do |

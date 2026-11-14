@@ -28,6 +28,7 @@ from pathlib import Path
 
 LEDGER_REL: str = "pm/ledger.jsonl"
 STATUS_REL: str = "pm/STATUS.md"
+STAGE_RECORD: str = "LEDGER.md"  # in the stage folder, written by stage-close
 STATUSES: tuple[str, ...] = ("open", "running", "done", "dropped", "superseded")
 OPEN_STATUSES: tuple[str, ...] = ("open", "running")
 BUILTIN_TYPES: dict[str, str] = {
@@ -949,8 +950,9 @@ def _cmd_add(a: argparse.Namespace) -> int:
             ev["rules"] = rule_stamps(repo)
         return [ev]
 
-    e: Entry = append(repo, build)[made[0]]
-    print(f"logged {e.id}: {e.title}{_in_stage(e)}")
+    state: dict[str, Entry] = append(repo, build)
+    e: Entry = state[made[0]]
+    print(f"logged {e.id}: {e.title}{_add_tail(e, state)}")
     if e.type == "stage" and not a.imported:  # after the write: a refused add
         folder: Path = repo / "pm" / "stages" / e.title  # makes no folder
         try:
@@ -1161,6 +1163,18 @@ def _stage_word(e: Entry) -> str:
     return f"stage {e.stage}" if e.stage else "no stage"
 
 
+def _add_tail(e: Entry, state: dict[str, Entry]) -> str:
+    """Receipt tail of an add. A closed entry linked to a closed stage gets no
+    stage (the default is the open stage); say how to put it there. An open
+    entry cannot go into a closed stage, so it gets the plain tail."""
+    if e.stage or e.type == "stage" or e.status in OPEN_STATUSES:
+        return _in_stage(e)
+    for x in (state.get(i) for i in e.links):
+        if x is not None and x.type == "stage" and x.status == "done":
+            return f" (no stage: {x.id} is closed; rk set {e.id} --stage {x.id})"
+    return _in_stage(e)
+
+
 def _entry(state: dict[str, Entry], ref: str) -> Entry:
     return state[resolve(state, ref)]
 
@@ -1250,9 +1264,9 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
             f["links"] = _union(e.links, links)
         return [make_event(who, "set", e.id, f)]
 
-    append(repo, build)
+    state: dict[str, Entry] = append(repo, build)
     verb: str = {"close": "closed", "drop": "dropped", "reopen": "reopened"}[cmd]
-    print(f"{verb} {ids[0]}: {_cut(note)}")
+    print(f"{verb} {ids[0]}: {_cut(note)}{_in_stage(state[ids[0]])}")
     return 0
 
 
@@ -1311,8 +1325,9 @@ def _cmd_set(a: argparse.Namespace) -> int:
             f["legacy_id"] = label
         if a.stage is not None:
             sid: str = resolve(state, a.stage, stage=True)
-            _check_stage_open(state, sid, e.status, "pick an open stage")
-            f["stage"] = sid
+            if sid != e.stage:  # the same stage again: no event
+                _check_stage_open(state, sid, e.status, "pick an open stage")
+                f["stage"] = sid
         if a.note is not None:
             f["note"] = _note_plus(e.note, a.note)
         elif a.note_replace is not None:
@@ -1331,10 +1346,12 @@ def _cmd_set(a: argparse.Namespace) -> int:
             kept: list[str] = [r for r in e.refs if r not in a.ref_drop]
             f["refs"] = _union(kept, a.ref)
         keys.extend("label" if k == "legacy_id" else k for k in f)
-        return [make_event(who, "set", e.id, f)]
+        return [make_event(who, "set", e.id, f)] if f else []
 
-    append(repo, build)
-    print(f"updated {ids[0]}: {', '.join(keys)}")
+    state: dict[str, Entry] = append(repo, build)
+    tail: str = _in_stage(state[ids[0]])
+    print(f"updated {ids[0]}: {', '.join(keys)}{tail}" if keys
+          else f"unchanged {ids[0]}{tail}")
     return 0
 
 
@@ -1645,12 +1662,110 @@ def _stage_checks(repo: Path, ref: str) -> None:
         )
 
 
+def _stamps(ev: dict[str, object] | None) -> str:
+    rules: object = ev.get("rules") if ev else None
+    if not isinstance(rules, dict) or not rules:
+        return "none"
+    return ", ".join(f"{k} {v}" for k, v in sorted(rules.items()))
+
+
+def render_stage_record(
+    events: list[tuple[int, dict[str, object]]], sid: str
+) -> str:
+    """The record of closed stage `sid` as of its close: a function of the ledger
+    lines up to the close alone (no clock), so it is the same when made again.
+    Stage entries, entries touched in the window (stage add to close), decisions
+    by owner, what is left open, the kit, session and rule values seen."""
+    end: int = _close_line(events, sid) or 0
+    upto: list[tuple[int, dict[str, object]]] = [(n, v) for n, v in events if n <= end]
+    state: dict[str, Entry] = fold(upto)
+    st: Entry = state[sid]
+    window: list[tuple[int, dict[str, object]]] = [
+        (n, v) for n, v in upto if n >= st.lines[0]
+    ]
+    touched: set[object] = {v.get("id") for _, v in window} - {sid}
+    mine: list[Entry] = [e for e in state.values() if e.stage == sid and e.id != sid]
+    other: list[Entry] = [
+        e for e in state.values() if e.id in touched and e.stage != sid
+    ]
+    mine.sort(key=lambda e: e.lines[0])
+    other.sort(key=lambda e: e.lines[0])
+
+    def line(e: Entry) -> str:
+        return f"- {e.id} {e.type} {e.status} ({e.owner}) {e.title}"
+
+    def part(title: str, lines: list[str]) -> list[str]:
+        return ["", f"## {title}", *(lines or ["none"])]
+
+    decs: list[Entry] = [e for e in [*mine, *other] if e.type == "decision"]
+    by_owner: list[str] = []
+    for who in sorted({e.owner for e in decs}):
+        by_owner += [f"### {who}"] + [
+            f"- {e.id} {e.title}" + ("" if e.status == "done" else f" ({e.status})")
+            for e in decs
+            if e.owner == who
+        ]
+
+    def seen(key: str) -> str:
+        vals: list[str] = [str(v[key]) for _, v in window if v.get(key)]
+        return ", ".join(dict.fromkeys(vals)) or "none"
+
+    close_ev: dict[str, object] = dict(upto)[end]
+    out: list[str] = [
+        f"# Ledger of stage {sid} {st.title} (generated)",
+        "",
+        f"Generated from {LEDGER_REL} by rk.py when the stage was closed; frozen",
+        "with the stage. Do not edit: hand edits are blocked.",
+        f"Window: ledger lines {st.lines[0]} to {end}, {st.created} to {st.updated}.",
+        *part(f"Entries of the stage ({len(mine)})", [line(e) for e in mine]),
+        *part(
+            f"Entries touched in the window, not of the stage ({len(other)})",
+            [f"{line(e)} [{_stage_word(e)}]" for e in other],
+        ),
+        *part("Decisions by owner", by_owner),
+        *part(
+            "Left open",
+            [line(e) for e in [*mine, *other] if _is_open(e)],
+        ),
+        "",
+        "## Seen in the window",
+        f"kit: {seen('kit')}",
+        f"sid: {seen('sid')}",
+        f"rules at open: {_stamps(dict(upto)[st.lines[0]])}",
+        f"rules at close: {_stamps(close_ev)}",
+    ]
+    return "\n".join(out) + "\n"
+
+
+def _write_stage_record(repo: Path, st: Entry) -> str:
+    """Write LEDGER.md into the folder of the just-closed stage `st`; the receipt
+    line. Only stage-close calls this; the file is never edited by hand."""
+    rel: str = f"pm/stages/{st.title}/{STAGE_RECORD}"
+    folder: Path = repo / "pm" / "stages" / st.title
+    # an imported stage may have no folder, or a title that is no folder name
+    if not NAME_RE.match(st.title) or (_imported(st) and not folder.is_dir()):
+        return f"no {STAGE_RECORD}: {st.id} has no folder pm/stages/{st.title}/"
+    try:
+        text: str = render_stage_record(read_events(repo), st.id)
+        folder.mkdir(parents=True, exist_ok=True)
+        tmp: Path = folder / (STAGE_RECORD + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, folder / STAGE_RECORD)
+    except OSError as err:
+        raise LedgerError(
+            f"{st.id} is closed, but {rel} could not be written: {err.strerror}; "
+            f"the ledger holds the same (rk list --stage {st.id} --all)"
+        ) from None
+    return f"wrote {rel}"
+
+
 def _cmd_stage_close(a: argparse.Namespace) -> int:
     repo: Path = _repo(a)
     who: str = _name(a.who, "--who")
     a.ref = _check_refs(repo, a.ref)
     _stage_checks(repo, a.id)
     out: list[str] = []
+    closed: list[str] = []
 
     def build(state: dict[str, Entry]) -> list[dict[str, object]]:
         sid: str = resolve(state, a.id, stage=True)
@@ -1688,12 +1803,14 @@ def _cmd_stage_close(a: argparse.Namespace) -> int:
         if a.ref:
             f["refs"] = _union(stage.refs, a.ref)
         out.append(f"closed {sid}: sign-off {sign}")
+        closed.append(sid)
         ev: dict[str, object] = make_event(who, "set", sid, f)
         ev["rules"] = rule_stamps(repo)
         return [ev]
 
-    append(repo, build)
+    state: dict[str, Entry] = append(repo, build)
     print(out[0])
+    print(_write_stage_record(repo, state[closed[0]]))
     return 0
 
 
@@ -1727,8 +1844,9 @@ G_WASTE_GONE: str = (
     "ref into the waste folder, file gone (rk set ID --ref-drop PATH)"
 )
 G_IGNORED_GONE: str = (
-    "ref to a git-ignored file that is not here (a clone has none; if gone for "
-    "good: rk set ID --ref-drop PATH)"
+    "ref to a git-ignored file that is not here (a clone has none; lost if this "
+    "is the main checkout: git keeps no copy; if gone for good: rk set ID "
+    "--ref-drop PATH)"
 )
 G_FOLDER_EMPTY: str = (
     "stage folder not here, and git has no file of it (a clone has no empty "
@@ -1738,6 +1856,12 @@ G_OUTSIDE: str = (
     "ref outside the repo or absolute (breaks in a clone: rk set ID --ref-drop "
     "PATH --ref <repo-relative path>, or rk reref)"
 )
+G_STATUS_WORD: str = (
+    "imported entry titled with a status word, the old system's state (rk set "
+    "ID --title TEXT; the entry's own status is the real one)"
+)
+G_DONE_OPEN: str = "done entry whose title starts with 'open' (rk set ID --title TEXT)"
+STATUS_WORD_RE: re.Pattern[str] = re.compile(r"^(open|done|todo)[:\s]", re.I)
 G_STAMPS: str = "rule file behind the kit (run /rk-sync)"
 G_DECISIONS: str = "decisions of the stage not owned by user (for the sign-off)"
 
@@ -1961,8 +2085,16 @@ def _findings(
         if (now - then).total_seconds() > RUNNING_MAX_H * 3600:
             line: str = f"{e.id} ({e.owner}, {age(e.started, now)}) {e.title}"
             out.append((False, G_RUNNING, _clip(line)))
+    for e in entries:  # a title that still carries the old system's state
+        m: re.Match[str] | None = STATUS_WORD_RE.match(e.title)
+        if m is None:
+            continue
+        if _imported(e):
+            out.append((False, G_STATUS_WORD, _clip(f"{e.id} ({e.status}) {e.title}")))
+        elif e.status == "done" and m.group(1).lower() == "open":
+            out.append((False, G_DONE_OPEN, _clip(f"{e.id} {e.title}")))
     if ledger_wide:
-        out += [(False, G_STAMPS, f"{rel} {have}, kit {want}")
+        out += [(False, G_STAMPS,f"{rel} {have}, kit {want}")
                 for rel, have, want in stamps_behind(repo)]
     if only is not None:
         for e in entries:

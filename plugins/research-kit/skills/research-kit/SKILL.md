@@ -21,7 +21,11 @@ The ledger commands use the same script (`rk.py add|start|close|list|import|...`
 reference is core AGENTS.md 4.2. `add` and `set` take `--label L` (form
 `<stage code>/<item>`, e.g. `03b/W4`, the `/` is required; unique); a stage's
 title is its folder name and is never renamed; every ID argument also takes a
-label or a stage code (`03b`); receipts print the real ID; a `TASK:` line in a
+label or a stage code (`03b`); receipts print the real ID and the entry's stage
+(or `(no stage)`); `set --stage` with the stage the entry already has writes
+nothing (`unchanged`); an `add` that links a closed stage gets no stage, and its
+receipt says so and names the `set <id> --stage S-n` that fixes it (not for an
+open entry: a closed stage takes none); a `TASK:` line in a
 brief names its tasks by id or by label, listed first (a label after other words
 does not count); titles are one line, 160 characters at most. `add task` without
 `--note` is refused (imports exempt); `add stage "<NN-kind-topic>"` creates the
@@ -36,12 +40,17 @@ rule stamps the tool wrote. `doctor [--stage S] [--limit N]` (N lines per group,
 (ledger line that does not parse, missing ref, missing stage folder, ledger not
 append-only against HEAD) exit 1; SOFT ones (ref in an ignored or waste folder, waste ref whose file is gone,
 done stage not in HEAD, entry without a stage, task running over 24 h, imported
-entries with missing refs, ignored or outside-the-repo refs a clone would
+entries with missing refs, imported entries titled with a status word (OPEN, DONE,
+TODO), done entries titled `open ...`, ignored or outside-the-repo refs a clone would
 lack, stage folder absent in a clone, rule file behind the kit, and with `--stage` the
 decisions not owned by the user) are listed; no git repo: git checks are skipped.
 `reref OLD NEW [--dry-run]` replaces a leading path prefix in every ref that
 starts with it, all or nothing (refuses and writes nothing if a new path does
-not exist: move the files first). `stage-close` runs the stage checks and refuses on HARD.
+not exist: move the files first). `stage-close` runs the stage checks and refuses on HARD; once closed it writes
+`pm/stages/<stage folder>/LEDGER.md` (the stage's entries and those touched in its
+window, decisions by owner, what stays open, the `kit`, `sid` and rule stamps seen):
+generated, never hand-edited, written by nothing else. Why: the stage's record on
+one page, read without the ledger.
 `doctor --start` feeds the SessionStart block (`kit <version>`, a line per stale
 rule file: run `/rk-sync` between stages, not inside one); the block also prints
 the line `rk() { python3 -I "<path>/rk.py" "$@"; }` and a notice when `jq` is

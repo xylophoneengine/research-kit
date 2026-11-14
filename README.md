@@ -6,7 +6,7 @@ A Claude Code marketplace for running science and lab projects with agent
 teams: papers, research software, driver reverse engineering, experiments and
 theses, alone or mixed in one repo. It ships a generic process file
 (`AGENTS.md`), one short rule file per project kind, a `pm/` process folder,
-a `/team` skill (named workers plus two opus critics with different lenses),
+a `/team` skill (named workers, an optional architect and two opus critics with different lenses),
 worker agents pinned to an effort level, a "waste, don't delete" helper and
 compaction handoff hooks.
 
@@ -184,7 +184,7 @@ stage opens in a fresh session named after its folder (`/rename`).
 | Session | You type | What happens |
 |---|---|---|
 | setup | `/rk-init` (kinds: paper; full; user commits) | `pm/` tree, appendix, `.gitignore` block. Paper first-session steps: ARS check, library tag asked (e.g. `mypaper`), appendix lines (title, venue, authors, topic) |
-| 01 | `/rename MYP_01_paper_goal-scan`, then "open stage: goal + lit-scan" | Lead writes `BRIEF.md` with a `Done when`. Lead runs the GOALS dialogue (`deep-research`, `socratic`) and writes `pm/living/GOALS.md`; you confirm. `/team`: a teammate runs `deep-research` `three-way-scan` into `deliverables/`; crit1 + crit2 review into `notes/` |
+| 01 | `/rename MYP_01_paper_goal-scan`, then "open stage: goal + lit-scan" | Lead writes `BRIEF.md` with a `Done when`. Lead runs the GOALS dialogue (`deep-research`, `socratic`) and writes `pm/living/GOALS.md`; you confirm. `/team`: a teammate runs `deep-research` `three-way-scan` into `deliverables/`; `crit1` + a disposable critic review into `notes/` |
 | | "close stage" (or `/rk-close 01`) | Close checklist: `Done when` output pasted; every stage task done, dropped, re-staged or deferred; `pm/README.md` numbers and traps; handoffs closed; kind freeze steps; chat archive (main transcript copied last); your sign-off asked with the `rk doctor --stage` output and logged as a decision; `rk stage-close` last. Stage is frozen |
 | 02 | "open stage: source sync" | `/team` with `research-kit-lit:zotero-worker` teammates: preflight, import, tag, ledger = PDFs = library entries; corpus passport rebuilt for ARS |
 | 03 | `/rk-add-kind software`, "open stage: software solver" | Software kind in parallel (one open stage per kind): design via `superpowers:brainstorming` or grilling, plan via `writing-plans`, build via `/team`; numbers stamped at a clean commit go to "Load-bearing numbers" in `pm/README.md` |
@@ -255,7 +255,7 @@ Use:
 
 Chosen at `/rk-init`, stored as `Mode:` in the appendix.
 
-Light keeps roles, `/team`, both critics, evidence tags, the ledger, logs and
+Light keeps roles, `/team`, the critics, evidence tags, the ledger, logs and
 handoffs; full adds stage folders, stage tables and
 the close checklist.
 
@@ -337,9 +337,9 @@ flowchart TD
   O["Open stage: new session, folder pm/stages/NN-kind-topic"] --> RG["Lead reads GOALS + Load-bearing numbers"]
   RG --> BR["Lead writes BRIEF.md incl. Done when"]
   BR --> T["/team work: workers write report files"]
-  T --> CR["Critic loop: crit1 + crit2, max 2 fix rounds"]
+  T --> CR["Critic loop: crit1 + a disposable critic per round, max 2 fix rounds"]
   CR -- "not resolved" --> ESC["Escalate to the user"]
-  CR -- "all YES" --> IV["Integrate + verify: Done when check run, tail pasted"]
+  CR -- "no BLOCKING finding" --> IV["Integrate + verify: Done when check run, tail pasted"]
   IV --> CL["/rk-close"]
   CL --> S1["Done when, tasks settled, numbers and traps, handoffs"]
   S1 --> S2["Kind freeze steps"]
@@ -410,9 +410,10 @@ flowchart TD
   J --> R["Report files in stage notes/team/ or pm/logs/team/ + short SendMessage (max ~500 chars)"]
   S --> R
   E --> R
-  R --> C1["crit1 (opus): correctness / evidence"]
-  R --> C2["crit2 (opus): outcome and intent"]
-  C1 --> V{"Any NO or BLOCKING?"}
+  L -.-> A["arch1 (opus, optional): design + interface sheet before workers start, never routes or implements"]
+  R --> C1["crit1 (opus, loop critic): correctness / evidence"]
+  R --> C2["blindN (opus, disposable, fresh each round): outcome and intent"]
+  C1 --> V{"Any BLOCKING finding?"}
   C2 --> V
   V -- "yes, round 1-2" --> F["Owners fix (critics never fix)"]
   F --> C1
