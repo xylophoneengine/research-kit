@@ -2595,7 +2595,8 @@ def stage_ledger_lines() -> list[str]:
         ("07", "add", "F-1", {"type": "fetch", "title": "smith2020",
                               "status": "open", "owner": "user", "stage": "S-1",
                               "note": "", "links": [], "refs": []}, {"kit": "0.2.1"}),
-        ("08", "set", "DB-1", {"status": "dropped"}, {"kit": "0.2.1", "sid": "s2"}),
+        ("08", "set", "DB-1", {"status": "dropped", "reason": "path is gone"},
+         {"kit": "0.2.1", "sid": "s2"}),
         ("09", "set", "S-1", {"status": "done", "links": ["D-1"]},
          {"kit": "0.2.1", "sid": "s2", "rules": {"AGENTS.md": "2026-11-14a",
                                                  "pm/kinds/paper.md": "2026-11-14a"}}),
@@ -2627,7 +2628,7 @@ Window: ledger lines 2 to 9, 2026-11-02T10:00:00+00:00 to 2026-11-09T10:00:00+00
 - F-1 fetch open (user) smith2020
 
 ## Entries touched in the window, not of the stage (1)
-- DB-1 debt dropped (lead) old path [no stage]
+- DB-1 debt dropped (lead) old path -- reason: path is gone [no stage]
 
 ## Decisions by owner
 ### lead
@@ -2692,6 +2693,41 @@ def test_stage_close_record_imported_stage_without_folder() -> None:
             "no LEDGER.md: S-1 has no folder pm/stages/01-pilot/\n"
         ), out
         assert not (repo / "pm/stages").exists()  # no folder made for it
+
+
+def test_reason_field_of_close_drop_reopen() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "task", "a", "--note", "n")
+        lrun(repo, "add", "decision", "dd", "--owner", "user")
+        old: str = ev_line("T-9", "old style")  # an entry from an older ledger
+        with (repo / L.LEDGER_REL).open("a") as fh:
+            fh.write(old)
+        assert "reason:" not in lrun(repo, "show", "T-9")[1]
+        lrun(repo, "drop", "T-1", "--note", "not needed\nsecond line")
+        f: dict[str, Any] = jl(repo)[-1]["f"]
+        assert f["reason"] == "not needed\nsecond line", f  # key "reason" in "f"
+        assert f["note"] == "n\nnot needed\nsecond line", f  # the note keeps it too
+        assert L.load(repo)["T-1"].extra["reason"] == "not needed\nsecond line"
+        out: str = lrun(repo, "show", "T-1")[1]
+        assert "\nreason: not needed\\nsecond line\n" in out, out
+        lrun(repo, "reopen", "T-1", "--note", "needed after all")
+        assert jl(repo)[-1]["f"]["reason"] == "needed after all"
+        lrun(repo, "close", "T-1", "--note", "shipped")  # replaces it
+        assert jl(repo)[-1]["f"]["reason"] == "shipped"
+        out = lrun(repo, "show", "T-1")[1]
+        assert "\nreason: shipped\n" in out, out
+        assert out.count("\nreason: ") == 1, out  # one line, the current one
+        # set, supersede, import and the status view do not carry it
+        lrun(repo, "set", "T-1", "--note", "more")
+        lrun(repo, "supersede", "D-1", "new dd", "--owner", "user")
+        lrun(repo, "add", "task", "imp", "--imported", "--source", "A:1",
+             "--status", "dropped")
+        for ev in jl(repo)[-4:]:
+            assert "reason" not in ev["f"], ev
+        assert "reason" not in (repo / L.STATUS_REL).read_text()
+        assert L.load(repo)["T-1"].extra["reason"] == "shipped"  # set kept it
+        assert "reason" not in L.load(repo)["D-1"].extra
 
 
 def closed_stage_repo(root: Path) -> Path:

@@ -1257,7 +1257,11 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
             _check_stage_open(
                 state, e.stage, "open", f"re-stage it first: set {e.id} --stage S-<x>"
             )
-        f: dict[str, object] = {"status": new, "note": _note_plus(e.note, note)}
+        f: dict[str, object] = {
+            "status": new,
+            "note": _note_plus(e.note, note),
+            "reason": note,  # why it has this status now; the next one replaces it
+        }
         if a.ref:
             f["refs"] = _union(e.refs, a.ref)
         links: list[str] = _links(state, [] if cmd == "reopen" else a.link)
@@ -1530,7 +1534,11 @@ def _show_one(
         ("note", e.note.replace("\n", "\\n")),
         ("links", ", ".join(e.links)), ("refs", ", ".join(e.refs)),
         ("created", e.created), ("updated", e.updated),
-        *((k, str(v)) for k, v in e.extra.items() if k != "legacy_id"),
+        *(
+            (k, str(v).replace("\n", "\\n"))
+            for k, v in e.extra.items()
+            if k != "legacy_id"
+        ),
     ]
     for k, v in fields:
         print(f"{k}: {v}")
@@ -1693,7 +1701,13 @@ def render_stage_record(
     other.sort(key=lambda e: e.lines[0])
 
     def line(e: Entry) -> str:
-        return f"- {e.id} {e.type} {e.status} ({e.owner}) {e.title}"
+        why: object = e.extra.get("reason")  # beside a dropped entry: the why
+        tail: str = (
+            f" -- reason: {_cut(why)}"
+            if e.status == "dropped" and isinstance(why, str) and why
+            else ""
+        )
+        return f"- {e.id} {e.type} {e.status} ({e.owner}) {e.title}{tail}"
 
     def part(title: str, lines: list[str]) -> list[str]:
         return ["", f"## {title}", *(lines or ["none"])]

@@ -35,6 +35,10 @@ reopen, supersede, stage-close) must name an existing file, relative to the repo
 root (a `://` URL, `doi:` or `arXiv:` passes; a path outside the repo is refused;
 imports exempt; checked against the main checkout, so in a worktree merge first):
 write the report first.
+`close`, `drop` and `reopen` also store their `--note` as the field `reason` (why
+the entry has its current status; the next one replaces it; the note still
+appends as before); `show` prints `reason: ...`, the stage record shows it beside
+dropped entries. Old entries have none and print none.
 `set <id> --ref-drop <path>` (repeatable) removes a wrong ref. `show` takes
 several ids and prints, under each history line, the kit version, session id and
 rule stamps the tool wrote. `doctor [--stage S] [--limit N]` (N lines per group, default 20, 0 = all) is read-only: HARD findings

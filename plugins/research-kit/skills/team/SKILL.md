@@ -42,10 +42,10 @@ worker reports anchor a critic on their framing; a fresh one judges the outcome.
 
 **Architect.** Staff `arch1` when the work items of two or more workers
 meet at an interface (one consumes what another produces), or when the task
-changes or relaxes a rule that tests, code or texts already encode. On a
-small task write the two blocks into the affected briefs yourself instead:
-`INTERFACES:` (producer, consumer, exact format, example) and `RULES
-CHANGED:` (each changed rule, every place that encodes it, its owner).
+changes or relaxes a rule that tests, code or texts already encode. With
+only one such interface or rule, write the blocks into the briefs yourself
+instead: `INTERFACES:` (producer, consumer, exact format, example) and
+`CHANGE IMPACT:` (each changed rule, every place that encodes it, owner).
 Brief `arch1` from `architect-brief.md` in this folder. It thinks and
 designs: one design file at the path you give, before any worker starts.
 It never routes, spawns or implements; it stays reachable for interface
@@ -80,7 +80,7 @@ stays stale elsewhere; an architect that routes or builds is a second lead.
    number; then use the name the harness returns (it may add `-2`). One
    message per wave; stage waves when an item needs another's output
    (lookups before the build), never spawn it early. `arch1` goes first;
-   workers start once its design file exists, each brief with its sheet block.
+   workers start once its design file exists, each brief with its design-file blocks.
 
    In a repo with `pm/ledger.jsonl`, every work item has one task before its
    brief. An item the stage BRIEF lists already has it (opened with its label
