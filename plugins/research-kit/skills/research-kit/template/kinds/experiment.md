@@ -1,4 +1,4 @@
-<!-- research-kit-kind experiment: 2026-11-13a -->
+<!-- research-kit-kind experiment: 2026-11-14a -->
 # Kind: experiment
 
 Rules for projects that measure something (rig, instrument, simulator, lab

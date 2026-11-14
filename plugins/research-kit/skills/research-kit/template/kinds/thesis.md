@@ -1,4 +1,4 @@
-<!-- research-kit-kind thesis: 2026-11-13a -->
+<!-- research-kit-kind thesis: 2026-11-14a -->
 # Kind: thesis
 
 A thesis is the paper kind plus assembly from earlier projects. Read

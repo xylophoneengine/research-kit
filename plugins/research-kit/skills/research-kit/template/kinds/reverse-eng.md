@@ -1,4 +1,4 @@
-<!-- research-kit-kind reverse-eng: 2026-11-13a -->
+<!-- research-kit-kind reverse-eng: 2026-11-14a -->
 # Kind: reverse-eng
 
 Applies to reimplementing a vendor-closed component (driver, protocol, file
