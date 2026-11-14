@@ -1,0 +1,13 @@
+# Accepted hits for scripts/anon_check.sh. One entry per line: a fixed string
+# (case-insensitive) or "re:" + a Python regex. A comment line above each entry
+# says why. An entry excuses a hit only when it matches exactly the hit's span
+# (the whole address, the whole path); it never blanks surrounding text.
+# Entries that match the empty string or a denylist term are refused: a
+# denylist hit cannot be excused here (remove the term from the denylist).
+# Prefer fixed strings; never allow a whole file.
+
+# The pseudonym's GitHub noreply address (author, committer).
+74956800+xylophoneengine@users.noreply.github.com
+# Git test identities (reserved .invalid TLD, RFC 2606): test_rk.py, test-release-check.sh.
+t@example.invalid
+pat@example.invalid

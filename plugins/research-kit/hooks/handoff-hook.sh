@@ -5,7 +5,8 @@
 #   handoff-hook.sh start  SessionStart, matcher "startup|resume|clear": ledger lines only
 # pre/post look for the newest handoff-YYYY-MM-DD.md within 4 levels of the project root.
 # In a repo with pm/ledger.jsonl all three also print research-kit ledger lines
-# (tool path, open list; after a compact the newest entries to compare with the summary).
+# (the rk() function line, doctor --start output when rk.py has it, a notice when jq is
+# missing, the open list; after a compact the newest entries to compare with the summary).
 set -u
 mode="${1:-}"
 root="${CLAUDE_PROJECT_DIR:-$PWD}"
@@ -16,7 +17,13 @@ ledger=""
 
 ledger_block() {
   [ -n "$ledger" ] || return 0
-  echo "[research-kit] Ledger tool (AGENTS.md calls it rk): python3 -I \"$rk\" <command>, run from the repo root; teammates add --who <name>."
+  # The function line ends at "}" (nothing after it: a trailing comment would swallow a command
+  # joined to it); the explanation is a comment line of its own.
+  echo "rk() { python3 -I \"$rk\" \"\$@\"; }"
+  echo "# [research-kit] Ledger tool: a Bash call keeps no shell state; start each Bash call that uses \"rk\" with the line above joined to the command by \";\" (rk() {...}; rk list); zsh does not word-split a \$RK variable; run from the repo root, teammates add --who <name>"
+  # doctor --start: first 3 lines (kit line + up to 2 sync lines), only on exit 0 (an older rk.py or any failure prints nothing).
+  d="$(cd "$root" && python3 -I "$rk" doctor --start 2>/dev/null)" && [ -n "$d" ] && printf '%s\n' "$d" | head -n 3
+  command -v jq >/dev/null 2>&1 || echo "jq not found: delete guard and brief check are OFF"
   (cd "$root" && python3 -I "$rk" list 2>&1)  # no --repo: a worktree reads the main ledger
 }
 

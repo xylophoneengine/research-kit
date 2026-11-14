@@ -56,6 +56,12 @@ t none Bash command 'ls'
 
 case "$(reason Edit file_path "$R/pm/ledger.jsonl")" in
   *"$RK"*) ;; *) echo "FAIL edit reason lacks the rk.py path"; fail=1;; esac
+er="$(reason Edit file_path "$R/pm/ledger.jsonl")"   # every write command named, doctor named for a broken line
+for w in add start close drop reopen set supersede reref stage-close import; do
+  case "$er" in *"|$w|"*|*"<$w|"*|*"|$w>"*) ;; *) echo "FAIL edit reason lacks command: $w"; fail=1;; esac
+done
+case "$er" in *"$RK\" doctor"*"names the line"*) ;; *) echo "FAIL edit reason does not name rk doctor"; fail=1;; esac
+case "$er" in *"by hand outside Claude"*) ;; *) echo "FAIL edit reason lacks the by-hand clause"; fail=1;; esac
 case "$(reason Agent prompt $'DELIVERABLE: x')" in
   "refused:"*"TASK: T-"*) ;; *) echo "FAIL brief reason text"; fail=1;; esac
 
@@ -111,6 +117,19 @@ CLAUDE_PROJECT_DIR="$W" t deny Edit file_path "$W/pm/ledger.jsonl"
 got="$(env -u CLAUDE_PROJECT_DIR bash -c "jq -n --arg c '$R' '{tool_name:\"Agent\",tool_input:{prompt:\"DELIVERABLE: x\"},cwd:\$c}' | bash '$G'" |
   jq -r '.hookSpecificOutput.permissionDecision // empty')"
 [ "$got" = deny ] || { echo "FAIL cwd fallback: got=${got:-none}"; fail=1; }
+
+# sid: the event a passing brief writes carries the session id; the hook's env may lack
+# CLAUDE_CODE_SESSION_ID, then the input's session_id is used; an env value wins over it
+S="$(mktemp -d)"; mkdir -p "$S/pm" && : > "$S/pm/ledger.jsonl"
+python3 -I "$RK" add task "sid one" --note n --repo "$S" >/dev/null
+python3 -I "$RK" add task "sid two" --note n --repo "$S" >/dev/null
+jq -n '{tool_name:"Agent",tool_input:{prompt:"DELIVERABLE: x\nTASK: T-1"},session_id:"sess-from-json",cwd:"/nowhere"}' |
+  env -u CLAUDE_CODE_SESSION_ID CLAUDE_PROJECT_DIR="$S" bash "$G" >/dev/null
+grep -q 'sess-from-json' "$S/pm/ledger.jsonl" || { echo "FAIL hook event lacks sid from the input's session_id"; fail=1; }
+jq -n '{tool_name:"Agent",tool_input:{prompt:"DELIVERABLE: x\nTASK: T-2"},session_id:"sess-from-json-2",cwd:"/nowhere"}' |
+  CLAUDE_CODE_SESSION_ID=sess-from-env CLAUDE_PROJECT_DIR="$S" bash "$G" >/dev/null
+grep -q 'sess-from-env' "$S/pm/ledger.jsonl" && ! grep -q 'sess-from-json-2' "$S/pm/ledger.jsonl" ||
+  { echo "FAIL env session id does not win over the input's"; fail=1; }
 
 # repo without a ledger: the hook does nothing
 CLAUDE_PROJECT_DIR="$(mktemp -d)"

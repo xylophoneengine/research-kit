@@ -1,4 +1,4 @@
-<!-- research-kit-kind paper: 2026-11-13b -->
+<!-- research-kit-kind paper: 2026-11-14a -->
 # Kind: paper
 
 Rules for writing a research paper: literature, writing stages, citations. They add to the core `AGENTS.md`; they never relax it. Stage folders are `pm/stages/NN-paper-<topic>/` (full mode); in light mode the stage table is a checklist only. Evidence tags (CONFIRMED / LIKELY / GUESS), Done when, the ledger (core 4.2) works as in core. Placeholder `<ID>` = paper id from the appendix.
@@ -42,11 +42,11 @@ Column `#` = order, not stage number (NN is the next free number, core 3.1). Ada
 | 9 | full draft | `academic-paper` (`full`). `academic-pipeline` only phase-by-phase (Mode B: `ARS_PASSPORT_RESET=1` + `resume_from_passport`, one pipeline stage per paper stage), else it swallows rows 10-12 | outline, claims_register, passport | exp writer, sr support | `paper/manuscript/current/` | both critics YES; `citation-check` run with no open error; README records which integrity gate ran (`academic-pipeline` mid-entry at Stage 2.5, stopped at its checkpoint), or none |
 | 10 | review | `academic-paper-reviewer` (`full`; `methodology-focus` for method-heavy paper) | draft | exp | `paper/manuscript/reviews/`; keep Revision Roadmap + Round-1 reviewer config cards (needed by `re-review`) | panel report and Roadmap files exist; user has read the panel report (logged as a user decision, `rk add decision ... --owner user`) |
 | 11 | revision | `academic-paper` (`revision`; `revision-coach` on real reviewer comments; `rebuttal-audit` on response letter), then `academic-paper-reviewer` (`re-review`) | Roadmap, pre-revision draft, response letter, Round-1 cards, author sidecar (else `re-review` returns `manifest_incomplete`) | exp | new `paper/manuscript/versions/vNN_*`, response letter | `re-review` marks every Roadmap item resolved or rebutted; both critics YES |
-| 12 | finalize | `academic-paper` (`abstract-only` with language pair from outline Phase 0; `citation-check`, `disclosure`, `format-convert`) | final draft | sr | final manuscript, disclosure | final `citation-check` with no open error; README records which gate ran (Stage 4.5 exists only inside `academic-pipeline`), or none; user sign-off logged |
+| 12 | finalize | `academic-paper` (`abstract-only` with language pair from outline Phase 0; `citation-check`, `disclosure`, `format-convert`) | final draft | sr | final manuscript, disclosure | final `citation-check` with no open error; README records which gate ran (Stage 4.5 exists only inside `academic-pipeline`), or none |
 
 `sr-screener` (ARS >= 3.23.0): only for systematic / scoping / rapid reviews, only on user request, as own stage `NNb` after a `deep-research` `systematic-review` (or `sr-screener` `protocol`) stage. Input = database exports (RIS / nbib / WoS / CSV) + protocol. Modes protocol -> pilot -> ta-screen -> ft-screen -> report. Its `literature_corpus` output becomes the passport (P5.8). `systematic-review` never hands over to it automatically.
 
-Freeze step at close (core 3.4 step 7): from the draft stage on, freeze `paper/manuscript/versions/vNN_<label>/` (sr). Why: reviews and response letters cite a fixed text.
+Freeze step at close (core 3.4 step 5): from the draft stage on, freeze `paper/manuscript/versions/vNN_<label>/` (sr). Why: reviews and response letters cite a fixed text.
 
 ## P3. Existing material to adopt
 

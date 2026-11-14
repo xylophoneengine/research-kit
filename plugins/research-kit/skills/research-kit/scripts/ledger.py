@@ -2,7 +2,11 @@
 
 Each line is one event on one entry: {"ts", "who", "ev": "add"|"set", "id", "f"}.
 Current state of an entry = its events folded in file order. Nothing is ever
-rewritten. Reached through rk.py (store subcommands); never runs git.
+rewritten. Reached through rk.py (store subcommands). Every event also carries
+"kit" (plugin version) and, when the session id is known, "sid"; a stage's add
+and close carry "rules" (stamps of the repo's rule files). Readers ignore
+unknown top-level keys. git: read-only commands in doctor (and in the checks
+stage-close borrows from it) only; every other command never runs git.
 """
 
 from __future__ import annotations
@@ -10,9 +14,12 @@ from __future__ import annotations
 import argparse
 import difflib
 import fcntl
+import functools
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -54,7 +61,7 @@ COMMANDS: frozenset[str] = frozenset(
     {
         "add", "start", "close", "drop", "reopen", "set", "supersede",
         "list", "show", "search", "recent", "render", "stage-close", "brief-check",
-        "import",
+        "import", "doctor", "reref",
     }
 )
 BRIEF_RE: re.Pattern[str] = re.compile(r"^[ \t]*DELIVERABLE:", re.M)
@@ -71,6 +78,34 @@ LINE_MAX: int = 80
 TITLE_MAX: int = 160
 LIST_MAX_BYTES: int = 2600  # proposed bound (spec 9), pinned by test_list_size_bound
 RECENT_DECISIONS: int = 5
+SCRIPT: Path = Path(__file__).resolve()
+KIT_JSON: Path = SCRIPT.parents[3] / ".claude-plugin" / "plugin.json"
+TEMPLATE_DIR: Path = SCRIPT.parents[1] / "template"
+SID_ENV: str = "CLAUDE_CODE_SESSION_ID"
+# stamp on line 1 of AGENTS.md and kind files (rk.py sync reads the same)
+STAMP_RE: re.Pattern[str] = re.compile(
+    r"<!-- (?:research-kit|research-kit-kind \S+|paper-playbook): (\S+) -->"
+)
+GIT_READ: frozenset[str] = frozenset(  # the only git subcommands the tool runs
+    {"status", "diff", "ls-files", "check-ignore", "show"}
+)
+WASTE_DIRS: tuple[str, ...] = ("pm/waste/", "WASTE/")
+# refs the kit prescribes into a folder its .gitignore block ignores on purpose
+# (stage chat archive, AGENTS 3.4 step 6: transcripts stay local): no finding.
+# pm/reviews/ (light mode) stays a finding until the owner decides (crit7 m2).
+KIT_IGNORED_RE: re.Pattern[str] = re.compile(r"^pm/stages/[^/]+/chat(/|$)")
+# git environment that would point git at another repo or index (crit6 m1);
+# the list of `git rev-parse --local-env-vars`
+GIT_LOCAL_ENV: tuple[str, ...] = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX",
+    "GIT_SHALLOW_FILE", "GIT_COMMON_DIR",
+)
+NON_PATH_RE: re.Pattern[str] = re.compile(r"^(doi|arxiv):", re.I)
+GROUP_CAP: int = 20
+RUNNING_MAX_H: int = 24
 
 
 class LedgerError(Exception):
@@ -276,11 +311,61 @@ def next_id(state: dict[str, Entry], prefix: str) -> str:
     return f"{prefix}-{max(nums, default=0) + 1}"
 
 
+@functools.cache
+def kit_version() -> str:
+    """The plugin version from .claude-plugin/plugin.json; 'unknown' if unreadable."""
+    try:
+        v: object = json.loads(KIT_JSON.read_text(encoding="utf-8")).get("version")
+    except (OSError, ValueError, AttributeError):
+        return "unknown"
+    return v if isinstance(v, str) and v else "unknown"
+
+
+def _line1_stamp(path: Path) -> str | None:
+    try:
+        with path.open(encoding="utf-8") as fh:
+            first: str = fh.readline()
+    except (OSError, UnicodeDecodeError):
+        return None
+    m: re.Match[str] | None = STAMP_RE.search(first)
+    return m.group(1) if m else None
+
+
+def rule_stamps(repo: Path) -> dict[str, str]:
+    """Stamp on line 1 of AGENTS.md and of each pm/kinds/*.md, by repo path."""
+    kinds: Path = repo / "pm" / "kinds"
+    files: list[Path] = [
+        repo / "AGENTS.md", *(sorted(kinds.glob("*.md")) if kinds.is_dir() else [])
+    ]
+    return {
+        str(p.relative_to(repo)): s for p in files if (s := _line1_stamp(p)) is not None
+    }
+
+
+def stamps_behind(repo: Path) -> list[tuple[str, str, str]]:
+    """(repo file, its stamp, kit template stamp) for each file behind the kit."""
+    out: list[tuple[str, str, str]] = []
+    for rel, have in rule_stamps(repo).items():
+        tpl: Path = TEMPLATE_DIR / (
+            "AGENTS.md" if rel == "AGENTS.md" else f"kinds/{Path(rel).name}"
+        )
+        want: str | None = _line1_stamp(tpl)
+        if want is not None and have < want:  # stamps: YYYY-MM-DD + letter
+            out.append((rel, have, want))
+    return out
+
+
 def make_event(
     who: str, ev: str, eid: str, fields: dict[str, object]
 ) -> dict[str, object]:
     ts: str = datetime.now().astimezone().isoformat(timespec="seconds")
-    return {"ts": ts, "who": who, "ev": ev, "id": eid, "f": fields}
+    out: dict[str, object] = {
+        "ts": ts, "who": who, "ev": ev, "id": eid, "f": fields, "kit": kit_version()
+    }
+    sid: str = os.environ.get(SID_ENV, "").strip()
+    if sid:
+        out["sid"] = sid
+    return out
 
 
 def append(
@@ -444,6 +529,51 @@ def _links(state: dict[str, Entry], links: list[str]) -> list[str]:
         except LedgerError as e:
             raise LedgerError(f"--link {link}: {e}") from None
     return list(dict.fromkeys(out))
+
+
+def _is_path(ref: str) -> bool:
+    """A ref that names a file or folder (not a URL, not doi:...)."""
+    return "://" not in ref and not NON_PATH_RE.match(ref)
+
+
+def _rel_refs(
+    repo: Path, refs: list[str], flag: str = "--ref", strict: bool = True
+) -> list[str]:
+    """`refs` with absolute paths under the repo root made repo-relative (the
+    ledger is committed: no home paths in it). `strict`: refuse an empty ref and
+    a path outside the repo (absolute or ../); else such a ref stays as given
+    (--ref-drop must be able to name an old bad ref)."""
+    root: Path = repo.resolve()
+    out: list[str] = []
+    for r in refs:
+        if strict and not r.strip():
+            raise LedgerError(f"{flag} '': empty; give a path, a URL or doi:...")
+        rel: str = r
+        if _is_path(r) and Path(r).is_absolute():
+            try:
+                rel = Path(r).resolve().relative_to(root).as_posix()
+                rel += "/" if r.endswith("/") and rel != "." else ""
+            except ValueError:
+                rel = r if not strict else ".."
+        if strict and _is_path(r) and os.path.normpath(rel).split("/")[0] == "..":
+            raise LedgerError(
+                f"{flag} {r}: outside the repo {root}; a ref is a path relative "
+                "to the repo root, a URL (://) or doi:..."
+            )
+        out.append(rel)
+    return out
+
+
+def _check_refs(repo: Path, refs: list[str]) -> list[str]:
+    """`refs` made repo-relative (_rel_refs); refused if a path does not exist."""
+    refs = _rel_refs(repo, refs)
+    missing: list[str] = [r for r in refs if _is_path(r) and not (repo / r).exists()]
+    if missing:
+        raise LedgerError(
+            f"--ref {', '.join(missing)}: no such file or folder (relative to the "
+            f"repo root {repo}); write it first, or give a URL (://) or doi:..."
+        )
+    return refs
 
 
 def _note_plus(old: str, text: str) -> str:
@@ -760,6 +890,8 @@ def _add_step(
 def _cmd_add(a: argparse.Namespace) -> int:
     repo: Path = _repo(a)
     who: str = _name(a.who, "--who")
+    if not a.imported:  # imported history may name files that are gone
+        a.ref = _check_refs(repo, a.ref)
     step: Callable[[dict[str, Entry]], tuple[str, dict[str, object]]] = _add_step(
         a, known_types(repo)
     )
@@ -768,10 +900,13 @@ def _cmd_add(a: argparse.Namespace) -> int:
     def build(state: dict[str, Entry]) -> list[dict[str, object]]:
         eid, f = step(state)
         made.append(eid)
-        return [make_event(who, "add", eid, f)]
+        ev: dict[str, object] = make_event(who, "add", eid, f)
+        if f["type"] == "stage" and not a.imported:
+            ev["rules"] = rule_stamps(repo)
+        return [ev]
 
     e: Entry = append(repo, build)[made[0]]
-    print(f"logged {e.id}: {e.title}")
+    print(f"logged {e.id}: {e.title}{_in_stage(e)}")
     if e.type == "stage" and not a.imported:  # after the write: a refused add
         folder: Path = repo / "pm" / "stages" / e.title  # makes no folder
         try:
@@ -973,6 +1108,15 @@ def _cmd_import(a: argparse.Namespace) -> int:
     return 0
 
 
+def _in_stage(e: Entry) -> str:
+    """Receipt tail: the stage an entry went into; none for a stage itself."""
+    return "" if e.type == "stage" else f" ({_stage_word(e)})"
+
+
+def _stage_word(e: Entry) -> str:
+    return f"stage {e.stage}" if e.stage else "no stage"
+
+
 def _entry(state: dict[str, Entry], ref: str) -> Entry:
     return state[resolve(state, ref)]
 
@@ -1028,6 +1172,7 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
     repo: Path = _repo(a)
     who: str = _name(a.who, "--who")
     note: str = _need_note(a)
+    a.ref = _check_refs(repo, a.ref)
     cmd: str = a.cmd
     new: str = {"close": "done", "drop": "dropped", "reopen": "open"}[cmd]
     ids: list[str] = []
@@ -1054,7 +1199,7 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
                 state, e.stage, "open", f"re-stage it first: set {e.id} --stage S-<x>"
             )
         f: dict[str, object] = {"status": new, "note": _note_plus(e.note, note)}
-        if cmd == "close" and a.ref:
+        if a.ref:
             f["refs"] = _union(e.refs, a.ref)
         links: list[str] = _links(state, [] if cmd == "reopen" else a.link)
         if links:
@@ -1082,11 +1227,14 @@ def _cmd_set(a: argparse.Namespace) -> int:
         or a.note_replace is not None
         or a.link
         or a.ref
+        or a.ref_drop
     ):
         raise LedgerError(
             "nothing to set (give --title, --owner, --label, --stage, --note, "
-            "--note-replace, --link or --ref)"
+            "--note-replace, --link, --ref or --ref-drop)"
         )
+    a.ref = _check_refs(repo, a.ref)
+    a.ref_drop = _rel_refs(repo, a.ref_drop, "--ref-drop", strict=False)
     if a.note is not None and not a.note.strip():
         raise LedgerError(
             "--note adds a line to the note and needs text; "
@@ -1128,8 +1276,16 @@ def _cmd_set(a: argparse.Namespace) -> int:
         links: list[str] = _links(state, a.link)
         if links:
             f["links"] = _union(e.links, links)
-        if a.ref:
-            f["refs"] = _union(e.refs, a.ref)
+        if a.ref or a.ref_drop:
+            unknown: list[str] = [r for r in a.ref_drop if r not in e.refs]
+            if unknown:
+                have: str = ", ".join(e.refs) or "none"
+                raise LedgerError(
+                    f"--ref-drop {', '.join(unknown)}: not a ref of {e.id} "
+                    f"(refs: {have})"
+                )
+            kept: list[str] = [r for r in e.refs if r not in a.ref_drop]
+            f["refs"] = _union(kept, a.ref)
         keys.extend("label" if k == "legacy_id" else k for k in f)
         return [make_event(who, "set", e.id, f)]
 
@@ -1147,6 +1303,7 @@ def _cmd_supersede(a: argparse.Namespace) -> int:
             "supersede needs --owner (who decided: user, lead or a teammate name)"
         )
     owner: str = _name(a.owner, "--owner")
+    a.ref = _check_refs(repo, a.ref)
     made: list[str] = []
 
     def build(state: dict[str, Entry]) -> list[dict[str, object]]:
@@ -1176,8 +1333,72 @@ def _cmd_supersede(a: argparse.Namespace) -> int:
             ),
         ]
 
-    append(repo, build)
-    print(f"logged {made[0]}: {title} (supersedes {made[1]})")
+    new: Entry = append(repo, build)[made[0]]
+    print(f"logged {made[0]}: {title} (supersedes {made[1]}; {_stage_word(new)})")
+    return 0
+
+
+def _cmd_reref(a: argparse.Namespace) -> int:
+    repo: Path = _repo(a)
+    who: str = _name(a.who, "--who")
+    if not a.old.strip() or not a.new.strip():
+        raise LedgerError("reref needs a non-empty OLD and NEW")
+    old: str = os.path.normpath(a.old)
+    new: str = os.path.normpath(a.new)
+    if new == old or new.startswith(old + "/"):
+        raise LedgerError(
+            f"reref: NEW {a.new} lies inside OLD {a.old}; a second run would apply "
+            "again: move to a path outside OLD"
+        )
+
+    def moved(r: str) -> str | None:
+        """`r` with the leading path OLD (whole path components, compared after
+        normpath, so ./pm/x matches pm/x) replaced by NEW; None if no match."""
+        if not _is_path(r):
+            return None
+        n: str = os.path.normpath(r)
+        if n != old and not n.startswith(old + "/"):
+            return None
+        return new + n[len(old):] + ("/" if r.endswith("/") else "")
+
+    changed: list[tuple[str, str, str]] = []  # (id, old ref, new ref)
+
+    def plan(state: dict[str, Entry]) -> list[dict[str, object]]:
+        changed.clear()
+        out: list[dict[str, object]] = []
+        for e in sorted(state.values(), key=lambda x: x.lines[0]):
+            pairs: list[tuple[str, str | None]] = [(r, moved(r)) for r in e.refs]
+            hits: list[tuple[str, str]] = [(r, m) for r, m in pairs if m is not None]
+            if not hits:
+                continue
+            refs: list[str] = list(dict.fromkeys(m or r for r, m in pairs))
+            changed.extend((e.id, r, m) for r, m in hits)
+            out.append(make_event(who, "set", e.id, {"refs": refs}))
+        missing: list[str] = [
+            f"{i} {n}" for i, _, n in changed if _is_path(n) and not (repo / n).exists()
+        ]
+        if missing:
+            more: str = f"\n  +{len(missing) - 20} more" if len(missing) > 20 else ""
+            lines: str = "\n  ".join(missing[:20])
+            raise LedgerError(
+                f"reref refused, nothing written: {len(missing)} new path(s) do not "
+                f"exist (move the files first):\n  {lines}{more}"
+            )
+        return out
+
+    if a.dry_run:
+        plan(load(repo))
+    else:
+        append(repo, plan)
+    if not changed:
+        print(f"no ref starts with '{a.old}'; nothing written")
+        return 0
+    for eid, o, n in changed:
+        print(f"{eid} {o} -> {n}")
+    n_ids: int = len({i for i, _, _ in changed})
+    verb: str = "would change" if a.dry_run else "changed"
+    tail: str = " (dry run, nothing written)" if a.dry_run else ""
+    print(f"{verb} {len(changed)} refs of {n_ids} entries{tail}")
     return 0
 
 
@@ -1211,11 +1432,33 @@ def _val(v: object) -> str:
     return s.replace("\n", "\\n")[:60]
 
 
+def _meta(ev: dict[str, object]) -> str:
+    """kit, sid and rules of an event as one line ('' when it has none)."""
+    parts: list[str] = []
+    for k in ("kit", "sid", "rules"):
+        v: object = ev.get(k)
+        if k == "rules" and isinstance(v, dict):
+            v = ",".join(f"{f}:{s}" for f, s in v.items()) or "none"
+        if v is not None:
+            parts.append(f"{k}={v if isinstance(v, str) else json.dumps(v)}")
+    return " ".join(parts)
+
+
 def _cmd_show(a: argparse.Namespace) -> int:
     repo: Path = _repo(a)
     events: list[tuple[int, dict[str, object]]] = read_events(repo)
     state: dict[str, Entry] = fold(events)
-    e: Entry = _entry(state, a.id)
+    entries: list[Entry] = [_entry(state, ref) for ref in a.id]  # all or none
+    for i, e in enumerate(entries):
+        if i:
+            print()
+        _show_one(e, state, events)
+    return 0
+
+
+def _show_one(
+    e: Entry, state: dict[str, Entry], events: list[tuple[int, dict[str, object]]]
+) -> None:
     fields: list[tuple[str, str]] = [  # the legacy_id field shows as label
         ("id", e.id), ("label", str(e.extra.get("legacy_id", ""))),
         ("type", e.type), ("title", e.title), ("status", e.status),
@@ -1244,7 +1487,9 @@ def _cmd_show(a: argparse.Namespace) -> int:
             f"{k}={_val(v)}" for k, v in (f.items() if isinstance(f, dict) else [])
         )
         print(f"  {ev.get('ts')} {ev.get('who')} {ev.get('ev')} {pairs}")
-    return 0
+        meta: str = _meta(ev)
+        if meta:
+            print(f"    {meta}")
 
 
 def _cmd_search(a: argparse.Namespace) -> int:
@@ -1333,9 +1578,32 @@ def _sign_off_problems(
     return out
 
 
+def _stage_checks(repo: Path, ref: str) -> None:
+    """The doctor checks of one open stage, before it is closed: prints what
+    they find; refuses (LedgerError) on a missing ref or stage folder."""
+    raw: bytes = (repo / LEDGER_REL).read_bytes()
+    events: list[tuple[int, dict[str, object]]] = _parse(raw)
+    state: dict[str, Entry] = fold(events)
+    sid: str = resolve(state, ref, stage=True)
+    if state[sid].status != "open":
+        return  # refused below, with the reason
+    found, notes = _findings(repo, raw, events, state, sid, ledger_wide=False)
+    if not found:  # the git note alone is not worth a line at every close
+        return
+    n_hard: int = _print_findings(found, notes, f"checks {sid}")
+    if n_hard:
+        raise LedgerError(
+            f"stage-close {sid} refused: {n_hard} HARD finding(s) above; a missing "
+            "ref: restore the file or set <id> --ref-drop <path>; a missing stage "
+            f"folder: restore pm/stages/{state[sid].title}/"
+        )
+
+
 def _cmd_stage_close(a: argparse.Namespace) -> int:
     repo: Path = _repo(a)
     who: str = _name(a.who, "--who")
+    a.ref = _check_refs(repo, a.ref)
+    _stage_checks(repo, a.id)
     out: list[str] = []
 
     def build(state: dict[str, Entry]) -> list[dict[str, object]]:
@@ -1371,12 +1639,313 @@ def _cmd_stage_close(a: argparse.Namespace) -> int:
             "note": _note_plus(stage.note, f"closed; sign-off {sign}"),
             "links": _union(stage.links, [sign]),
         }
+        if a.ref:
+            f["refs"] = _union(stage.refs, a.ref)
         out.append(f"closed {sid}: sign-off {sign}")
-        return [make_event(who, "set", sid, f)]
+        ev: dict[str, object] = make_event(who, "set", sid, f)
+        ev["rules"] = rule_stamps(repo)
+        return [ev]
 
     append(repo, build)
     print(out[0])
     return 0
+
+
+# ---- doctor -----------------------------------------------------------------
+
+Finding = tuple[bool, str, str]  # (hard, group, one line)
+G_PARSE: str = "ledger does not parse"
+G_REF: str = "missing ref"
+G_FOLDER: str = "missing stage folder"
+G_HEAD: str = "ledger not append-only against HEAD"
+G_IGNORED: str = (
+    "ref in a git-ignored or waste folder (move the file to the stage's "
+    "notes/team/ or pm/logs/team/, then rk reref)"
+)
+G_UNCOMMITTED: str = "done stage not in HEAD (the user commits it)"
+G_NOSTAGE: str = (
+    "entry without stage, made while a stage was open (set ID --stage S-n)"
+)
+G_LATE: str = (
+    "entry without stage, made after a stage closed, before the next opened "
+    "(set ID --stage S-n; an open entry only into an open stage)"
+)
+G_RUNNING: str = (
+    f"task running over {RUNNING_MAX_H} h (close or drop it, or set ID --note why)"
+)
+G_IMPORTED: str = (
+    "missing refs of imported entries (rk set ID --ref-drop PATH, or rk reref "
+    "after a move)"
+)
+G_WASTE_GONE: str = (
+    "ref into the waste folder, file gone (rk set ID --ref-drop PATH)"
+)
+G_STAMPS: str = "rule file behind the kit (run /rk-sync)"
+G_DECISIONS: str = "decisions of the stage not owned by user (for the sign-off)"
+
+
+def _git(
+    repo: Path, args: list[str], stdin: bytes = b""
+) -> subprocess.CompletedProcess[bytes] | None:
+    """A read-only git command run in `repo`; None when git cannot run."""
+    if args[0] not in GIT_READ:
+        raise ValueError(f"git {args[0]}: not a read-only command")
+    exe: str | None = shutil.which("git")
+    if exe is None:
+        return None
+    env: dict[str, str] = {  # no index write; this repo, not an inherited GIT_DIR
+        **{k: v for k, v in os.environ.items() if k not in GIT_LOCAL_ENV},
+        "GIT_OPTIONAL_LOCKS": "0",
+    }
+    try:
+        return subprocess.run(
+            [exe, "-C", str(repo), *args],
+            input=stdin, capture_output=True, env=env, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _git_skip(repo: Path) -> str:
+    """Why the git checks are skipped; '' when git works in `repo`."""
+    if shutil.which("git") is None:
+        return "git: no git binary; git checks skipped"
+    r: subprocess.CompletedProcess[bytes] | None = _git(
+        repo, ["ls-files", "--", LEDGER_REL]
+    )
+    if r is None or r.returncode != 0:
+        return "git: not a git repo; git checks skipped"
+    return ""
+
+
+def _head_lines(repo: Path, raw: bytes) -> tuple[int, int | None]:
+    """(ledger lines that are in HEAD, first line that differs from HEAD or None).
+
+    A ledger not in HEAD counts as 0 lines committed."""
+    r: subprocess.CompletedProcess[bytes] | None = _git(
+        repo, ["show", f"HEAD:./{LEDGER_REL}"]
+    )
+    head: bytes = r.stdout if r is not None and r.returncode == 0 else b""
+    tail: bytes = raw[len(head):len(head) + 1]
+    if raw.startswith(head) and (not head or head.endswith(b"\n") or tail in b"\n"):
+        return head.count(b"\n") + (0 if head.endswith(b"\n") or not head else 1), None
+    hl: list[bytes] = head.split(b"\n")
+    cl: list[bytes] = raw.split(b"\n")
+    same: int = next(
+        (i for i, (x, y) in enumerate(zip(hl, cl)) if x != y), min(len(hl), len(cl))
+    )
+    return same, same + 1
+
+
+def _close_line(events: list[tuple[int, dict[str, object]]], sid: str) -> int | None:
+    """Line of the event that made stage `sid` done (None while it is not)."""
+    line: int | None = None
+    for n, ev in events:
+        f: object = ev.get("f")
+        if ev.get("id") == sid and isinstance(f, dict) and "status" in f:
+            line = n if f["status"] == "done" else None
+    return line
+
+
+def _waste(ref: str) -> bool:
+    return (os.path.normpath(ref) + "/").startswith(WASTE_DIRS)
+
+
+def _findings(
+    repo: Path,
+    raw: bytes,
+    events: list[tuple[int, dict[str, object]]],
+    state: dict[str, Entry],
+    only: str | None,
+    ledger_wide: bool,
+) -> tuple[list[Finding], list[str]]:
+    """(findings, notes) for the whole ledger, or for stage `only` and its entries.
+
+    `ledger_wide`: also the checks that are not about one stage (ledger against
+    HEAD, rule stamps). Read-only: writes nothing, git read-only commands only."""
+    out: list[Finding] = []
+    skip: str = _git_skip(repo)
+    notes: list[str] = [skip] if skip else []
+    entries: list[Entry] = sorted(
+        (e for e in state.values() if only is None or only in (e.id, e.stage)),
+        key=lambda e: e.lines[0],
+    )
+    stages: list[Entry] = [e for e in entries if e.type == "stage" and not _imported(e)]
+    present: list[tuple[str, str]] = []  # (id, ref) of refs that exist
+    imp: list[tuple[str, str]] = []
+    for e in entries:
+        own: str = f"pm/stages/{e.title}/" if e.type == "stage" else ""
+        for r in e.refs:
+            if not _is_path(r) or r == own:  # own folder: the folder check
+                continue
+            if (repo / r).exists():
+                present.append((e.id, r))
+            elif _imported(e):
+                imp.append((e.id, r))
+            elif _waste(r):  # an older kit put reports there; the user empties it
+                out.append((False, G_WASTE_GONE, _clip(f"{e.id} {r}", TITLE_MAX)))
+            else:
+                out.append((True, G_REF, _clip(f"{e.id} {r}", TITLE_MAX)))
+    out += [
+        (False, G_IGNORED, _clip(f"{i} {r} (waste)", TITLE_MAX))
+        for i, r in present if _waste(r)
+    ]
+    cand: list[tuple[str, str]] = [  # the kit's own ignored places: by design
+        (i, r) for i, r in present
+        if not _waste(r) and not Path(r).is_absolute() and not r.startswith("..")
+        and not KIT_IGNORED_RE.match(os.path.normpath(r))
+    ]
+    if not skip and cand:
+        paths: list[str] = list(dict.fromkeys(r for _, r in cand))
+        res: subprocess.CompletedProcess[bytes] | None = _git(
+            repo, ["check-ignore", "--stdin", "-z"], "\0".join(paths).encode() + b"\0"
+        )
+        if res is not None and res.returncode in (0, 1):  # 1: none ignored
+            ignored: set[str] = set(res.stdout.decode(errors="replace").split("\0"))
+            out += [(False, G_IGNORED, _clip(f"{i} {r} (ignored)", TITLE_MAX))
+                    for i, r in cand
+                    if r in ignored]
+    if imp:
+        n: int = len({i for i, _ in imp})
+        out.append((False, G_IMPORTED, f"{len(imp)} refs of {n} imported entries "
+                    f"missing, e.g. {imp[0][0]} {imp[0][1]}"))
+    for st in stages:
+        folder: str = f"pm/stages/{st.title}/"
+        if not (repo / folder).is_dir():
+            out.append((True, G_FOLDER, f"{st.id} {folder}"))
+    done: list[Entry] = [st for st in stages if st.status == "done"]
+    if not skip and (done or ledger_wide):
+        committed, differs = _head_lines(repo, raw)
+        if ledger_wide and differs is not None:
+            out.append((True, G_HEAD, f"{LEDGER_REL}:{differs} differs from HEAD: "
+                        "lines were changed or removed, not only appended"))
+        for st in done:
+            close: int | None = _close_line(events, st.id)
+            lines: int = sum(1 for k, _ in events if committed < k <= (close or 0))
+            st_r: subprocess.CompletedProcess[bytes] | None = _git(
+                repo,
+                ["status", "--porcelain", "--untracked-files=all", "--",
+                 f"pm/stages/{st.title}/"],
+            )
+            files: int = (
+                len(st_r.stdout.splitlines()) if st_r and st_r.returncode == 0 else 0
+            )
+            if lines or files:
+                out.append((False, G_UNCOMMITTED, f"{st.id} {st.title}: {lines} "
+                            f"ledger lines and {files} folder files not in HEAD"))
+    opens: list[int] = sorted(  # add lines of all non-imported stages
+        x.lines[0] for x in state.values() if x.type == "stage" and not _imported(x)
+    )
+    loose: list[Entry] = [  # not from `entries`: these carry no stage
+        e for e in state.values()
+        if e.type != "stage" and not e.stage and not _imported(e)
+    ]
+    ends: dict[str, int | None] = {
+        st.id: _close_line(events, st.id) if st.status == "done" else None
+        for st in stages
+    }
+    by_close: list[Entry] = sorted(  # gaps: the stage closed last before an entry
+        (st for st in stages if ends[st.id] is not None),
+        key=lambda st: -(ends[st.id] or 0),
+    )
+    seen: set[str] = set()
+    for late in (False, True):  # while a stage was open first, then the gaps
+        for st in by_close if late else stages:
+            start: int = st.lines[0]
+            end: int | None = ends[st.id]
+            after: int | None = next((k for k in opens if k > (end or 0)), None)
+            lo, hi = (end or 0, after) if late else (start, end)
+            for e in loose:
+                first: int = e.lines[0]
+                if e.id in seen or first <= lo or (hi is not None and first >= hi):
+                    continue
+                seen.add(e.id)
+                tag: str = f"after {st.id}" if late else st.id
+                out.append(
+                    (False, G_LATE if late else G_NOSTAGE,
+                     _clip(f"{e.id} ({tag}) {e.title}"))
+                )
+    now: datetime = datetime.now().astimezone()
+    for e in entries:
+        if e.type != "task" or e.status != "running" or not e.started:
+            continue
+        try:
+            then: datetime = datetime.fromisoformat(e.started).astimezone()
+        except ValueError:
+            continue
+        if (now - then).total_seconds() > RUNNING_MAX_H * 3600:
+            line: str = f"{e.id} ({e.owner}, {age(e.started, now)}) {e.title}"
+            out.append((False, G_RUNNING, _clip(line)))
+    if ledger_wide:
+        out += [(False, G_STAMPS, f"{rel} {have}, kit {want}")
+                for rel, have, want in stamps_behind(repo)]
+    if only is not None:
+        for e in entries:
+            if not (e.type == "decision" and e.stage == only and e.status == "done"
+                    and e.owner != "user"):
+                continue
+            users: list[str] = [  # the user decisions it links (narrowed?)
+                x for x in e.links
+                if (d := state.get(x)) is not None and d.type == "decision"
+                and d.owner == "user"
+            ]
+            by: str = f"{e.owner}; links {', '.join(users)}" if users else e.owner
+            out.append((False, G_DECISIONS, _clip(f"{e.id} ({by}) {e.title}")))
+    return out, notes
+
+
+def _print_findings(
+    found: list[Finding], notes: list[str], what: str, cap: int = GROUP_CAP
+) -> int:
+    """Notes, then HARD groups, then SOFT groups, one line per finding (at most
+    `cap` per group, 0 = all), then a count line. Returns the number of hard ones."""
+    for note in notes:
+        print(note)
+    for hard in (True, False):
+        groups: dict[str, list[str]] = {}
+        for h, g, line in found:
+            if h == hard:
+                groups.setdefault(g, []).append(line)
+        for g, lines in groups.items():
+            print(f"{'HARD' if hard else 'SOFT'} {g} ({len(lines)})")
+            shown: list[str] = lines[:cap] if cap else lines
+            for line in shown:
+                print(f"  {line}")
+            if len(shown) < len(lines):
+                print(f"  +{len(lines) - len(shown)} more (all: --limit 0)")
+    n_hard: int = sum(1 for h, _, _ in found if h)
+    print(f"{what}: {n_hard} hard, {len(found) - n_hard} soft" if found
+          else f"{what}: no findings")
+    return n_hard
+
+
+def _doctor_start(a: argparse.Namespace) -> int:
+    """Session start: kit line, then up to two rule files behind the kit."""
+    print(f"kit {kit_version()}")
+    try:
+        repo: Path = _repo(a)
+        behind: list[tuple[str, str, str]] = stamps_behind(repo)
+    except (LedgerError, OSError):
+        return 0
+    for rel, have, want in behind[:2]:
+        print(f"{rel} {have}, kit {want}: run /rk-sync")
+    return 0
+
+
+def _cmd_doctor(a: argparse.Namespace) -> int:
+    if a.start:
+        return _doctor_start(a)
+    repo: Path = _repo(a)
+    raw: bytes = (repo / LEDGER_REL).read_bytes()
+    try:
+        events: list[tuple[int, dict[str, object]]] = _parse(raw)
+        state: dict[str, Entry] = fold(events)
+    except LedgerError as e:
+        return 1 if _print_findings([(True, G_PARSE, str(e))], [], "doctor") else 0
+    only: str | None = resolve(state, a.stage, stage=True) if a.stage else None
+    found, notes = _findings(repo, raw, events, state, only, ledger_wide=True)
+    what: str = f"doctor {only or ''}".strip()
+    return 1 if _print_findings(found, notes, what, _nonneg(a.limit, "--limit")) else 0
 
 
 def _cmd_brief_check(a: argparse.Namespace) -> int:
@@ -1485,8 +2054,7 @@ def _parser() -> argparse.ArgumentParser:
         pc: argparse.ArgumentParser = sub.add_parser(name, parents=[common])
         pc.add_argument("id")
         pc.add_argument("--note", default=None, help="added as a new line of the note")
-        if name == "close":
-            pc.add_argument("--ref", action="append", default=[])
+        pc.add_argument("--ref", action="append", default=[])
         if name != "reopen":
             pc.add_argument("--link", action="append", default=[])
     pt: argparse.ArgumentParser = sub.add_parser("set", parents=[common])
@@ -1502,6 +2070,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     pt.add_argument("--link", action="append", default=[])
     pt.add_argument("--ref", action="append", default=[])
+    pt.add_argument(
+        "--ref-drop", action="append", default=[], metavar="PATH",
+        help="removes this ref (exactly as shown by show); the history keeps it",
+    )
     pu: argparse.ArgumentParser = sub.add_parser("supersede", parents=[common])
     pu.add_argument("id")
     pu.add_argument("title")
@@ -1516,7 +2088,7 @@ def _parser() -> argparse.ArgumentParser:
     pl.add_argument("--limit", type=int, default=LIST_LIMIT)
     pl.add_argument("--all", action="store_true")
     ph: argparse.ArgumentParser = sub.add_parser("show", parents=[common])
-    ph.add_argument("id")
+    ph.add_argument("id", nargs="+")
     pq: argparse.ArgumentParser = sub.add_parser("search", parents=[common])
     pq.add_argument("text", nargs="?", default=None)
     pq.add_argument("--source", default=None, help="exact source of an imported entry")
@@ -1532,6 +2104,35 @@ def _parser() -> argparse.ArgumentParser:
     pz: argparse.ArgumentParser = sub.add_parser("stage-close", parents=[common])
     pz.add_argument("id")
     pz.add_argument("--sign-off", default=None)
+    pz.add_argument("--ref", action="append", default=[])
+    pv: argparse.ArgumentParser = sub.add_parser(
+        "reref",
+        parents=[common],
+        description="Replace the leading OLD of every ref that starts with OLD by "
+        "NEW, on all entries (imported, done and those of a done stage too), "
+        "after the files were moved. All or nothing: refused, nothing written, "
+        "when a new path does not exist. One set event (refs) per changed entry.",
+    )
+    pv.add_argument("old", metavar="OLD", help="path prefix, e.g. pm/waste/team/03b/")
+    pv.add_argument("new", metavar="NEW", help="replacement prefix")
+    pv.add_argument("--dry-run", action="store_true")
+    pd: argparse.ArgumentParser = sub.add_parser(
+        "doctor",
+        parents=[common],
+        description="Read-only check of the ledger against folders and git; "
+        "writes nothing. Exit 1 on a HARD finding, else 0.",
+    )
+    pd.add_argument(
+        "--stage", default=None, help="only this stage: S-n, its code or title"
+    )
+    pd.add_argument(
+        "--limit", type=int, default=GROUP_CAP,
+        help=f"lines per group (default {GROUP_CAP}; 0 = all)",
+    )
+    pd.add_argument(
+        "--start", action="store_true",
+        help="session start: kit version and rule files behind the kit; exit 0",
+    )
     sub.add_parser("brief-check", parents=[common])
     pi: argparse.ArgumentParser = sub.add_parser(
         "import",
@@ -1561,6 +2162,8 @@ HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "stage-close": _cmd_stage_close,
     "brief-check": _cmd_brief_check,
     "import": _cmd_import,
+    "doctor": _cmd_doctor,
+    "reref": _cmd_reref,
 }
 
 

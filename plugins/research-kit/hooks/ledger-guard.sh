@@ -31,7 +31,7 @@ case "$tool" in
     done
     case "$lc" in
       */pm/ledger.jsonl|*/pm/status.md|pm/ledger.jsonl|pm/status.md)
-        deny "pm/ledger.jsonl and pm/STATUS.md are written only by the ledger tool: python3 -I \"$rk\" <add|start|close|drop|reopen|set|supersede|stage-close|import> ... STATUS.md is regenerated after every write (render rebuilds it). A broken ledger line: ask the user to fix it by hand outside Claude."
+        deny "pm/ledger.jsonl and pm/STATUS.md are written only by the ledger tool: python3 -I \"$rk\" <add|start|close|drop|reopen|set|supersede|reref|stage-close|import> ... STATUS.md is regenerated after every write (render rebuilds it). A broken ledger line: run doctor (python3 -I \"$rk\" doctor), it names the line; the fix is by hand outside Claude, so ask the user."
         ;;
     esac
     ;;
@@ -42,6 +42,12 @@ case "$tool" in
     text="$(jq -r "$q" <<<"$in" 2>/dev/null)" || exit 0
     # cheap pre-filter; rk.py brief-check applies the exact rule (line start)
     case "$text" in *DELIVERABLE:*) ;; *) exit 0 ;; esac
+    # the events brief-check writes carry the session id (sid): the hook's env may lack
+    # CLAUDE_CODE_SESSION_ID, the input JSON has session_id
+    if [ -z "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+      sid_in="$(jq -r '.session_id // empty' <<<"$in" 2>/dev/null)"
+      [ -n "$sid_in" ] && export CLAUDE_CODE_SESSION_ID="$sid_in"
+    fi
     # run from the root without --repo: the tool's own lookup (a worktree -> main ledger)
     out="$(cd "$root" && printf '%s\n' "$text" | python3 -I "$rk" brief-check --who hook 2>&1)"
     rc=$?

@@ -14,7 +14,13 @@ Usage:
 Ledger store (pm/ledger.jsonl, see ledger.py; every command takes --repo DIR
 and --who NAME; every ID argument also takes a label (form <stage code>/<item>,
 e.g. 03b/W4, the / is required) or a stage code such as 03b; receipts print
-the real ID):
+the real ID; an add receipt ends with "(stage S-n)" or "(no stage)". Every
+event records the kit version and, when set, the session id; a stage's add and
+close also record the stamps of AGENTS.md and pm/kinds/*.md. --ref PATH must
+exist relative to the repo root; an absolute path inside the repo is stored
+repo-relative; a path outside the repo (absolute or ../) and an empty ref are
+refused; a URL (://), doi:... and arXiv:... (any case) pass unchecked; imported
+entries are exempt):
   python3 -I rk.py add <type> <title> [--owner NAME] [--label L] [--stage S]
       [--note TEXT] [--link ID]... [--ref PATH]... [--status STATUS]
       [--imported --source FILE:LINE [--legacy-id OLD] [--date YYYY-MM-DD]]
@@ -24,18 +30,28 @@ the real ID):
       the stage folder with its subfolders and records it as ref)
   python3 -I rk.py start ID [--owner NAME]
   python3 -I rk.py close ID --note TEXT [--ref PATH]... [--link ID]...
-  python3 -I rk.py drop ID --note TEXT [--link ID]...
-  python3 -I rk.py reopen ID --note TEXT
+  python3 -I rk.py drop ID --note TEXT [--ref PATH]... [--link ID]...
+  python3 -I rk.py reopen ID --note TEXT [--ref PATH]...
   python3 -I rk.py set ID [--title T] [--owner N] [--label L] [--stage S]
       [--note T | --note-replace T] [--link ID]... [--ref PATH]...
+      [--ref-drop PATH]...   (--ref-drop removes a ref; the history keeps it)
   python3 -I rk.py supersede ID TITLE --owner NAME [--note T] [--link ID]...
       [--ref PATH]...
   python3 -I rk.py list [--type T] [--owner N] [--stage S] [--limit N] [--all]
-  python3 -I rk.py show ID
+  python3 -I rk.py show ID [ID ...]
   python3 -I rk.py search [TEXT] [--source S] [--label L] [--type T] [--limit N]
   python3 -I rk.py recent [-n N]
   python3 -I rk.py render
-  python3 -I rk.py stage-close S-n --sign-off D-m
+  python3 -I rk.py stage-close S-n --sign-off D-m [--ref PATH]...
+      (runs the doctor checks of S-n first: refuses on a missing ref or
+      stage folder, prints the soft findings, then closes)
+  python3 -I rk.py reref OLD NEW [--dry-run]   (after moving files: every ref
+      starting with OLD gets NEW instead, on all entries incl. imported and
+      done ones; all or nothing, refused if a new path does not exist)
+  python3 -I rk.py doctor [--stage S] [--limit N]   (read-only; exit 1 on a
+      HARD finding; N lines per group, default 20, 0 = all)
+  python3 -I rk.py doctor --start       (kit version, rule files behind the
+      kit; at most 3 lines, always exit 0)
   python3 -I rk.py brief-check < message.txt    (hook gate: rc 0 pass, 2 refuse)
   python3 -I rk.py import FILE.jsonl [FILE.jsonl ...] [--dry-run]
       (imported history, all or nothing; rows: type, title, source; optional
@@ -61,9 +77,9 @@ PM_DIRS: tuple[str, ...] = (
     "handoffs/open",
     "handoffs/done",
     "handoffs/compact",
-    "waste/team",
     "scratch",
     "logs",
+    "logs/team",  # teammate reports outside an open stage (AGENTS 2.3)
     "reviews",
     "living",
     "kinds",
@@ -73,9 +89,6 @@ GIT_POLICIES: dict[str, str] = {
     "user": "user commits",
     "orchestrator": "orchestrator commits",
 }
-STAMP_RE: re.Pattern[str] = re.compile(
-    r"<!-- (?:research-kit|research-kit-kind \S+|paper-playbook): (\S+) -->"
-)
 CORE_STAMP_RE: re.Pattern[str] = re.compile(r"<!-- research-kit: \S+ -->")
 LEGACY_STAMP_RE: re.Pattern[str] = re.compile(r"<!-- paper-playbook: \S+ -->")
 KINDS_RE: re.Pattern[str] = re.compile(
@@ -102,6 +115,7 @@ def _load_ledger() -> ModuleType:
 
 
 ledger: ModuleType = _load_ledger()
+STAMP_RE: re.Pattern[str] = ledger.STAMP_RE  # one pattern for sync and doctor
 
 
 # ---- text helpers -----------------------------------------------------------

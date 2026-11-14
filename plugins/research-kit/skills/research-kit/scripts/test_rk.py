@@ -140,6 +140,7 @@ def test_init_full() -> None:
         assert (repo / "pm/kinds/software.md").is_file()
         for sub in [*rk.PM_DIRS, "stages"]:
             assert (repo / "pm" / sub).is_dir(), sub
+        assert (repo / "pm/logs/team").is_dir() and not (repo / "pm/waste").exists()
         for f in ("README.md", "ledger.jsonl"):
             assert (repo / "pm" / f).is_file(), f
         assert (repo / "pm/ledger.jsonl").read_bytes() == b""
@@ -202,6 +203,32 @@ def test_gitignore_block_idempotent() -> None:
             check()
             assert run(rk.cmd_sync, repo, True, False)[0] == 0
             check()
+
+
+def test_gitignore_keeps_team_reports_tracked() -> None:
+    """The real template block ignores pm/waste/ but never the report folders."""
+    exe: str | None = shutil.which("git")
+    assert exe is not None, "git not found"
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = Path(d)
+        rk.TEMPLATE_DIR = REAL_TEMPLATE
+        (repo / ".gitignore").write_text(rk.gitignore_text(""))
+        genv: dict[str, str] = {
+            **os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"
+        }
+        subprocess.run([exe, "-C", d, "init", "-q"], env=genv, check=True)
+
+        def ignored(rel: str) -> bool:
+            r: subprocess.CompletedProcess[bytes] = subprocess.run(
+                [exe, "-C", d, "check-ignore", "-q", rel], env=genv, capture_output=True
+            )
+            assert r.returncode in (0, 1), r
+            return r.returncode == 0
+
+        assert ignored("pm/waste/team/x/sr1-r1.md")
+        for rel in ("pm/logs/team/2026-11-14-1916/sr1-r1.md",
+                    "pm/stages/03b-paper-scan/notes/team/sr1-r1.md"):
+            assert not ignored(rel), rel
 
 
 def test_gitattributes_block() -> None:
@@ -700,7 +727,7 @@ def test_ledger_end_to_end() -> None:
             "brief-check", "--who", "hook",
             stdin="You are sr1\nDELIVERABLE: d\nTASK: T-1\n",
         )  # fmt: skip
-        tool("close", "T-1", "--note", "done", "--ref", "r.md")
+        tool("close", "T-1", "--note", "done", "--ref", "AGENTS.md")  # must exist
         tool("add", "decision", "metric dE76", "--owner", "user")
         tool("supersede", "D-1", "metric dE00", "--owner", "user")
         assert not marker.exists(), "the tool called git"

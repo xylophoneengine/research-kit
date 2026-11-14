@@ -28,6 +28,7 @@ License: MIT (see `LICENSE`).
 - [Commands](#commands)
 - [Stage lifecycle](#stage-lifecycle)
 - [How sync works](#how-sync-works)
+- [After a kit update](#after-a-kit-update)
 - [/team flow](#team-flow)
 - [Best practices for teams](#best-practices-for-teams)
 - [Surviving compaction](#surviving-compaction)
@@ -99,8 +100,9 @@ should show a teammate named `jr1` that you can message after it finishes.
 
 Teammates may start their own subagents (web lookups, fetches). `/team`
 briefs make them use an agent type that can write files, run it in the
-foreground and write results to
-`pm/waste/team/<run>/<name>-r<round>-sub<k>.md`, so long results never land in the lead's
+foreground and write results next to the teammate's report as
+`<name>-r<round>-sub<k>.md` (the open stage's `notes/team/`; light mode or no
+open stage: `pm/logs/team/<run>/`), so long results never land in the lead's
 context.
 
 Start Claude in a project folder you have trusted before: teammates start in
@@ -111,6 +113,7 @@ the lead's folder, and the home folder asks for trust every time.
 Plugins install as a copy. After pulling a new version (or editing a local
 clone), run `claude plugin marketplace update research-kit`, then
 `/plugin` -> update `research-kit` (and `research-kit-lit`), and restart.
+Then bring each repo along: [After a kit update](#after-a-kit-update).
 
 ## Kinds
 
@@ -182,7 +185,7 @@ stage opens in a fresh session named after its folder (`/rename`).
 |---|---|---|
 | setup | `/rk-init` (kinds: paper; full; user commits) | `pm/` tree, appendix, `.gitignore` block. Paper first-session steps: ARS check, library tag asked (e.g. `mypaper`), appendix lines (title, venue, authors, topic) |
 | 01 | `/rename MYP_01_paper_goal-scan`, then "open stage: goal + lit-scan" | Lead writes `BRIEF.md` with a `Done when`. Lead runs the GOALS dialogue (`deep-research`, `socratic`) and writes `pm/living/GOALS.md`; you confirm. `/team`: a teammate runs `deep-research` `three-way-scan` into `deliverables/`; crit1 + crit2 review into `notes/` |
-| | "close stage" (or `/rk-close 01`) | Close checklist: every stage task done, dropped, re-staged or deferred; `pm/README.md` numbers and traps; handoffs closed; your sign-off logged as a decision; `rk stage-close`; kind freeze steps; chat archive last. Stage is frozen |
+| | "close stage" (or `/rk-close 01`) | Close checklist: `Done when` output pasted; every stage task done, dropped, re-staged or deferred; `pm/README.md` numbers and traps; handoffs closed; kind freeze steps; chat archive (main transcript copied last); your sign-off asked with the `rk doctor --stage` output and logged as a decision; `rk stage-close` last. Stage is frozen |
 | 02 | "open stage: source sync" | `/team` with `research-kit-lit:zotero-worker` teammates: preflight, import, tag, ledger = PDFs = library entries; corpus passport rebuilt for ARS |
 | 03 | `/rk-add-kind software`, "open stage: software solver" | Software kind in parallel (one open stage per kind): design via `superpowers:brainstorming` or grilling, plan via `writing-plans`, build via `/team`; numbers stamped at a clean commit go to "Load-bearing numbers" in `pm/README.md` |
 | 04 | "open stage: plan" | `academic-paper` `plan` in the lead session (dialogue with you): `chapter_plan.md`, `insight_collection.md`; your decisions logged in the ledger |
@@ -272,10 +275,11 @@ pm/
   handoffs/open/    work packages for later sessions                              committed
   handoffs/done/    executed work packages                                        committed
   handoffs/compact/ compaction handoffs                                           gitignored
-  logs/             run and implementation logs                                   committed
+  logs/             run and implementation logs; team/<run>/ = teammate reports   committed
+                    outside a stage (in a stage: notes/team/)
   reviews/          critic reviews outside stages (light mode)                    gitignored
   scratch/          throwaway work                                                gitignored
-  waste/            discarded files + LEDGER.md; team/ = teammate reports         gitignored
+  waste/            discarded files + LEDGER.md                                   gitignored
 ```
 
 ### The ledger
@@ -285,15 +289,22 @@ append-only event log, `pm/ledger.jsonl`. Only the `rk.py` subcommands read or
 write it (core AGENTS.md 4.2 defines the shorthand `rk`); a hook blocks hand
 edits of the log and of `pm/STATUS.md`, and another refuses a team brief whose
 `TASK:` ids are not open tasks. Every write prints a receipt such as
-`logged D-41: ...`, and `pm/STATUS.md` is regenerated after it.
+`logged D-41: ...`, and `pm/STATUS.md` is regenerated after it. Every event
+carries the kit version and the session id (`rk show` prints them), the way
+from an entry to the archived transcript. A `--ref` must name an existing file
+in the repo (a `://` URL, `doi:` or `arXiv:` passes; a path outside the repo is
+refused; an absolute path inside it is stored repo-relative; checked against
+the main checkout, so in a worktree merge first).
 
 ```
 rk add <type> <title>       log a task, decision, deferred item, ...
 rk start|close|drop|reopen  change status (close and drop take --note)
-rk set | rk supersede       edit fields; replace a decision
+rk set | rk supersede       edit fields (--ref-drop PATH removes a wrong ref); replace a decision
 rk list | show | search     open items, one entry, text search
 rk recent                   newest events
-rk stage-close S-n --sign-off D-m   close a stage once the checks pass
+rk doctor [--stage S-n]     read-only check of ledger, folders, git: exit 1 on hard findings
+rk reref OLD NEW [--dry-run]   point refs at OLD to NEW, after a file was moved by hand
+rk stage-close S-n --sign-off D-m   close a stage, last; runs the doctor --stage checks first
 rk render                   rebuild pm/STATUS.md
 rk brief-check              the brief gate the hook calls
 ```
@@ -319,7 +330,7 @@ so branch merges of the append-only ledger do not conflict.
 ## Stage lifecycle
 
 Every stage opens with a mechanical `Done when` check and ends with the close
-checklist (chat archive last).
+checklist (`rk stage-close` last).
 
 ```mermaid
 flowchart TD
@@ -330,10 +341,12 @@ flowchart TD
   CR -- "not resolved" --> ESC["Escalate to the user"]
   CR -- "all YES" --> IV["Integrate + verify: Done when check run, tail pasted"]
   IV --> CL["/rk-close"]
-  CL --> S1["Tasks settled, numbers and traps, handoffs, sign-off, rk stage-close"]
+  CL --> S1["Done when, tasks settled, numbers and traps, handoffs"]
   S1 --> S2["Kind freeze steps"]
-  S2 --> S3["Chat archive LAST"]
-  S3 --> N["Next stage"]
+  S2 --> S3["Chat archive, main transcript copied last"]
+  S3 --> S4["Sign-off with rk doctor --stage output"]
+  S4 --> S5["rk stage-close LAST"]
+  S5 --> N["Next stage"]
   N --> O
 ```
 
@@ -355,8 +368,36 @@ flowchart LR
 - Legacy single-file repos (older `paper-playbook` stamp) migrate on the same command: the generic part is replaced, the appendix kept, `pm/kinds/paper.md` and the `pm/` tree added. Nothing is moved: old stage folders and `WASTE/` stay put and are recorded as `Legacy stages:` / `Legacy waste:`.
 
 To change a generic rule: edit the template in a clone of this repo, bump the
-stamp (`<!-- research-kit: ... -->`) and the plugin `version`, push, update
-the plugin, then sync each repo.
+stamp (`<!-- research-kit: ... -->`) and the plugin `version` (the release
+gate refuses a push that misses either, see [Development](#development)),
+push, update the plugin, then sync each repo.
+
+## After a kit update
+
+In every repo, after updating the plugin, in this order (each step is safe to
+repeat):
+
+1. Start from a clean `git status`, so the kit step is one reviewable commit.
+2. Start a session: its start line names the kit version and each rule file
+   that is behind the kit.
+3. `/rk-sync`: dry run, sort the DROPPED lines, then `--write`. It updates the
+   rule files, the kit blocks and missing `pm/` folders; a second run prints
+   `up to date`.
+4. `rk doctor` is the to-do list: HARD findings first, then SOFT.
+5. Fix each finding with ordinary commands: `rk set`, `rk close`, and
+   `rk reref OLD NEW` after you moved a file by hand (move first, then fix the
+   ref; the tool never moves or deletes repo files).
+6. Log one decision for the kit step: what it changed in this repo, linked to
+   the stages it touched, with `--stage S-<n>` of the last stage it touched
+   (else `rk doctor` lists it as an entry without stage; check
+   `rk search "kit step"` first).
+7. `rk doctor` again; name any remaining SOFT lines in that decision's note.
+8. Commit the ledger, the rule files and the moved files.
+
+A new kit never reports HARD on what an older kit wrote correctly: HARD is
+kept for what is broken under every version (a line that does not parse, a ref
+to nothing, a missing stage folder, a ledger that was not only appended to).
+Old events are never rewritten or back-filled; a clean `rk doctor` is the proof.
 
 ## /team flow
 
@@ -366,7 +407,7 @@ flowchart TD
   L --> J["jr1..N (haiku): fully defined"]
   L --> S["sr1..N (sonnet): mostly defined"]
   L --> E["exp1..M (opus): open-ended, subtle"]
-  J --> R["Report files in pm/waste/team/ + short SendMessage (max ~500 chars)"]
+  J --> R["Report files in stage notes/team/ or pm/logs/team/ + short SendMessage (max ~500 chars)"]
   S --> R
   E --> R
   R --> C1["crit1 (opus): correctness / evidence"]
@@ -386,7 +427,7 @@ flowchart TD
 - Pick the model by how defined the task is (haiku / sonnet / opus); between two tiers, take the higher.
 - The lead orchestrates and never does the legwork.
 - Briefs open with `DELIVERABLE:` (artifact + exact path) and `NOT IN SCOPE:`.
-- Full reports go to `pm/waste/team/<run>/<name>-r<round>.md`, one folder per `/team` run (`<run>` = start time `YYYY-MM-DD-HHMM`), so a later run never overwrites an earlier one (gitignored; outside a `pm/` repo: the session scratchpad). The lead gets a message of 500 chars or fewer, and the teammate's final text is one line with the report path. Each report reaches the lead twice: once as the message and once as the idle notification.
+- Full reports go to `<REPORTS>/<name>-r<round>.md`: the open stage's `notes/team/` in full mode, `pm/logs/team/<run>/` in light mode or with no open stage (`<run>` = start time `YYYY-MM-DD-HHMM`), outside a `pm/` repo the session scratchpad. `<round>` is the next free number for that name, so a report is never overwritten. Reports are committed, never in `pm/waste/`: a ledger ref to a report must outlive the waste folder. The lead gets a message of 500 chars or fewer, and the teammate's final text is one line with the report path. Each report reaches the lead twice: once as the message and once as the idle notification.
 - Critics write their review to the open stage's `notes/` (committed) or, with no open stage, `pm/reviews/`.
 - Files to discard: teammates list `TO-WASTE:` lines in their report; the lead collects them with one grep (see Deleting is off).
 - When reusing an idle teammate, restate the deliverable and the report lines.
@@ -471,7 +512,7 @@ simply left alone. Instead:
   calls). They list each file in their report as a line at column 0:
   `TO-WASTE: <repo-relative path> -- <reason>`.
 - Only the lead (main session) runs the helper, once, for the collected items:
-  `grep -h '^TO-WASTE: ' <reports>/*.md`, then `skills/waste/waste.sh lead "<reason>" <paths>`.
+  `grep -h '^TO-WASTE: ' <reports of this wave>`, then `skills/waste/waste.sh lead "<reason>" <paths>`.
   You approve each call; the prompt appears in the main session, so Remote
   Control users see it.
 - The helper moves files to `pm/waste/<stamp>/` (`WASTE/` in legacy repos) with
@@ -497,14 +538,27 @@ Not bundled; install what your kinds use.
 ## Development
 
 ```
-claude plugin validate .
-claude plugin validate plugins/research-kit
-claude plugin validate plugins/research-kit-lit
-python3 -I plugins/research-kit/skills/research-kit/scripts/test_rk.py
-bash plugins/research-kit/skills/waste/test-waste.sh
-bash plugins/research-kit/hooks/test-guard-delete.sh
-bash plugins/research-kit/hooks/test-ledger-guard.sh
-bash plugins/research-kit/hooks/test-handoff-hook.sh
-bash scripts/anon_check.sh   # before every push; reads the private docs/private/denylist.txt
-claude --plugin-dir plugins/research-kit    # try it without installing
+git config core.hooksPath scripts/githooks   # once per clone: every push runs the gate
+bash scripts/release_check.sh                # the gate by hand (default: commits on no origin/* ref)
+bash scripts/test-release-check.sh           # tests for the gate
+claude --plugin-dir plugins/research-kit     # try it without installing
 ```
+
+`scripts/release_check.sh` stops at the first failure: plugin `version` not
+bumped against `origin/main` when `plugins/<name>/` changed; a changed template
+without a new stamp; the anon check; every `test-*.sh` / `test_*.py` under
+`plugins/` and `scripts/`, run on the pushed commit; `claude plugin validate`
+for the marketplace and each plugin.
+
+`scripts/anon_check.sh` scans what a push publishes (added lines, added file
+names, messages, author and committer of each commit, annotated tags pointing
+into the range; `--all` for all history) for home and temp paths, email
+addresses, secret shapes and session ids, and for the terms in the private
+denylist `docs/private/denylist.txt` of the main checkout (any worktree finds
+it; `ANON_DENYLIST` overrides). Without a denylist it fails; `--no-denylist`
+runs the pattern scans only and says so. Binary files are listed, not scanned.
+Owner rule of this repo: one pseudonymous identity publishes, so every commit
+must carry the author and committer of `origin/main`'s tip. Accepted pattern
+hits go into `scripts/anon_allow.txt`, one per line with a comment why; an
+entry excuses only the exact text it matches, and a denylist hit cannot be
+excused (change the denylist instead).

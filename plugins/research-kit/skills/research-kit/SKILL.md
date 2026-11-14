@@ -25,7 +25,28 @@ label or a stage code (`03b`); receipts print the real ID; a `TASK:` line in a
 brief names its tasks by id or by label, listed first (a label after other words
 does not count); titles are one line, 160 characters at most. `add task` without
 `--note` is refused (imports exempt); `add stage "<NN-kind-topic>"` creates the
-stage folder and records it as ref.
+stage folder and records it as ref. Every `--ref` (add, set, close, drop,
+reopen, supersede, stage-close) must name an existing file, relative to the repo
+root (a `://` URL, `doi:` or `arXiv:` passes; a path outside the repo is refused;
+imports exempt; checked against the main checkout, so in a worktree merge first):
+write the report first.
+`set <id> --ref-drop <path>` (repeatable) removes a wrong ref. `show` takes
+several ids and prints, under each history line, the kit version, session id and
+rule stamps the tool wrote. `doctor [--stage S] [--limit N]` (N lines per group, default 20, 0 = all) is read-only: HARD findings
+(ledger line that does not parse, missing ref, missing stage folder, ledger not
+append-only against HEAD) exit 1; SOFT ones (ref in an ignored or waste folder, waste ref whose file is gone,
+done stage not in HEAD, entry without a stage, task running over 24 h, imported
+entries with missing refs, rule file behind the kit, and with `--stage` the
+decisions not owned by the user) are listed; no git repo: git checks are skipped.
+`reref OLD NEW [--dry-run]` replaces a leading path prefix in every ref that
+starts with it, all or nothing (refuses and writes nothing if a new path does
+not exist: move the files first). `stage-close` runs the stage checks and refuses on HARD.
+`doctor --start` feeds the SessionStart block (`kit <version>`, a line per stale
+rule file: run `/rk-sync` between stages, not inside one); the block also prints
+the line `rk() { python3 -I "<path>/rk.py" "$@"; }` and a notice when `jq` is
+missing. A Bash call keeps no shell state: start each call that uses `rk` with
+that line joined to the command by `;` (`rk() {...}; rk list`); `rk` in rule
+text means that command.
 
 The command argument says the mode: init, add-kind, upgrade, sync or close.
 
@@ -145,19 +166,25 @@ Full mode only (light has no stage entries: say so and stop).
    Several open stages (at most one per kind): ask which. A legacy stage path from the
    appendix is read-only: do not close it.
 2. First check the stage's **Done when** condition mechanically; if it does
-   not hold, stop and tell the user what is missing.
-3. Read the repo's `AGENTS.md` section 3.4 "Stage close" (8 steps: step 1 is
-   the Done when check, step 6 is `rk.py stage-close S-<n> --sign-off D-<m>`,
-   step 7 the kind's freeze steps from `pm/kinds/<kind>.md`, step 8 the chat
-   archive) and run it exactly in the order given there. A `stage-close`
-   refusal prints what is missing: fix it and rerun. Do not work from memory or a copy: 3.4 is the single
-   source.
+   not hold, stop and tell the user what is missing. (Sign-off is not part of
+   it: it is step 7 of the checklist.)
+3. Read the repo's `AGENTS.md` section 3.4 "Stage close" (8 steps: 1 Done when
+   check, 2 tasks, 3 `pm/README.md` and appendix state lines, 4 handoffs, 5 the
+   kind's freeze steps from `pm/kinds/<kind>.md`, 6 chat archive with its task
+   opened while the stage is open and the main transcript copied last, 7 user
+   sign-off by AskUserQuestion showing `rk.py doctor --stage S-<n>`, 8
+   `rk.py stage-close S-<n> --sign-off D-<m>` last; a handoff moved at step 4 needs
+   `rk.py reref <old path> <new path>` before it is closed) and run it exactly in the
+   order given there. A `stage-close` refusal prints what is missing: fix it
+   and rerun. Do not work from memory or a copy: 3.4 is the single source.
 4. One todo per step, with the owner the checklist names. Lead steps: the lead
    does them. Teammate steps: brief a named teammate.
-5. Confirm each step's output exists before the next step. The chat archive
-   comes last. After closing, the stage folder is frozen.
+5. Confirm each step's output exists before the next step. The archive and its
+   README file index come before the sign-off question, so the user sees the
+   finished record; the sign-off and `stage-close` events are not in the
+   archive. After closing, the stage folder is frozen.
 6. End by telling the user what is left for them: optional `/export` into
-   the stage's chat folder, and committing.
+   the stage's chat folder (it holds the tail the archive lacks), and committing.
 
 ## Changing a generic rule
 

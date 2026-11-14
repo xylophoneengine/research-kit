@@ -1,4 +1,4 @@
-<!-- research-kit: 2026-11-13e -->
+<!-- research-kit: 2026-11-14a -->
 # AGENTS.md - how we work on a research project (research-kit core)
 
 Generic working method for every project kind (paper, software, reverse engineering, experiment, thesis), distilled from completed projects. Installed and updated by the `research-kit` plugin (`/rk-init`, `/rk-add-kind`, `/rk-upgrade`, `/rk-sync`, `/rk-close`). Everything above "Project appendix" is generic and replaced on sync: never edit it in a repo copy; repo-specific lines go into the appendix. Kind rules live in `pm/kinds/<kind>.md`, one file per active kind, listed in the kinds block of the appendix; they add to this file, never relax it. Every rule carries a one-clause reason so a later session can judge an edge case instead of obeying blind. Placeholders: `<ID>` = short project id (session prefix, appendix), `NN` = stage number, `<kind>` = kind id, `<topic>` = stage topic.
@@ -64,7 +64,7 @@ Critic lenses (always exactly two, always opus):
    - what was intended, or a neighbouring problem instead?
    FINDINGS: location (file:line or section), problem, severity, concrete fix, owner (teammate name)
    ```
-   Evidence = command run or number measured (engineering). Source opened and passage checked (research). YES without evidence counts as PARTIAL. The review file (stage `notes/` in full mode, `pm/reviews/` in light mode; 4.4) IS the critic's report file: no second copy in `pm/waste/team/`. Then SendMessage to lead, max ~1k chars: verdict lines, blocking findings (location, owner), review path. Final text = single line "Reported to lead (report file: <path>)."
+   Evidence = command run or number measured (engineering). Source opened and passage checked (research). YES without evidence counts as PARTIAL. The review file (stage `notes/` in full mode, `pm/reviews/` in light mode; 4.4) IS the critic's report file: no second copy among the team reports. Then SendMessage to lead, max ~1k chars: verdict lines, blocking findings (location, owner), review path. Final text = single line "Reported to lead (report file: <path>)."
 6. **Fix loop**: any NO/PARTIAL -> lead re-plans work items (not just patches). Findings go to owner via `SendMessage`. Critics never fix. Re-run both critics. Max 2 fix rounds, then escalate leftovers to user (5.3). Resume same critic via `SendMessage` for v2/v3 rounds (keeps its context); a re-review reuses the review task while it is open, else the lead opens a new one. Done = every verdict line YES from both critics.
 7. **Integrate + verify**: named teammate (jr for run-and-report, exp for judgment) runs checks and pastes tail. Lead reads it: an agent's success report is not evidence, the pasted output is. Teammate runs, not lead: deliberate, because of the lead rule in section 1. Research: lead spot-checks key claims by reading cited passage. Report: what built/found, verification, critic verdicts, open findings, roster used. The lead closes each task from its report: `rk close T-<n> --note "<outcome>" --ref <report path>`.
 
@@ -82,19 +82,20 @@ TASK: T-<n>                                   <- open task; a brief without it i
 NOT IN SCOPE: <what to leave alone, e.g. "do not investigate WHY the data looks like this">.
 DONE WHEN: <mechanical check from the stage BRIEF.md>.
 Team: <name: one-line task>, for every teammate. Coordinate via SendMessage only when your work touches a teammate's.
-Full report -> write to pm/waste/team/<run>/<name>-r<round>.md (required deliverable): what you produced (absolute paths), how verified, open points, every claim tagged CONFIRMED / LIKELY / GUESS with its cite, and one line per file to discard, at column 0, nothing before it (never move or delete it yourself):
+Full report -> write to <REPORTS>/<name>-r<round>.md (required deliverable): what you produced (absolute paths), how verified, open points, every claim tagged CONFIRMED / LIKELY / GUESS with its cite, and one line per file to discard, at column 0, nothing before it (never move or delete it yourself):
 TO-WASTE: <repo-relative path> -- <reason>
 Then SendMessage to lead, max ~500 chars: DONE / BLOCKED, report path, blocking items only. Final text = single line "Reported to lead (report file: <path>)." (it reaches the lead too; never repeat the report).
-Subagents you start: research-kit:fetcher for lookups, else a type that can Write; in the foreground, full result to pm/waste/team/<run>/<name>-r<round>-sub<k>.md. The file is the result (the Agent call may return only "no report delivered"); read it yourself.
+Subagents you start: research-kit:fetcher for lookups, else a type that can Write; in the foreground, full result to <REPORTS>/<name>-r<round>-sub<k>.md. The file is the result (the Agent call may return only "no report delivered"); read it yourself.
 ```
 
-Reusing an idle teammate via `SendMessage`: restate DELIVERABLE, TASK with its `rk show` lines, NOT IN SCOPE and the report lines with the new `<round>` (its first brief may predate them). Lead reads a report file only when a decision needs it. Report files are team comms, not deliverables: anything worth keeping is copied into the stage folder.
+`<REPORTS>` (absolute path in the brief): full mode with a stage open = `pm/stages/<stage folder>/notes/team/`; light mode or no open stage = `pm/logs/team/<run>/` (`<run>` = `YYYY-MM-DD-HHMM` of the first spawn); repo without `pm/` = the lead's scratchpad. `<round>` = next free number for that name there: never overwrite a report. Reports are tracked with the repo, never in `pm/waste/` (the user empties it; a ref to a report must outlive it).
+
+Reusing an idle teammate via `SendMessage`: restate DELIVERABLE, TASK with its `rk show` lines, NOT IN SCOPE and the report lines with the new `<round>` (its first brief may predate them). Lead reads a report file only when a decision needs it. Report files are team comms (stage `notes/`: kept, never cited as a result), not deliverables.
 
 Append what applies:
 - One task per brief. Announce any bundling to user. No whole ledger, no whole BRIEF in a brief: the `rk show` lines carry the task and its decisions. Escalate with the ESCALATE block (5.3); no status narration.
 - Research: every claim carries its source (DOI, URL or file:page) and an evidence tag (5.1). Unsourced claims stay out of deliverable.
-- Code: simple Bash calls only. One command per call, no pipes / `&&` / heredocs (composed commands deadlock agents on permission prompts). Edits via Edit/Write, never `sed`/heredoc.
-- Code: typing + quality bar of repo (appendix) and "run the check, paste the tail". Navigation: symbol tools (serena or equivalent) before reading whole files, if repo has them.
+- Code: simple Bash calls only. One command per call, no pipes / `&&` / heredocs (composed commands deadlock agents on permission prompts). Edits via Edit/Write, never `sed`/heredoc. Typing + quality bar of repo (appendix) and "run the check, paste the tail". Navigation: symbol tools (serena or equivalent) before reading whole files, if repo has them.
 - A teammate that writes ledger entries (e.g. a fetch failure): the full tool path (4.2) and `--who <name>`.
 - Kind files list their own brief appends; paste the ones that apply.
 
@@ -112,7 +113,7 @@ Every step producing deliverables (scan, build, run, draft) is its OWN stage wit
 - Session name `<ID>_NN_<kind>_<topic>` (`/rename`), matching folder.
 - At most one open stage per kind; stages of different kinds may run in parallel. `/rk-close` names the stage it closes.
 - Stage sequence: the stage table in each kind file. Adapt the stage set per project; keep each row's Done when.
-- **Done when**: every stage opens with a mechanical exit check, written in `BRIEF.md` (file exists, check exits 0, counts match, both critics YES, user sign-off = a user decision linking the stage, 5.3). Why: completion by judgment call cannot be verified by the lead.
+- **Done when**: every stage opens with a mechanical exit check, written in `BRIEF.md` (file exists, check exits 0, counts match, both critics YES). The user sign-off is close step 7, never a Done-when item. Why: completion by judgment call cannot be verified by the lead.
 - Opening a stage = `rk add stage "NN-<kind>-<topic>"` (it creates the folder with its subfolders and records it as the stage ref); never `rk start` a stage. The stage entry is the only record of its state; only `rk stage-close` closes it.
 - Legacy stage paths (appendix `Legacy stages:`) are frozen and read-only; new stages go to `pm/stages/`. Why: closed stages are cited by path.
 
@@ -120,16 +121,16 @@ Every step producing deliverables (scan, build, run, draft) is its OWN stage wit
 
 ```
 pm/stages/NN-<kind>-<topic>/
-  README.md        what the stage answers, how to rerun, caveats, file index; human-first
+  README.md        what the stage answers, how to rerun, caveats, what was left open, file index; human-first
   BRIEF.md         lead's single source of truth for the stage (3.3)
   deliverables/    products the NEXT stage consumes (scans, extracts, results, drafts)
-  notes/           intermediates, lookups, critic reviews, fix logs, prior versions - keep, never cite
+  notes/           intermediates, lookups, critic reviews, fix logs, prior versions; team/ = teammate reports (2.3) - keep, never cite
   code/            frozen copies of any user-sandbox script this stage uses (+ sha256 in README)
-  chat/            session archive (3.4 step 8); gitignored, raw transcripts are large
+  chat/            session archive (3.4 step 6); gitignored, raw transcripts are large
 ```
 
 - Deliverable vs note decided when file is created, not later. Stage frozen when its stage entry is `done` (`rk stage-close`, 3.4). Later corrections go into CURRENT stage with pointer back. Why: cited paths must keep meaning what they meant.
-- Each stage README starts with: scope, provenance table (file | sha256 | role), run log (step | command | log path | start | end | status), results, caveats, file index; no status line, no hand-kept id lists (its decisions and tasks: `rk list --stage S-<n> --all`, `rk search <text>`). Teammate drafts README skeleton (junior enough).
+- Each stage README starts with: scope, provenance table (file | sha256 | role), run log (step | command | log path | start | end | status), results, caveats, what the stage left open, file index (written last, after the chat archive: it names `chat/` and every file); no status line, no hand-kept id lists (its decisions and tasks: `rk list --stage S-<n> --all`, `rk search <text>`). Teammate drafts README skeleton (junior enough).
 
 ### 3.3 Briefing a stage
 
@@ -137,21 +138,20 @@ pm/stages/NN-<kind>-<topic>/
 
 ### 3.4 Stage close (user says "close stage"; `/rk-close`)
 
-Checklist, this order, each step with owner. Chat archive LAST: session JSONL is snapshot at copy time, anything after it is missing from archive.
+Checklist, this order, each step with owner. Ledger events cannot be in the archive, so the two that end the stage (sign-off, `stage-close`) come after it, and the main transcript is copied last. Why: a step that needs the stage open (the archive task) must run before `stage-close`; sign-off needs the finished record in front of the user.
 1. Done when check run, output tail pasted into stage README (teammate runs, lead reads). Not met -> stage stays open, or user accepts the gap, logged as a user decision linking the stage (5.3).
-2. Every task of the stage done, dropped, re-staged or deferred: `rk list --stage S-<n>` shows no open task (lead).
-3. `pm/README.md`: every quotable number stage produced or refuted gets row in "Load-bearing numbers". Update "Do not quote / known traps" (lead).
-4. Executed handoffs -> `pm/handoffs/done/` (jr moves files), `rk close H-<n> --note "<outcome>"` (lead).
-5. User sign-off: the lead asks the user; only after the user gave it, `rk add decision "<sign-off>" --owner user --link S-<n>` (lead).
-6. `rk stage-close S-<n> --sign-off D-<m>` (lead). Refused -> fix what it names, rerun. Stage table, open list and task view are generated from the ledger; nothing to rewrite by hand.
-7. Kind-specific freeze steps named in the kind file (owner as named there).
-8. Chat archive into the stage's `chat/` (lead, copy only, never digest in `notes/`; a teammate copying `~/.claude` transcripts is refused by the permission classifier):
-   - raw session JSONL `~/.claude/projects/<sanitized-cwd>/<session-id>.jsonl`;
+2. Every task of the stage done, dropped, re-staged or deferred: `rk list --stage S-<n>` shows no open task (lead). A task closed on a report or review carries it as `--ref`.
+3. `pm/README.md`: every quotable number stage produced or refuted gets row in "Load-bearing numbers". Update "Do not quote / known traps". Update the appendix lines this stage made stale (stage sequence state, current scripts and checkers, gaps now closed) (lead).
+4. Executed handoffs: jr moves the file to `pm/handoffs/done/`, then `rk reref pm/handoffs/open/HANDOFF_<topic>.md pm/handoffs/done/HANDOFF_<topic>.md`, then `rk close H-<n> --note "<outcome>"` (lead). A moved file with its old ref is a HARD finding at step 8.
+5. Kind-specific freeze steps named in the kind file (owner as named there).
+6. Chat archive into the stage's `chat/` (lead, copy only, never digest in `notes/`; a teammate copying `~/.claude` transcripts is refused by the permission classifier). Open its task first, while the stage is open: `rk add task "chat archive" --owner lead --stage S-<n> --note "<what is copied>"`; close it when done.
    - teammate transcripts `~/.claude/projects/<sanitized-cwd>/<session-id>/subagents/agent-*.jsonl` + `*.meta.json`; plus `tasks/*.output` from any scratchpad `tasks/` dir if present (team session may have none; write that into INDEX.md instead of leaving it silent);
-   - rendered `session.md` and `INDEX.md` (what was copied, what was absent);
    - secret scan of every copied file (API keys, tokens; grep the key prefixes listed in appendix). Scrub in the copy only, record it in `INDEX.md`;
-   - size check: each transcript < 100 MB (push limit of common git hosts; one stage once produced a 112 MB file).
-   User runs `/export` into same folder if tail matters.
+   - size check: each transcript < 100 MB (push limit of common git hosts; one stage once produced a 112 MB file);
+   - the raw main session JSONL `~/.claude/projects/<sanitized-cwd>/<session-id>.jsonl` last of the transcript copies (snapshot at copy time; sign-off and `stage-close` are not in it; the user may run `/export` into the same folder);
+   - rendered `session.md` and `INDEX.md` (what was copied, what was absent, snapshot time); then the stage README file index.
+7. User sign-off (lead): ask with AskUserQuestion; the question shows the output of `rk doctor --stage S-<n>` (hard findings fixed first, soft ones listed, the stage's decisions not owned by the user, each with its owner and the decisions it links). Changes asked: redo the steps they touch, ask again. Only after the user answered: `rk add decision "<sign-off>" --owner user --link S-<n> --note "<the answer>"`.
+8. `rk stage-close S-<n> --sign-off D-<m>` (lead), last. It refuses on open tasks and on a missing ref or stage folder (`rk doctor --stage` also checks the ledger against HEAD) and prints the soft findings; fix what it names, rerun. Stage table, open list and task view are generated from the ledger; nothing to rewrite by hand.
 
 ## 4. Documentation set
 
@@ -164,12 +164,12 @@ pm/
     GOALS.md         goal, scope, claims or targets (open questions: deferred entries)
   kinds/             active kind files (replaced on sync; never edit locally)
   stages/            section 3 (full mode only)
-  handoffs/open/     work packages for later sessions (HANDOFF_<topic>.md), committed; handoffs/done/ when the executing stage closes
+  handoffs/open/     work packages for later sessions (HANDOFF_<topic>.md), committed; handoffs/done/ at close step 4
   handoffs/compact/  compaction handoffs (handoff-YYYY-MM-DD.md), gitignored
-  logs/              run and impl logs, committed
+  logs/              run and impl logs, committed; team/<run>/ = teammate reports outside a stage (2.3)
   reviews/           critic reviews made outside stages (light mode), gitignored
   scratch/           throwaway work, gitignored
-  waste/             discarded files + LEDGER.md (section 7), gitignored; team/ = teammate report files
+  waste/             discarded files + LEDGER.md (section 7), gitignored
 ```
 
 Kind-specific folders (e.g. a paper's library and manuscript) are named in the kind file. Nothing else sits in `pm/` root.
@@ -183,31 +183,28 @@ Kind-specific folders (e.g. a paper's library and manuscript) are named in the k
 
 ### 4.2 The ledger (pm/ledger.jsonl)
 
-- One ledger per repo, in the main checkout. `rk` = `python3 -I <path>/rk.py`, run from the repo root; inside a git worktree it finds the main checkout's `pm/ledger.jsonl` by itself (no path to pass). The path is in the SessionStart line `[research-kit] Ledger tool ...` (skills spell it in full). Teammates add `--who <name>`. Every write prints a receipt line (`logged D-4: ...`): show it to the user.
+- One ledger per repo, in the main checkout. `rk` in rule text = `python3 -I "<path>/rk.py"`, run from the repo root. The SessionStart block prints it as the line `rk() { python3 -I "<path>/rk.py" "$@"; }`; a Bash call keeps no shell state, so start each call that uses `rk` with that line joined to the command by `;` (`rk() {...}; rk list`; skills spell the full command); inside a git worktree it finds the main checkout's `pm/ledger.jsonl` by itself. The block also names a rule file behind the kit (run `/rk-sync` between stages, not inside one) and warns when `jq` is missing (guards off). Teammates add `--who <name>`. Every write prints a receipt line (`logged D-4: ...`): show it to the user. The tool stamps every event with the kit version and the session id (`rk show` prints them): the way from an entry to the archived transcript.
 - Types (id prefix): task T, decision D, deferred DF, fetch F, debt DB, handoff H, stage S; a kind file may declare more with `<!-- rk:type <name> <PREFIX> -->`. Statuses: open, running, done, dropped, superseded. `imported` entries are unverified.
-- Granularity: an entry is a unit of work or a ruling; a file edit, a one-line fix or a test rerun is not. The user's own work: `rk add task "<what>" --owner user --status done --note ...`. Never hand-edit `ledger.jsonl` or `STATUS.md` (a hook blocks it); corrections are new events. `ledger.jsonl` is committed together with the work (section 7); the tool never runs git.
+- Granularity: an entry is a unit of work or a ruling; a file edit, a one-line fix or a test rerun is not. The user's own work: `rk add task "<what>" --owner user --status done --note ...`. Never hand-edit `ledger.jsonl` or `STATUS.md` (a hook blocks it); corrections are new events. `ledger.jsonl` is committed together with the work (section 7); the tool never changes git state (only `doctor` and `stage-close` read it).
 - `rk add <type> "<title>" [--owner N] [--label L] [--stage S-<n>] [--note T] [--link ID]... [--ref PATH]... [--status S]`: new entry. A `task` without `--note` is refused (imports exempt); `rk add stage` also creates the folder (3.1)
 - `rk start ID`: open -> running, for tasks and other work entries, never a stage (the brief hook does it for the brief's `TASK:` ids)
-- `rk close ID --note "<outcome>" [--ref PATH] [--link ID]`: done; not for stages (`stage-close`) or decisions (`supersede` / `drop`)
-- `rk drop ID --note "<why>" [--link ID]`: dropped; `rk reopen ID --note "<why>"`: done / dropped -> open
+- `rk close ID --note "<outcome>" [--ref PATH] [--link ID]`: done; not for stages (`stage-close`) or decisions (`supersede` / `drop`). Every `--ref` (add, set, close, drop, reopen, supersede, stage-close) must name an existing file, relative to the repo root (a `://` URL, `doi:` or `arXiv:` passes; a path outside the repo is refused; imports exempt; checked against the main checkout, so in a worktree merge first): the report or review is written before the task closes on it
+- `rk drop ID --note "<why>" [--link ID]`: dropped; `rk reopen ID --note "<why>"`: done / dropped -> open; `rk supersede D-<n> "<new>" --owner N [--note T]`: replaces a decision in one call
 - Label `L` = `<stage code>/<item>` (e.g. `03b/W4`; the `/` is required): unique, stored on the entry, never containing an ID form (`03b/T-1` is refused); a stage's title is its folder name and is never renamed (`set --title` on a stage is refused); every command that takes an ID also takes a label or a stage code (`03b`); an ID always wins; ambiguity is refused; a label resolves only as written (`03b/W2`, not `W2`; `rk search W2` finds it); receipts print the real ID
-- `rk set ID [--title T] [--owner N] [--label L] [--stage S-<n>] [--note T | --note-replace T] [--link ID] [--ref PATH]`: change fields, status kept. Every `--note` (set, close, drop, reopen) appends a line to the entry's note; only `--note-replace T` replaces it
-- `rk supersede D-<n> "<new>" --owner N [--note T]`: replaces a decision in one call
-- `rk list [--type T] [--owner N] [--stage S-<n>] [--all]`: open entries, short (`--all` adds closed ones)
-- `rk show ID`: fields, history, and one line (id, status, title) per linked entry, both directions (it links, links it)
-- `rk search TEXT`: titles, notes and labels (partial text), every status
-- `rk recent [-n N]`: entries with the newest events
-- `rk stage-close S-<n> --sign-off D-<m>`: the only way to close a stage (3.4)
+- `rk set ID [--title T] [--owner N] [--label L] [--stage S-<n>] [--note T | --note-replace T] [--link ID] [--ref PATH] [--ref-drop PATH]`: change fields, status kept. Every `--note` (set, close, drop, reopen) appends a line to the entry's note; only `--note-replace T` replaces it; `--ref-drop PATH` (repeatable) removes a wrong ref (a new event, history keeps it)
+- Read: `rk list [--type T] [--owner N] [--stage S-<n>] [--all]` (open entries, short; `--all` adds closed ones); `rk show ID [ID ...]` (fields, history with kit version, session id and rule stamps, one line per linked entry, both directions); `rk search TEXT` (titles, notes, labels, every status); `rk recent [-n N]` (newest events)
+- `rk doctor [--stage S] [--limit N]`: read-only, writes nothing; exit 1 on a HARD finding. Groups, HARD first, N lines each (default 20, 0 = all). HARD = the record is broken (ledger line that does not parse, missing ref or stage folder, ledger not append-only against HEAD); SOFT = suspect or unfinished (ref in a git-ignored or waste folder, ref into `pm/waste/` whose file the user emptied (`--ref-drop`), done stage not in HEAD, entry without a stage, task running over 24 h, imported entries with missing refs, rule file behind the kit, the stage's decisions not owned by the user): a group that has a fix names it in its heading. No git repo: git checks are skipped, with a line saying so
+- `rk reref OLD NEW [--dry-run]`: replaces the leading path prefix OLD by NEW in every ref that starts with it (all entries, imported, done and closed stages included), all or nothing: refuses and writes nothing if a new path does not exist, so move the files first; prints one line per ref
+- `rk stage-close S-<n> --sign-off D-<m> [--ref PATH]`: the only way to close a stage (3.4); it runs the `doctor --stage` checks first, refuses on a HARD finding (missing ref, missing stage folder) and prints the SOFT ones
 
 ### 4.3 Handoffs
 
-- Work package `HANDOFF_<topic>.md` in `pm/handoffs/open/`: self-contained package for a later or side session. Goal, inputs (exact paths), spec of deliverable, Done when, what is out of scope, what feeds it. One `handoff` entry per open handoff: `rk add handoff "<topic>" --ref pm/handoffs/open/HANDOFF_<topic>.md`, closed when executed. Declined by the user: `rk drop H-<n> --note "<user decision>"` (file stays parked, never deleted).
+- Work package `HANDOFF_<topic>.md` in `pm/handoffs/open/`: self-contained package for a later or side session. Goal, inputs (exact paths), spec of deliverable, Done when, what is out of scope, what feeds it. One `handoff` entry per open handoff: `rk add handoff "<topic>" --ref pm/handoffs/open/HANDOFF_<topic>.md`, closed when executed (move the file, `rk reref`, then `rk close`). Declined by the user: `rk drop H-<n> --note "<user decision>"` (file stays parked, never deleted).
 - Compaction handoff `pm/handoffs/compact/handoff-YYYY-MM-DD.md`: session state for the next context, written by the `research-kit:surviving-compaction` skill and hooks. Gitignored; never cite it. Why: it is a memory aid, not a record.
 
 ### 4.4 Notes, critic reviews, logs
 
-- Filenames carry a date: `critic_review_<what>_v2_<date>.md`, `run_log_<date>.md`, `impl_log_<date>.md`.
-- Critic reviews kept in stage `notes/` (light mode: `pm/reviews/`) with version suffix. Owner's fix log sits beside them (`fix_round_<what>_<date>.md`). Run and impl logs outside a stage go to `pm/logs/`.
+- Filenames carry a date: `critic_review_<what>_v2_<date>.md`, `run_log_<date>.md`, `impl_log_<date>.md`. Critic reviews kept in stage `notes/` (light mode: `pm/reviews/`) with version suffix. Owner's fix log sits beside them (`fix_round_<what>_<date>.md`). Run and impl logs outside a stage go to `pm/logs/`.
 - Labels must match what code computes. Critics check every table column and legend name against code (two experiments in the source project needed 9 and 10 label/provenance fixes after results).
 - Docs ASCII-only if repo has pre-commit transliteration hook (appendix). Write `->`, `<=`, `x`, `Delta`, `+/-`, `[x]` directly. Unmapped character blocks commit.
 
@@ -228,7 +225,7 @@ Every claim in a report, note, README or brief carries one tag and a cite. Why: 
 
 ### 5.3 Decisions and escalation
 
-- One `decision` entry per decision: `rk add decision "<what>" --owner <user / lead / name> --note "<why>" [--stage S-<n>] [--link ID]...`; `--owner` = who decided. A decision is in force when logged: a change = `rk supersede D-<n> "<new>" --owner ...` (never a re-add), a withdrawal = `rk drop`; never closed. Includes decisions already taken (do not reopen without the user). An open question for the user is not a decision: it is a `deferred` entry with `--owner user` (5.4). Stage sign-off = a user decision that links the stage, `--link S-<n>` (`--stage S-<n>` alone does not count: decisions default to the open stage); the lead asks and logs it only after the user gave it. Why: later sessions must tell user calls from agent calls.
+- One `decision` entry per decision: `rk add decision "<what>" --owner <user / lead / name> --note "<why>" [--stage S-<n>] [--link ID]...`; `--owner` = who decided. A decision is in force when logged: a change = `rk supersede D-<n> "<new>" --owner ...` (never a re-add), a withdrawal = `rk drop`; never closed. Includes decisions already taken (do not reopen without the user). An open question for the user is not a decision: it is a `deferred` entry with `--owner user` (5.4). Stage sign-off = a user decision that links the stage, `--link S-<n>` (`--stage S-<n>` alone does not count: decisions default to the open stage); the lead asks (3.4 step 7) and logs it only after the user gave it. A lead decision that narrows or reinterprets a user decision links it (`--link D-<m>`) and is shown at sign-off. Why: later sessions must tell user calls from agent calls.
 - Scope test: escalate only if a choice changes output, public surface, claims, or files named in the brief; otherwise decide, log one entry. Clusters of agent rows against one stage signal a bad brief.
 - Escalation (teammate -> lead, lead -> user) is one ESCALATE block, nothing around it:
   ```
@@ -240,14 +237,13 @@ Every claim in a report, note, README or brief carries one tag and a cite. Why: 
 
 ### 5.4 Deferred items and the stop rule
 
-- Anything that needs approval, hardware, money, a hand fetch or an unanswered question is parked: `rk add deferred "<item>" --note "needs: ...; blocks: ..."` (`--owner user` when it waits on them, always for a question to the user). Other work continues. Why: one waiting item must not stall a team. Items leave only via `rk close` (with pointer) or `rk drop` (with the user's decision), never silently: absence looks like a result.
+- Anything that needs approval, hardware, money, a hand fetch or an unanswered question is parked: `rk add deferred "<item>" --note "needs: ...; blocks: ..."` (`--owner user` when it waits on them, always for a question to the user). Other work continues. Why: one waiting item must not stall a team. Items leave only via `rk close` (with pointer) or `rk drop` (with the user's decision), never silently: absence looks like a result. A fetch the user cannot obtain and accepts as unread: `rk drop F-<n> --note "<what was tried>" --link D-<m>` (D-<m> = that user decision).
 - Stop rule: a session or teammate stops or refuses mid-task -> lead logs it as a deferred entry (what, exact refusal text, state left) and asks the user. No rephrase/retry loop. Why: rephrasing around a refusal hides the problem and burns budget.
 
 ## 6. Code and computation
 
 - Repo code read-only for lead and research teammates. Code edited only when the brief names file and change (software stages name them by design). Brief quotes that decision with its date. User's own scripts = sandbox: stage using one keeps own frozen copy in its `code/` (sha256 at copy time in README), runs import copy, never original.
-- No-go dirs (appendix) never read, grepped, edited, imported unless user names file. Agents never install packages. User owns environment.
-- Any change to shared code re-runs checks of its dependents (appendix lists them).
+- No-go dirs (appendix) never read, grepped, edited, imported unless user names file. Agents never install packages. User owns environment. Any change to shared code re-runs checks of its dependents (appendix lists them).
 - Long runs persist everything first: curves, meta, argv, git stamp, sha256 of inputs/outputs go to disk before any multi-hour run. Re-render paths never overwrite main outputs without explicit gate. Never launch multi-hour run unless brief says so. Report command, user launches it.
 - Each stage rerun carries run sheet in its README: ordered commands, expected outputs, pass criteria. Commands run from repo root with explicit output dirs (never rely on defaults pointing at old stage). Frozen older stages keep old commands, valid at pinned commits.
 - Benchmarks and timed runs (arms, timing protocol, solver checks, result tables): rules live in the software kind file, section "Benchmarks / computational experiments"; a repo that runs benches activates it (`/rk-add-kind software`). Why: only bench repos pay for them.
@@ -259,12 +255,15 @@ The appendix `Git policy:` line decides; never infer it from habit.
 - `user commits` (default): agents run no git command that changes state (commit, push, branch, checkout, reset, stash, rebase); read-only `status` / `diff` / `log` are fine. User commits. Why: the user owns history.
 - `orchestrator commits`: each implementer works in its own git worktree on its own branch (`isolation: "worktree"`) and commits only there. Only the lead merges into the main branch, after both critics say YES and the Done when check passes. The ledger stays one file in the main checkout (4.2): the lead carries it in each merge commit, never a ledger-only commit: `git merge --no-ff --no-commit <branch>`, then `git add pm/ledger.jsonl`, then `git commit` (staged before the merge, git refuses the merge; a fast-forward leaves no merge commit to carry it); `rk init` sets `pm/ledger.jsonl merge=union` in `.gitattributes`. Nobody pushes, force-pushes or rewrites history unless the user asks. Why: one merger keeps parallel work reviewable.
 - Never delete files, under either policy: move them to `pm/waste/` with the `research-kit:waste` skill (waste ledger row first; no `rm`, `git rm`, overwrite-to-clear). User empties it. Legacy `WASTE/` (appendix `Legacy waste:`) stays as is; new waste goes to `pm/waste/`. Why: deletions cannot be reviewed.
-- Only the lead runs the waste helper; teammates never do. They list each file in their report as one line at column 0, `TO-WASTE: <repo-relative path> -- <reason>`; the lead collects them with `grep -h '^TO-WASTE: ' <reports>`, moves them and the user approves the prompt. Why: a teammate's permission prompt may never reach the user (e.g. over remote control).
+- Only the lead runs the waste helper; teammates never do. They list each file in their report as one line at column 0, `TO-WASTE: <repo-relative path> -- <reason>`; the lead collects them with `grep -h '^TO-WASTE: ' <reports>`, moves them and the user approves the prompt. A file an entry refs: after the move `rk reref <path> <waste path>` or `rk set ID --ref-drop <path>` (else a HARD finding at close). Why: a teammate's permission prompt may never reach the user (e.g. over remote control).
 
 ## 8. Rules of thumb
 
-- Questions to user with discrete options go through AskUserQuestion, recommended option first. Commands user must run are written in their own message (text before a question box is hidden).
-- After burst of teammate hand-backs: ONE message = insights summary + all open questions, numbered, each with a default.
+- Questions to user with discrete options go through AskUserQuestion, recommended option first. A decision is its own call, never a line in a status message (chat text is buried under teammate notes). Commands user must run are written in their own message (text before a question box is hidden).
+- Idle pings, confirmations and duplicate notifications get no user message: write to the user only when something finished, failed or needs them.
+- Each question stands alone: one topic, the work named in plain words with DOI or path (never a bare label or id), what each option changes. Why: the user reads it later, between other things.
+- A decision that changes one a teammate holds goes to every teammate holding the old one, in one message. Why: teammates acted on a stale decision and each needed a correction.
+- After a burst of teammate hand-backs: one summary message with no question in it, then each open question as its own AskUserQuestion call, each with a default.
 - Never label user impatient. Never offer to relay between user and teammate. Brief interactive teammate to ask user itself.
 - Build locally. Publish nothing to web unless user asks. Analyses = scripts saved next to project's other scripts so output can be regenerated, not one-offs.
 - Repo visibility: record per repo (public / private-until-publication) in appendix. Public repos never mention private ones.
@@ -292,7 +291,7 @@ Project lines (fill per repo; add kind-specific lines the kind files ask for):
 - Quality gate commands: lint / format / type check (exact)
 - Selfchecks / tests; dependents to re-check on shared-code change:
 - No-go dirs (never read/edit):
-- API key prefixes to scrub (3.4 step 8):
+- API key prefixes to scrub (3.4 step 6):
 - Pre-commit hooks (ASCII etc.):
 - Repo visibility:
 - Known environment traps: (local library patches, RAM limits, power mode, ...)

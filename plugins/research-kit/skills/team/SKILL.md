@@ -105,15 +105,20 @@ on that tier).
    may return only "no report delivered"; read the file yourself.
    ```
 
-   `<REPORTS>` = absolute path `<repo>/pm/waste/team/<run>/` when the repo
-   has a `pm/` folder, else `team-reports/<run>/` in the lead's scratchpad
-   directory (fallback `$TMPDIR/team-reports/<run>/`). `<run>` =
-   `YYYY-MM-DD-HHMM` when you first spawn this team; keep it for the whole
-   team. One folder per run: a later run never overwrites these files, and
-   the step-7 grep sees only this run. This is for worker reports only;
-   critic reviews go to `<REVIEWS>` (step 5). Reports live on disk, not
-   in the lead's context; the lead reads a report only when a decision
-   needs it, and then only the needed section.
+   `<REPORTS>` = absolute path, tracked with the repo, never `pm/waste/`
+   (a ref to a report must outlive the waste folder):
+   - `pm/` repo in full mode with an open stage: `<repo>/pm/stages/NN-<kind>-<topic>/notes/team/`;
+   - `pm/` repo in light mode or with no open stage: `<repo>/pm/logs/team/<run>/`;
+   - no `pm/`: `team-reports/<run>/` in the lead's scratchpad directory
+     (fallback `$TMPDIR/team-reports/<run>/`).
+
+   `<run>` = `YYYY-MM-DD-HHMM` when you first spawn this team; keep it for
+   the whole team. `<round>` = the next free number for that name in
+   `<REPORTS>`: a file is never overwritten (a stage folder holds the reports
+   of every team of the stage). Create the folder with the first brief. This
+   is for worker reports only; critic reviews go to `<REVIEWS>` (step 5).
+   Reports live on disk, not in the lead's context; the lead reads a report
+   only when a decision needs it, and then only the needed section.
 
    Append the lines that apply:
    - Repo with `.serena/project.yml`: "Use Serena symbols before Reading files."
@@ -163,9 +168,10 @@ on that tier).
    Research: open the sources of the key claims yourself. Report: what was
    built or found, verification, critic verdicts, open findings, roster
    used. Collect the items with
-   `grep -h '^TO-WASTE: ' <REPORTS>/*.md` (plus the stage notes or
-   `pm/reviews/` when critics listed some; never read whole reports for
-   this), then close each task on its report
+   `grep -h '^TO-WASTE: ' <the report paths named in this wave's DONE messages>`
+   (plus the stage notes or `pm/reviews/` when critics listed some;
+   never read whole reports for this; a line already in `pm/waste/LEDGER.md`
+   is done), then close each task on its report
    (`python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" close T-<n> --note "<outcome>" --ref <report path>`; after a
    critic NO the task stays running), and the review task with the verdicts
    and the review file paths (`--ref`), then run `research-kit:waste` (`waste.sh lead "<reason>" <paths>`)
@@ -177,17 +183,20 @@ on that tier).
 - While teammates run, open with **Done** / **Running** (names) / **Needs
   you**. Keep user messages to ~10 lines unless asked.
 - When a teammate finishes, route its next item or ask the user at once.
-- A decision you need from the user always goes through `AskUserQuestion`,
-  in a call of its own, never inside a status message: chat text gets
-  buried under teammate notifications. No discrete options: offer your
-  recommended answer plus one alternative ("Other" covers the rest). Under
-  **Needs you** write only a pointer to what you asked.
+- The always-on rules for talking to the user are in core AGENTS.md section 8
+  (read at every session start; this skill does not replace them): a decision
+  is its own `AskUserQuestion` call, never a line in a status message; idle
+  pings and duplicate notifications get no user message; each question stands
+  alone (one topic, the work named in plain words with DOI or path, what each
+  option changes); a changed decision goes to every teammate holding the old
+  one, in one message. Procedure on top of them:
+- No discrete options: offer your recommended answer plus one alternative
+  ("Other" covers the rest). Under **Needs you** write only a pointer to what
+  you asked.
 - A question that does not block yet: in a repo with `pm/ledger.jsonl` log
   it (`rk add deferred "<question>" --owner user`, shown under STATUS
-  "Needs you"); ask when it starts to block or at the next natural stop,
-  all pending ones in one call (max 4).
-- Idle pings and duplicate notifications get no user-facing message. Write
-  to the user only when something finished, failed, or needs them.
+  "Needs you"); ask when it starts to block or at the next natural stop, one
+  `AskUserQuestion` call per question, in a row.
 - Before saying you are waiting, run `ListAgents`; if nobody runs, say so
   and act. After a resume, assume teammates are gone.
 

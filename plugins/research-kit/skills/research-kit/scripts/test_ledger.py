@@ -8,11 +8,12 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta
 from importlib.machinery import ModuleSpec
 from pathlib import Path
@@ -69,11 +70,13 @@ def test_add_and_fold() -> None:
     with tempfile.TemporaryDirectory() as d:
         repo: Path = new_repo(Path(d))
         code, out = lrun(repo, "add", "task", "Write loader", "--note", "n")
-        assert code == 0 and out == "logged T-1: Write loader\n", out
+        assert code == 0 and out == "logged T-1: Write loader (no stage)\n", out
         ev: dict[str, Any] = jl(repo)[0]
-        assert list(ev) == ["ts", "who", "ev", "id", "f"] and ev["ev"] == "add", ev
+        assert list(ev)[:5] == ["ts", "who", "ev", "id", "f"] and ev["ev"] == "add"
+        assert ev["kit"] == L.kit_version() != "unknown", ev
         assert ev["f"]["status"] == "open" and ev["f"]["owner"] == "lead", ev
-        assert lrun(repo, "add", "task", "B", "--note", "n")[1] == "logged T-2: B\n"
+        out = lrun(repo, "add", "task", "B", "--note", "n")[1]
+        assert out == "logged T-2: B (no stage)\n", out
         out = lrun(repo, "add", "decision", "dE00", "--owner", "user")[1]
         assert out.startswith("logged D-1"), out
         assert L.load(repo)["D-1"].status == "done"
@@ -90,7 +93,7 @@ def test_unknown_type_fails() -> None:
         assert code == 1 and "did you mean 'task'" in out, out
         kind: Path = repo / "pm/kinds/k.md"
         kind.write_text("# Kind k\n<!-- rk:type sample SM -->\n")
-        assert lrun(repo, "add", "sample", "x")[1] == "logged SM-1: x\n"
+        assert lrun(repo, "add", "sample", "x")[1] == "logged SM-1: x (no stage)\n"
         kind.write_text("<!-- rk:type Bad -->\n")
         code, out = lrun(repo, "add", "task", "x", "--note", "n")
         assert code == 1 and "k.md:1" in out, out
@@ -141,30 +144,74 @@ def test_concurrent_appends() -> None:
 
 
 def test_no_git_call() -> None:
+    """Only doctor and stage-close run git, only read-only subcommands, all
+    through ledger._git; every other command never runs git."""
     for src in (RK_PY, RK_PY.with_name("ledger.py")):
         text: str = src.read_text()
-        bad: tuple[str, ...] = (
-            "subprocess", "os.system", "os.exec", "os.popen", "import pty"
-        )
+        bad: tuple[str, ...] = ("os.system", "os.exec", "os.popen", "import pty")
         assert not any(w in text for w in bad), src
+    assert "subprocess" not in RK_PY.read_text()
+    text = RK_PY.with_name("ledger.py").read_text()
+    assert text.count("subprocess.run(") == 1, "git only through _git"
+    doc_start: int = text.index("# ---- doctor ---")
+    doc_end: int = text.index("def _cmd_brief_check(")
+    calls: list[int] = [i for i in range(len(text)) if text.startswith("_git(", i)]
+    assert calls and all(doc_start < i < doc_end for i in calls), "git outside doctor"
+    run_at: int = text.index("subprocess.run(")
+    assert doc_start < run_at < doc_end and text.index("def _git(") < run_at
+    assert L.GIT_READ == {"status", "diff", "ls-files", "check-ignore", "show"}
     with tempfile.TemporaryDirectory() as d:
         repo: Path = new_repo(Path(d))
         fakebin: Path = Path(d) / "bin"
         fakebin.mkdir()
-        marker: Path = Path(d) / "git-was-called"
+        log: Path = Path(d) / "git-calls"
         git: Path = fakebin / "git"
-        git.write_text(f'#!/bin/sh\ntouch "{marker}"\n')
+        envlog: Path = Path(d) / "git-env"
+        git.write_text(
+            f'#!/bin/sh\necho "$3" >> "{log}"\n'
+            f'echo "${{GIT_OPTIONAL_LOCKS:-unset}} ${{GIT_DIR:-nodir}}" >> "{envlog}"\n'
+            "exit 0\n"
+        )
         git.chmod(0o755)
         env: dict[str, str] = {
             **os.environ, "PATH": f"{fakebin}{os.pathsep}{os.environ['PATH']}"
         }
-        r: subprocess.CompletedProcess[bytes] = subprocess.run(
-            [sys.executable, "-I", str(RK_PY), "add", "task", "x", "--note", "n",
-             "--repo", str(repo)],
-            env=env, capture_output=True,
-        )
-        assert r.returncode == 0, r
-        assert not marker.exists(), "rk.py called git"
+
+        def tool(*argv: str) -> list[str]:
+            """git subcommands (after -C DIR) that one tool call ran."""
+            log.write_text("")
+            r: subprocess.CompletedProcess[bytes] = subprocess.run(
+                [sys.executable, "-I", str(RK_PY), *argv, "--repo", str(repo)],
+                env=env, capture_output=True,
+            )
+            assert r.returncode == 0, (argv, r)
+            return log.read_text().split()
+
+        for argv in (
+            ("add", "stage", "01-software-x"),
+            ("add", "task", "x", "--note", "n"),
+            ("start", "T-1"),
+            ("close", "T-1", "--note", "ok"),
+            ("set", "T-1", "--owner", "sr1"),
+            ("list", "--all"),
+            ("show", "T-1"),
+            ("doctor", "--start"),
+            ("add", "decision", "ok", "--owner", "user", "--link", "S-1"),
+        ):
+            assert tool(*argv) == [], argv
+        for argv in (("doctor",), ("stage-close", "S-1", "--sign-off", "D-1")):
+            envlog.write_text("")
+            env["GIT_DIR"] = str(Path(d) / "other.git")  # must not reach git
+            calls: list[str] = tool(*argv)
+            assert calls and set(calls) <= L.GIT_READ, (argv, calls)
+            seen: set[str] = set(envlog.read_text().splitlines())
+            assert seen == {"0 nodir"}, seen  # no index write; no inherited GIT_DIR
+        try:
+            L._git(repo, ["commit", "-m", "x"])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("_git ran a write command")
 
 
 def test_repo_lookup() -> None:
@@ -210,7 +257,7 @@ def test_worktree_uses_main_ledger() -> None:
             [sys.executable, "-I", str(RK_PY), "add", "task", "from wt", "--note", "n"],
             cwd=wt / "pm", capture_output=True, text=True,
         )
-        assert r.returncode == 0 and r.stdout == "logged T-1: from wt\n", r
+        assert r.returncode == 0 and r.stdout == "logged T-1: from wt (no stage)\n", r
         assert len(jl(main)) == 1 and jl(wt) == [], (jl(main), jl(wt))
 
 
@@ -219,7 +266,7 @@ def test_unterminated_last_line_kept() -> None:
         repo: Path = new_repo(Path(d))
         (repo / L.LEDGER_REL).write_text(ev_line("T-1", "a").rstrip("\n"))
         code, out = lrun(repo, "add", "task", "b", "--note", "n")
-        assert code == 0 and out == "logged T-2: b\n", out
+        assert code == 0 and out == "logged T-2: b (no stage)\n", out
         raw: str = (repo / L.LEDGER_REL).read_text()
         assert raw.endswith("\n") and len(raw.splitlines()) == 2, raw
         assert [e["id"] for e in jl(repo)] == ["T-1", "T-2"]
@@ -315,6 +362,8 @@ def test_status_cycle() -> None:
         assert code == 0 and "already running" in out, out
         assert len(jl(repo)) == n
         assert lrun(repo, "close", "T-1")[0] == 1  # needs --note
+        (repo / "a.md").write_text("a")
+        (repo / "b.md").write_text("b")
         code, out = lrun(
             repo, "close", "T-1", "--note", "loader works",
             "--ref", "a.md", "--ref", "b.md",
@@ -405,7 +454,7 @@ def test_supersede() -> None:
         n: int = len(jl(repo))
         code, out = lrun(repo, "supersede", "D-1", "metric dE00", "--owner", "user")
         s: dict[str, Any] = L.load(repo)
-        assert out == "logged D-2: metric dE00 (supersedes D-1)\n", out
+        assert out == "logged D-2: metric dE00 (supersedes D-1; no stage)\n", out
         assert len(jl(repo)) == n + 2
         assert s["D-1"].status == "superseded"
         assert s["D-1"].extra["superseded_by"] == "D-2"
@@ -422,6 +471,8 @@ def test_supersede() -> None:
 def test_set_appends_lists() -> None:
     with tempfile.TemporaryDirectory() as d:
         repo: Path = new_repo(Path(d))
+        for name in ("a.md", "b.md", "c.md"):
+            (repo / name).write_text(name)
         lrun(repo, "add", "task", "t", "--note", "n", "--ref", "a.md", "--ref", "b.md")
         code, out = lrun(
             repo, "set", "T-1", "--ref", "a.md", "--ref", "c.md", "--owner", "sr2"
@@ -630,7 +681,9 @@ def test_show_history() -> None:
         out: str = lrun(repo, "show", "T-1")[1]
         assert "title: Loader" in out and "history:" in out, out
         assert " add " in out and " set " in out and "status=running" in out, out
-        hist: list[str] = out.split("history:\n")[1].splitlines()
+        hist: list[str] = [  # event lines; the kit/sid line under each is indented
+            h for h in out.split("history:\n")[1].splitlines() if h[:4] != "    "
+        ]
         assert len(hist) == 2 and all(h.startswith("  ") for h in hist), hist
         assert lrun(repo, "show", "T-99")[0] == 1
         lrun(repo, "add", "decision", "use dE00", "--owner", "user", "--link", "T-1")
@@ -711,7 +764,8 @@ def test_stage_close_refusals() -> None:
         code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-4")
         assert code == 1 and "superseded" in out, out
         code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
-        assert code == 0 and out == "closed S-1: sign-off D-1\n", out
+        assert code == 0 and out.endswith("\nclosed S-1: sign-off D-1\n"), out
+        assert "SOFT entry without stage" in out and "D-2 (S-1) lead ok" in out, out
         s: Any = L.load(repo)["S-1"]
         assert s.status == "done" and "D-1" in s.links, s
         assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 1
@@ -1137,7 +1191,7 @@ def test_label_add_set_unique() -> None:
     with tempfile.TemporaryDirectory() as d:
         repo: Path = new_repo(Path(d))
         code, out = lrun(repo, "add", "task", "a", "--note", "n", "--label", "03b/W4")
-        assert code == 0 and out == "logged T-1: a\n", out
+        assert code == 0 and out == "logged T-1: a (no stage)\n", out
         assert L.load(repo)["T-1"].extra == {"legacy_id": "03b/W4"}
         show: list[str] = lrun(repo, "show", "T-1")[1].splitlines()
         assert show[:2] == ["id: T-1", "label: 03b/W4"], show
@@ -1210,7 +1264,7 @@ def test_resolver_labels_and_stage_codes() -> None:
         lrun(repo, "close", "T-2", "--note", "ok")
         lrun(repo, "add", "decision", "m", "--owner", "user", "--label", "03b/D1")
         out = lrun(repo, "supersede", "03b/D1", "m2", "--owner", "user")[1]
-        assert out == "logged D-2: m2 (supersedes D-1)\n", out
+        assert out == "logged D-2: m2 (supersedes D-1; stage S-1)\n", out
         lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "03b",
              "--label", "03b/signoff")
         assert L.load(repo)["D-3"].links == ["S-1"]
@@ -1325,6 +1379,7 @@ def test_stage_folder() -> None:
         kept: Path = repo / "pm/stages/08-software-x/notes/old.md"
         kept.parent.mkdir(parents=True)
         kept.write_text("keep")
+        (repo / "a.md").write_text("a")
         code, out = lrun(repo, "add", "stage", "08-software-x", "--ref", "a.md")
         assert code == 0 and kept.read_text() == "keep", out
         assert (kept.parents[1] / "deliverables").is_dir()
@@ -1428,6 +1483,830 @@ def test_stage_dirs_match_agents() -> None:
         if ln.strip() and ln.split()[0].endswith("/")
     ]
     assert tuple(dirs) == L.STAGE_DIRS, dirs
+
+
+# ---- kit / sid / rules on events (P2) ---------------------------------------
+
+
+@contextlib.contextmanager
+def env(**kv: str | None) -> Iterator[None]:
+    """os.environ with `kv` set (None = unset), restored afterwards."""
+    old: dict[str, str | None] = {k: os.environ.get(k) for k in kv}
+    try:
+        for k, v in kv.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        yield
+    finally:
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_kit_and_sid_on_events() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        with env(CLAUDE_CODE_SESSION_ID="sess-1"):
+            lrun(repo, "add", "task", "a", "--note", "n")
+            rows: Path = write_rows(
+                root, [{"type": "task", "title": "i", "source": "x:1"}]
+            )
+            assert lrun(repo, "import", str(rows))[0] == 0
+        with env(CLAUDE_CODE_SESSION_ID=None):
+            lrun(repo, "start", "T-1")
+        with env(CLAUDE_CODE_SESSION_ID=""):
+            lrun(repo, "close", "T-1", "--note", "ok")
+        evs: list[dict[str, Any]] = jl(repo)
+        version: str = json.loads(L.KIT_JSON.read_text())["version"]
+        assert all(e["kit"] == version for e in evs), evs
+        assert [e.get("sid") for e in evs] == ["sess-1", "sess-1", None, None], evs
+        assert "sid" not in evs[2] and "sid" not in evs[3], evs
+        out: str = lrun(repo, "show", "T-1")[1]
+        assert f"    kit={version} sid=sess-1\n" in out, out
+        assert out.count(f"    kit={version}\n") == 2, out
+
+
+def test_old_ledger_without_new_keys() -> None:
+    """Events written before kit/sid/rules fold and print exactly as before."""
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        old: list[dict[str, object]] = [
+            {"ts": "2026-01-01T10:00:00+01:00", "who": "lead", "ev": "add",
+             "id": "S-1", "f": {"type": "stage", "title": "01-paper-x",
+                                "status": "open", "owner": "lead", "stage": "",
+                                "note": "", "links": [], "refs": []}},
+            {"ts": "2026-01-01T10:01:00+01:00", "who": "lead", "ev": "add",
+             "id": "T-1", "f": {"type": "task", "title": "imp", "status": "done",
+                                "owner": "lead", "stage": "", "note": "",
+                                "links": [], "refs": ["gone.md"], "imported": True,
+                                "source": "A.md:1"}},
+        ]  # fmt: skip
+        (repo / L.LEDGER_REL).write_text("".join(json.dumps(e) + "\n" for e in old))
+        st: dict[str, Any] = L.load(repo)
+        assert st["T-1"].extra == {"imported": True, "source": "A.md:1"}, st
+        for eid in ("S-1", "T-1"):
+            out: str = lrun(repo, "show", eid)[1]
+            hist: list[str] = out.split("history:\n")[1].splitlines()
+            assert len(hist) == 1 and "kit=" not in out and "sid=" not in out, out
+        with env(CLAUDE_CODE_SESSION_ID=None):  # mixed: old lines, then new ones
+            assert lrun(repo, "add", "task", "new", "--note", "n")[0] == 0
+        assert L.load(repo)["T-2"].stage == "S-1"
+        assert "kit" in jl(repo)[-1] and "kit" not in jl(repo)[0]
+
+
+def test_rules_on_stage_add_and_close() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        (repo / "AGENTS.md").write_text("<!-- research-kit: 2026-01-01a -->\n# x\n")
+        (repo / "pm/kinds/paper.md").write_text(
+            "<!-- research-kit-kind paper: 2026-01-02b -->\n"
+        )
+        (repo / "pm/kinds/own.md").write_text("# no stamp\n")
+        want: dict[str, str] = {
+            "AGENTS.md": "2026-01-01a", "pm/kinds/paper.md": "2026-01-02b"
+        }
+        lrun(repo, "add", "stage", "01-paper-x")
+        lrun(repo, "add", "task", "t", "--note", "n")
+        lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1")
+        (repo / "AGENTS.md").write_text("<!-- research-kit: 2026-01-05c -->\n")
+        lrun(repo, "close", "T-1", "--note", "ok")
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 0, out
+        evs: list[dict[str, Any]] = jl(repo)
+        assert evs[0]["rules"] == want, evs[0]
+        assert evs[-1]["rules"] == {**want, "AGENTS.md": "2026-01-05c"}, evs[-1]
+        assert all("rules" not in e for e in evs[1:-1]), evs
+        out = lrun(repo, "show", "S-1")[1]
+        assert "rules=AGENTS.md:2026-01-01a,pm/kinds/paper.md:2026-01-02b" in out, out
+        assert "rules=AGENTS.md:2026-01-05c," in out, out
+
+
+# ---- refs that hold (P3) ----------------------------------------------------
+
+
+def test_ref_must_exist() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        (repo / "ok.md").write_text("x")
+        absf: Path = root / "abs.md"
+        absf.write_text("x")
+        lrun(repo, "add", "stage", "01-paper-x")
+        lrun(repo, "add", "task", "a", "--note", "n")
+        lrun(repo, "add", "decision", "d", "--owner", "user", "--link", "S-1")
+        n: int = len(jl(repo))
+        for argv in (
+            ("add", "task", "b", "--note", "n", "--ref", "ok.md", "--ref", "no.md"),
+            ("set", "T-1", "--ref", "no.md"),
+            ("close", "T-1", "--note", "x", "--ref", "no.md"),
+            ("drop", "T-1", "--note", "x", "--ref", "no.md"),
+            ("supersede", "D-1", "d2", "--owner", "user", "--ref", "no.md"),
+            ("stage-close", "S-1", "--sign-off", "D-1", "--ref", "no.md"),
+        ):
+            code, out = lrun(repo, *argv)
+            assert code == 1 and "--ref no.md: no such file" in out, (argv, out)
+        assert len(jl(repo)) == n
+        for ref in ("https://x.org/a", "doi:10.1000/xyz", "ok.md",
+                    "pm/stages/01-paper-x/notes"):
+            assert lrun(repo, "set", "T-1", "--ref", ref)[0] == 0, ref
+        code, out = lrun(repo, "set", "T-1", "--ref", str(absf))  # outside the repo
+        assert code == 1 and "outside the repo" in out, out
+        inside: Path = (repo / "pm/stages/01-paper-x/notes/r.md").resolve()
+        inside.write_text("x")
+        assert lrun(repo, "set", "T-1", "--ref", str(inside))[0] == 0
+        assert L.load(repo)["T-1"].refs[-1] == "pm/stages/01-paper-x/notes/r.md"
+        code, out = lrun(repo, "set", "T-1", "--ref-drop", str(inside))
+        assert code == 0 and "pm/stages/01-paper-x/notes/r.md" not in (
+            L.load(repo)["T-1"].refs
+        ), out
+        refs: list[str] = [r for e in jl(repo) for r in e["f"].get("refs", [])]
+        assert not any(r.startswith("/") for r in refs), refs
+        lrun(repo, "drop", "T-1", "--note", "x")
+        code, out = lrun(repo, "reopen", "T-1", "--note", "y", "--ref", "no.md")
+        assert code == 1 and "no such file" in out, out
+        code, out = lrun(repo, "reopen", "T-1", "--note", "y", "--ref", "ok.md")
+        assert code == 0, out
+        code, out = lrun(repo, "add", "task", "old", "--imported", "--source",
+                         "A:1", "--ref", "gone.md")  # imported: exempt
+        assert code == 0, out
+        rows: Path = write_rows(root, [{"type": "task", "title": "i",
+                                        "source": "B:1", "ref": ["gone2.md"]}])
+        assert lrun(repo, "import", str(rows))[0] == 0
+
+
+def test_ref_drop() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        for name in ("a.md", "b.md", "c.md"):
+            (repo / name).write_text(name)
+        lrun(repo, "add", "task", "t", "--note", "n", "--ref", "a.md", "--ref", "b.md")
+        (repo / "a.md").rename(Path(d) / "moved.md")  # moved away: the ref is stale
+        code, out = lrun(repo, "set", "T-1", "--ref-drop", "a.md", "--ref", "c.md")
+        assert code == 0 and out == "updated T-1: refs\n", out
+        assert L.load(repo)["T-1"].refs == ["b.md", "c.md"]
+        show: str = lrun(repo, "show", "T-1")[1]
+        assert '"a.md"' in show.split("history:")[1], show  # history keeps it
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "set", "T-1", "--ref-drop", "x.md")
+        assert code == 1 and "--ref-drop x.md: not a ref of T-1" in out, out
+        assert "b.md, c.md" in out and len(jl(repo)) == n, out
+        assert lrun(repo, "set", "T-1", "--ref-drop", "b.md")[0] == 0
+        assert L.load(repo)["T-1"].refs == ["c.md"]
+
+
+def test_show_several_ids() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "task", "a", "--note", "n")
+        lrun(repo, "add", "task", "b", "--note", "n", "--label", "01/W2")
+        code, out = lrun(repo, "show", "T-1", "01/W2")
+        assert code == 0 and out.startswith("id: T-1\n"), out
+        assert "\n\nid: T-2\n" in out and out.count("history:") == 2, out
+        code, out = lrun(repo, "show", "T-1", "T-9")
+        assert code == 1 and out == "error: no such entry T-9\n", out
+
+
+def test_add_receipt_names_stage() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        out: str = lrun(repo, "add", "task", "a", "--note", "n")[1]
+        assert out == "logged T-1: a (no stage)\n", out
+        out = lrun(repo, "add", "stage", "01-paper-x")[1]
+        assert out.startswith("logged S-1: 01-paper-x\n"), out
+        out = lrun(repo, "add", "fetch", "smith")[1]
+        assert out == "logged F-1: smith (stage S-1)\n", out
+
+
+# ---- doctor (P1) and doctor --start (P5) ------------------------------------
+
+GIT_ENV: dict[str, str | None] = {
+    "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"
+}
+
+
+def git(repo: Path, *args: str) -> None:
+    """A real git command in `repo`, without the user's config."""
+    exe: str | None = shutil.which("git")
+    assert exe is not None, "git not found"
+    r: subprocess.CompletedProcess[str] = subprocess.run(
+        [exe, "-C", str(repo), "-c", "user.name=t",
+         "-c", "user.email=t@example.invalid",
+         "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *args],
+        env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1",
+             "GIT_CONFIG_GLOBAL": "/dev/null"},
+        capture_output=True, text=True,
+    )  # fmt: skip
+    assert r.returncode == 0, r.stderr
+
+
+def commit_all(repo: Path) -> None:
+    if not (repo / ".git").exists():
+        git(repo, "init", "-q")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "c", "--allow-empty")
+
+
+def doctor(repo: Path, *argv: str) -> tuple[int, str]:
+    with env(**GIT_ENV):
+        return lrun(repo, "doctor", *argv)
+
+
+def group(out: str, name: str) -> list[str]:
+    """The finding lines under the HARD or SOFT header of group `name`."""
+    lines: list[str] = out.splitlines()
+    for i, ln in enumerate(lines):
+        if ln.rsplit(" (", 1)[0] in (f"HARD {name}", f"SOFT {name}"):
+            rest: list[str] = lines[i + 1:]
+            k: int = next(
+                (j for j, x in enumerate(rest) if not x.startswith("  ")), len(rest)
+            )
+            return [x.strip() for x in rest[:k]]
+    return []
+
+
+def staged_repo(root: Path) -> Path:
+    """Stage S-1 with task T-1 and a user sign-off D-1."""
+    repo: Path = new_repo(root)
+    lrun(repo, "add", "stage", "01-paper-x")
+    lrun(repo, "add", "task", "t", "--note", "n")
+    lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1")
+    return repo
+
+
+def test_doctor_clean_and_read_only() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        commit_all(repo)
+        before: dict[str, bytes | None] = snapshot(Path(d))
+        stamps: list[tuple[int, int]] = [  # a rewrite in the same second: new inode
+            ((repo / f).stat().st_ino, (repo / f).stat().st_mtime_ns)
+            for f in (L.LEDGER_REL, L.STATUS_REL)
+        ]
+        code, out = doctor(repo)
+        assert code == 0 and out == "doctor: no findings\n", out
+        code, out = doctor(repo, "--stage", "S-1")
+        assert code == 0 and out == "doctor S-1: no findings\n", out
+        assert snapshot(Path(d)) == before
+        assert stamps == [
+            ((repo / f).stat().st_ino, (repo / f).stat().st_mtime_ns)
+            for f in (L.LEDGER_REL, L.STATUS_REL)
+        ]
+
+
+def test_doctor_parse_error() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        with (repo / L.LEDGER_REL).open("a") as fh:
+            fh.write("{torn\n")
+        code, out = doctor(repo)
+        assert code == 1 and out.startswith("HARD ledger does not parse (1)\n"), out
+        assert "pm/ledger.jsonl:4: not a JSON line" in out, out
+
+
+def test_doctor_missing_ref() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        (repo / "r.md").write_text("x")
+        lrun(repo, "set", "T-1", "--ref", "r.md", "--ref", "https://x.org")
+        (repo / "r.md").rename(Path(d) / "moved.md")
+        code, out = doctor(repo)
+        assert code == 1 and group(out, "missing ref") == ["T-1 r.md"], out
+        assert out.endswith("doctor: 1 hard, 0 soft\n"), out
+        code, out = doctor(repo, "--stage", "01")
+        assert code == 1 and group(out, "missing ref") == ["T-1 r.md"], out
+
+
+def test_doctor_missing_stage_folder() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        lrun(repo, "add", "stage", "02-paper-y", "--imported", "--source", "A:1")
+        (repo / "pm/stages/01-paper-x").rename(Path(d) / "moved")
+        code, out = doctor(repo)
+        assert code == 1, out  # the imported stage has no folder: not a finding
+        assert group(out, "missing stage folder") == ["S-1 pm/stages/01-paper-x/"]
+        assert group(out, "missing ref") == [], out  # its own folder ref: once
+
+
+def test_doctor_ledger_against_head() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        commit_all(repo)
+        lrun(repo, "add", "task", "u", "--note", "n")  # appended: fine
+        assert doctor(repo)[0] == 0
+        path: Path = repo / L.LEDGER_REL
+        lines: list[str] = path.read_text().splitlines(keepends=True)
+        path.write_text(lines[0] + lines[2] + lines[1] + "".join(lines[3:]))
+        code, out = doctor(repo)
+        assert code == 1, out
+        assert group(out, "ledger not append-only against HEAD") == [
+            "pm/ledger.jsonl:2 differs from HEAD: lines were changed or removed, "
+            "not only appended"
+        ], out
+
+
+def test_doctor_ref_in_waste_or_ignored() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        for rel in ("pm/waste/team/r1.md", "build/out.md", "notes.md"):
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text("x")
+        (repo / ".gitignore").write_text("build/\npm/waste/\n")
+        commit_all(repo)
+        lrun(repo, "set", "T-1", "--ref", "pm/waste/team/r1.md", "--ref",
+             "build/out.md", "--ref", "notes.md")
+        code, out = doctor(repo)
+        assert code == 0, out
+        assert group(out, L.G_IGNORED) == [
+            "T-1 pm/waste/team/r1.md (waste)", "T-1 build/out.md (ignored)"
+        ], out
+
+
+def test_doctor_heading_names_fix() -> None:
+    """Plan G3: the waste/ignored heading says how to fix it."""
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        (repo / "pm/waste/team").mkdir(parents=True)
+        (repo / "pm/waste/team/r.md").write_text("x")
+        lrun(repo, "set", "T-1", "--ref", "pm/waste/team/r.md")
+        head: str = next(
+            ln for ln in doctor(repo)[1].splitlines() if ln.startswith("SOFT ref in")
+        )
+        assert head == (
+            "SOFT ref in a git-ignored or waste folder (move the file to the stage's "
+            "notes/team/ or pm/logs/team/, then rk reref) (1)"
+        ), head
+
+
+def test_doctor_kit_ignored_places_not_flagged() -> None:
+    """Refs the kit prescribes into folders its own .gitignore ignores (stage
+    chat/ archive, light-mode pm/reviews/) are no finding; other ignored are."""
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        rels: tuple[str, ...] = (
+            "pm/stages/01-paper-x/chat/INDEX.md", "pm/reviews/critic_x.md",
+            "pm/scratch/x.md",
+        )
+        for rel in rels:
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text("x")
+        (repo / ".gitignore").write_text(
+            "pm/stages/*/chat/\npm/reviews/\npm/scratch/\n"
+        )
+        commit_all(repo)
+        lrun(repo, "set", "T-1", *(x for rel in rels for x in ("--ref", rel)))
+        assert group(doctor(repo)[1], L.G_IGNORED) == [  # reviews: owner decides
+            "T-1 pm/reviews/critic_x.md (ignored)", "T-1 pm/scratch/x.md (ignored)"
+        ]
+
+
+def test_doctor_done_stage_not_in_head() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        commit_all(repo)
+        (repo / "pm/stages/01-paper-x/notes/n.md").write_text("x")
+        lrun(repo, "close", "T-1", "--note", "ok")
+        lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        lrun(repo, "add", "task", "later", "--note", "n")  # after the close
+        code, out = doctor(repo)
+        assert code == 0, out
+        assert group(out, L.G_UNCOMMITTED) == [
+            "S-1 01-paper-x: 2 ledger lines and 1 folder files not in HEAD"
+        ], out
+        commit_all(repo)
+        assert group(doctor(repo)[1], L.G_UNCOMMITTED) == []
+
+
+def test_doctor_no_git() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        code, out = doctor(repo)
+        assert code == 0, out
+        assert out.splitlines()[0] == "git: not a git repo; git checks skipped", out
+        with env(PATH=str(Path(d) / "nobin")):
+            out = doctor(repo)[1]
+        assert out.splitlines()[0] == "git: no git binary; git checks skipped", out
+
+
+def test_doctor_entries_without_stage() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "task", "before", "--note", "n")
+        lrun(repo, "add", "stage", "01-paper-x")
+        lrun(repo, "add", "stage", "02-software-y")  # two open: no default stage
+        lrun(repo, "add", "task", "inside", "--note", "n")
+        lrun(repo, "add", "task", "staged", "--note", "n", "--stage", "S-1")
+        lrun(repo, "add", "task", "imp", "--imported", "--source", "A:1")
+        g: str = L.G_NOSTAGE
+        assert g.endswith(" (set ID --stage S-n)"), g  # the heading names the fix
+        assert group(doctor(repo)[1], g) == ["T-2 (S-1) inside"]
+        assert group(doctor(repo, "--stage", "S-2")[1], g) == ["T-2 (S-2) inside"]
+        late: str = L.G_LATE
+        assert "(set ID --stage S-n;" in late, late
+        assert group(doctor(repo)[1], late) == []
+        lrun(repo, "set", "T-2", "--stage", "S-1")
+        lrun(repo, "close", "T-2", "--note", "ok")
+        lrun(repo, "close", "T-3", "--note", "ok")
+        for k in (1, 2):
+            lrun(repo, "add", "decision", f"ok{k}", "--owner", "user",
+                 "--link", f"S-{k}", "--stage", f"S-{k}")
+            lrun(repo, "stage-close", f"S-{k}", "--sign-off", f"D-{k}")
+        lrun(repo, "add", "debt", "found late")  # no stage open: no stage
+        lrun(repo, "add", "stage", "03-paper-z")
+        lrun(repo, "add", "debt", "in S-3")  # the default stage again
+        out: str = doctor(repo)[1]
+        assert group(out, g) == [] and group(out, late) == [
+            "DB-1 (after S-2) found late"
+        ], out
+        assert group(doctor(repo, "--stage", "S-2")[1], late) == [
+            "DB-1 (after S-2) found late"
+        ]
+
+
+def test_doctor_running_over_24h() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "task", "slow", "--note", "n")
+        lrun(repo, "add", "task", "fast", "--note", "n")
+        old: str = (datetime.now().astimezone() - timedelta(hours=30)).isoformat()
+        ev: dict[str, object] = L.make_event(
+            "lead", "set", "T-1", {"status": "running"}
+        )
+        ev["ts"] = old
+        with (repo / L.LEDGER_REL).open("a") as fh:
+            fh.write(json.dumps(ev) + "\n")
+        lrun(repo, "start", "T-2")
+        out: str = doctor(repo)[1]
+        assert group(out, L.G_RUNNING) == ["T-1 (lead, 1d) slow"], out
+
+
+def test_doctor_imported_missing_refs_counted() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        rows: Path = write_rows(root, [
+            {"type": "task", "title": f"i{k}", "source": f"A:{k}",
+             "ref": [f"gone{k}.md", "https://x.org"]}
+            for k in range(3)
+        ])  # fmt: skip
+        lrun(repo, "import", str(rows))
+        code, out = doctor(repo)
+        assert code == 0, out
+        assert group(out, L.G_IMPORTED) == [
+            "3 refs of 3 imported entries missing, e.g. T-1 gone0.md"
+        ], out
+
+
+def test_doctor_stamps_behind() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        kit: str | None = L._line1_stamp(L.TEMPLATE_DIR / "AGENTS.md")
+        kpaper: str | None = L._line1_stamp(L.TEMPLATE_DIR / "kinds/paper.md")
+        (repo / "AGENTS.md").write_text("<!-- research-kit: 2000-01-01a -->\n")
+        (repo / "pm/kinds/paper.md").write_text(
+            "<!-- research-kit-kind paper: 2000-01-01a -->\n"
+        )
+        (repo / "pm/kinds/software.md").write_text(
+            "<!-- research-kit-kind software: 9999-01-01a -->\n"  # ahead: fine
+        )
+        (repo / "pm/kinds/own.md").write_text(
+            "<!-- research-kit-kind own: 2000-01-01a -->\n"  # no template: skipped
+        )
+        out: str = doctor(repo)[1]
+        assert group(out, "rule file behind the kit (run /rk-sync)") == [
+            f"AGENTS.md 2000-01-01a, kit {kit}",
+            f"pm/kinds/paper.md 2000-01-01a, kit {kpaper}",
+        ], out
+
+
+def test_doctor_stage_decisions_for_sign_off() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        lrun(repo, "add", "decision", "scope cut", "--owner", "lead",
+             "--link", "D-1", "--link", "T-1")
+        lrun(repo, "add", "decision", "metric", "--owner", "sr1")
+        g: str = "decisions of the stage not owned by user (for the sign-off)"
+        out: str = doctor(repo, "--stage", "S-1")[1]
+        assert group(out, g) == [
+            "D-2 (lead; links D-1) scope cut", "D-3 (sr1) metric"
+        ], out
+        assert group(doctor(repo)[1], g) == []  # stage view only
+
+
+def test_doctor_group_cap() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        (repo / "r.md").write_text("x")
+        for k in range(23):
+            lrun(repo, "add", "task", f"t{k}", "--note", "n", "--ref", "r.md")
+        (repo / "r.md").rename(Path(d) / "moved.md")
+        code, out = doctor(repo)
+        lines: list[str] = group(out, "missing ref")
+        assert code == 1 and len(lines) == 21, out
+        assert lines[-1] == "+3 more (all: --limit 0)", out
+        assert out.splitlines()[1] == "HARD missing ref (23)", out
+        code, out = doctor(repo, "--limit", "0")
+        assert code == 1 and len(group(out, "missing ref")) == 23, out
+        assert len(group(doctor(repo, "--limit", "5")[1], "missing ref")) == 6
+        assert doctor(repo, "--limit", "-1")[0] == 1
+
+
+def test_stage_close_runs_stage_checks() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        (repo / "r.md").write_text("x")
+        lrun(repo, "close", "T-1", "--note", "ok", "--ref", "r.md")
+        lrun(repo, "add", "decision", "cut", "--owner", "lead")
+        (repo / "r.md").rename(Path(d) / "moved.md")
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 1 and group(out, "missing ref") == ["T-1 r.md"], out
+        assert "stage-close S-1 refused: 1 HARD finding(s) above" in out, out
+        assert "--ref-drop" in out and len(jl(repo)) == n, out
+        lrun(repo, "set", "T-1", "--ref-drop", "r.md")
+        folder: Path = repo / "pm/stages/01-paper-x"
+        folder.rename(Path(d) / "moved")
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 1 and "missing stage folder" in out, out
+        assert len(jl(repo)) == n + 1, out
+        (Path(d) / "moved").rename(folder)
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 0 and out.endswith("closed S-1: sign-off D-1\n"), out
+        assert "SOFT decisions of the stage not owned by user" in out, out
+        assert "D-2 (lead) cut" in out, out
+
+
+def test_doctor_start() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        kit: str = f"kit {L.kit_version()}"
+        bare: Path = root / "bare"  # no ledger anywhere above: kit line only
+        bare.mkdir()
+        cwd: Path = Path.cwd()
+        buf: io.StringIO = io.StringIO()
+        try:
+            os.chdir(bare)
+            with contextlib.redirect_stdout(buf), env(PATH=str(root / "nobin")):
+                code: int = L.main(["doctor", "--start"])
+        finally:
+            os.chdir(cwd)
+        assert code == 0 and buf.getvalue() == f"{kit}\n", buf.getvalue()
+        repo: Path = new_repo(root)
+        code, out = lrun(repo, "doctor", "--start")
+        assert code == 0 and out == f"{kit}\n", out
+        (repo / "AGENTS.md").write_text("<!-- research-kit: 2000-01-01a -->\n")
+        for k in ("paper", "software"):
+            (repo / f"pm/kinds/{k}.md").write_text(
+                f"<!-- research-kit-kind {k}: 2000-01-01a -->\n"
+            )
+        (repo / L.LEDGER_REL).write_text("{torn\n")  # no fold: still fine
+        code, out = lrun(repo, "doctor", "--start")
+        a_kit: str | None = L._line1_stamp(L.TEMPLATE_DIR / "AGENTS.md")
+        p_kit: str | None = L._line1_stamp(L.TEMPLATE_DIR / "kinds/paper.md")
+        assert code == 0 and out.splitlines() == [
+            kit,
+            f"AGENTS.md 2000-01-01a, kit {a_kit}: run /rk-sync",
+            f"pm/kinds/paper.md 2000-01-01a, kit {p_kit}: run /rk-sync",
+        ], out
+
+
+# ---- reref, ref fixes in closed stages, compatibility (plan G1, G6, T5, T6) --
+
+
+def reref_repo(root: Path) -> Path:
+    """Refs into pm/waste/team/03b/ on an imported entry, a done task of a done
+    stage, an open task of that done stage, and one ref with OLD in the middle."""
+    repo: Path = new_repo(root)
+    old: Path = repo / "pm/waste/team/03b"
+    old.mkdir(parents=True)
+    for name in ("a.md", "b.md", "c.md"):
+        (old / name).write_text(name)
+    (repo / "keep/pm/waste/team/03b").mkdir(parents=True)
+    (repo / "keep/pm/waste/team/03b/a.md").write_text("x")
+    lrun(repo, "add", "task", "imp", "--imported", "--source", "A:1",
+         "--ref", "pm/waste/team/03b/a.md", "--status", "done")
+    lrun(repo, "add", "stage", "03b-paper-scan")
+    lrun(repo, "add", "task", "done one", "--note", "n",
+         "--ref", "pm/waste/team/03b/b.md", "--ref", "keep/pm/waste/team/03b/a.md")
+    lrun(repo, "add", "debt", "open one", "--ref", "pm/waste/team/03b/c.md")
+    lrun(repo, "close", "T-2", "--note", "ok")
+    lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1")
+    code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+    assert code == 0, out  # DB-1 stays open in the done stage
+    return repo
+
+
+def test_reref() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = reref_repo(Path(d))
+        new: str = "pm/stages/03b-paper-scan/notes/team/"
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "reref", "pm/waste/team/03b/", new)
+        assert code == 1 and "reref refused, nothing written: 3 new path" in out, out
+        assert f"T-1 {new}a.md" in out and len(jl(repo)) == n, out
+        (repo / new).mkdir(parents=True)
+        for name in ("a.md", "b.md", "c.md"):
+            (repo / "pm/waste/team/03b" / name).rename(repo / new / name)
+        code, out = lrun(repo, "reref", "pm/waste/team/03b/", new, "--dry-run")
+        assert code == 0 and out.endswith(
+            "would change 3 refs of 3 entries (dry run, nothing written)\n"
+        ), out
+        assert len(jl(repo)) == n
+        code, out = lrun(repo, "reref", "pm/waste/team/03b/", new)
+        assert code == 0 and out.splitlines() == [
+            f"T-1 pm/waste/team/03b/a.md -> {new}a.md",
+            f"T-2 pm/waste/team/03b/b.md -> {new}b.md",
+            f"DB-1 pm/waste/team/03b/c.md -> {new}c.md",
+            "changed 3 refs of 3 entries",
+        ], out
+        evs: list[dict[str, Any]] = jl(repo)[n:]
+        assert [(e["ev"], e["id"], list(e["f"])) for e in evs] == [
+            ("set", "T-1", ["refs"]),
+            ("set", "T-2", ["refs"]),
+            ("set", "DB-1", ["refs"]),
+        ], evs
+        st: dict[str, Any] = L.load(repo)
+        assert st["T-1"].refs == [f"{new}a.md"] and st["T-1"].status == "done"
+        assert st["T-2"].refs == [f"{new}b.md", "keep/pm/waste/team/03b/a.md"]
+        assert st["DB-1"].refs == [f"{new}c.md"] and st["DB-1"].status == "open"
+        assert st["DB-1"].stage == "S-1"
+        assert st["S-1"].status == "done"
+        n = len(jl(repo))
+        code, out = lrun(repo, "reref", "pm/waste/team/03b/", new)
+        assert code == 0 and out == (
+            "no ref starts with 'pm/waste/team/03b/'; nothing written\n"
+        ), out
+        assert len(jl(repo)) == n
+        assert lrun(repo, "reref", "", new)[0] == 1
+
+
+def test_ref_fix_on_imported_and_done_stage() -> None:
+    """Plan G6: --ref-drop X --ref Y in one call on an imported entry and on an
+    open entry of a done stage."""
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        for name in ("x.md", "y.md"):
+            (repo / name).write_text(name)
+        lrun(repo, "add", "task", "imp", "--imported", "--source", "A:1",
+             "--ref", "gone.md")
+        lrun(repo, "add", "stage", "01-paper-x")
+        lrun(repo, "add", "debt", "left open", "--ref", "x.md")
+        lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1")
+        assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 0
+        st: dict[str, Any] = L.load(repo)
+        assert st["DB-1"].status == "open" and st["DB-1"].stage == "S-1"
+        assert st["S-1"].status == "done"
+        for eid, old in (("T-1", "gone.md"), ("DB-1", "x.md")):
+            code, out = lrun(repo, "set", eid, "--ref-drop", old, "--ref", "y.md")
+            assert code == 0 and out == f"updated {eid}: refs\n", (eid, out)
+            assert L.load(repo)[eid].refs == ["y.md"], eid
+
+
+# A ledger as the previous released tool (0.1.8, commit 05bf026) wrote it: no
+# kit / sid / rules keys. Add one such fixture per release (plan T6).
+COMPAT_0_1_8: list[dict[str, object]] = [
+    {"ts": "2026-11-13T12:00:00+01:00", "who": "lead", "ev": "add", "id": "S-1",
+     "f": {"type": "stage", "title": "01-paper-old", "status": "done",
+           "owner": "lead", "stage": "", "note": "", "links": [], "refs": [],
+           "imported": True, "source": "TASKS.md:1"}},
+    {"ts": "2026-11-13T12:00:01+01:00", "who": "lead", "ev": "add", "id": "H-1",
+     "f": {"type": "handoff", "title": "moved handoff", "status": "open",
+           "owner": "lead", "stage": "", "note": "",
+           "links": [], "refs": ["pm/handoffs/open/gone.md"], "imported": True,
+           "source": "handoffs.jsonl:1"}},
+    {"ts": "2026-11-13T12:10:00+01:00", "who": "lead", "ev": "add", "id": "T-1",
+     "f": {"type": "task", "title": "migration", "status": "open", "owner": "lead",
+           "stage": "", "note": "", "links": [],
+           "refs": ["pm/waste/team/run1/sr1-r1.md"]}},
+    {"ts": "2026-11-13T14:00:00+01:00", "who": "lead", "ev": "add", "id": "S-2",
+     "f": {"type": "stage", "title": "02-paper-new", "status": "open",
+           "owner": "lead", "stage": "", "note": "", "links": [], "refs": []}},
+    {"ts": "2026-11-13T14:01:00+01:00", "who": "lead", "ev": "add", "id": "T-2",
+     "f": {"type": "task", "title": "scan", "status": "open", "owner": "sr1",
+           "stage": "S-2", "note": "", "links": [], "refs": []}},
+    {"ts": "2026-11-13T14:02:00+01:00", "who": "hook", "ev": "set", "id": "T-2",
+     "f": {"status": "running"}},
+    {"ts": "2026-11-13T15:00:00+01:00", "who": "lead", "ev": "set", "id": "T-2",
+     "f": {"status": "done", "note": "ok", "refs": ["pm/waste/team/02/sr1-r1.md"]}},
+    {"ts": "2026-11-13T16:00:00+01:00", "who": "lead", "ev": "add", "id": "D-1",
+     "f": {"type": "decision", "title": "sign-off", "status": "done",
+           "owner": "user", "stage": "S-2", "note": "", "links": ["S-2"],
+           "refs": []}},
+    {"ts": "2026-11-13T16:01:00+01:00", "who": "lead", "ev": "set", "id": "S-2",
+     "f": {"status": "done", "note": "closed; sign-off D-1",
+           "links": ["D-1"]}},
+    {"ts": "2026-11-13T17:00:00+01:00", "who": "lead", "ev": "add", "id": "T-3",
+     "f": {"type": "task", "title": "chat archive", "status": "done",
+           "owner": "lead", "stage": "", "note": "", "links": [], "refs": []}},
+]  # fmt: skip
+
+
+def test_compat_emptied_waste_is_soft() -> None:
+    """crit6 B2: refs an older kit wrote into pm/waste/team/, after the user
+    emptied pm/waste/: SOFT, own group; stage-close is not refused. A missing
+    ref elsewhere stays HARD."""
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        open_stage: list[dict[str, object]] = [  # S-2 still open, T-2 closed in it
+            e for e in COMPAT_0_1_8
+            if not (e["id"] == "S-2" and e["ev"] == "set") and e["id"] != "T-3"
+        ]
+        (repo / L.LEDGER_REL).write_text(
+            "".join(json.dumps(e) + "\n" for e in open_stage)
+        )
+        (repo / "pm/stages/02-paper-new/notes").mkdir(parents=True)
+        code, out = doctor(repo)  # no waste folder at all: emptied by the user
+        assert code == 0 and "HARD" not in out, out
+        assert group(out, L.G_WASTE_GONE) == [
+            "T-1 pm/waste/team/run1/sr1-r1.md", "T-2 pm/waste/team/02/sr1-r1.md"
+        ], out
+        code, out = lrun(repo, "stage-close", "S-2", "--sign-off", "D-1")
+        assert code == 0 and out.endswith("closed S-2: sign-off D-1\n"), out
+        assert "SOFT ref into the waste folder, file gone" in out, out
+        (repo / "x.md").write_text("x")
+        lrun(repo, "add", "task", "new", "--note", "n", "--ref", "x.md")
+        (repo / "x.md").rename(Path(d) / "moved.md")
+        code, out = doctor(repo)
+        assert code == 1 and group(out, "missing ref") == ["T-3 x.md"], out
+        for ref in ("./pm/waste/team/02/sr1-r1.md", "pm/waste/../waste/team/x.md"):
+            assert L._waste(ref), ref  # compared after normpath
+
+
+def test_ref_forms() -> None:
+    """crit6 m2, m4, m10: empty and ../ refs refused, DOI:/arXiv: pass, an old
+    bad ref can still be dropped, long ref lines are clipped."""
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "task", "t", "--note", "n")
+        for bad in ("", "../x.md", "pm/../../x.md"):
+            code, out = lrun(repo, "set", "T-1", "--ref", bad)
+            assert code == 1 and ("empty" in out or "outside the repo" in out), out
+        for ok in ("DOI:10.1/X", "arXiv:2401.00001", "doi:10.2/y"):
+            assert lrun(repo, "set", "T-1", "--ref", ok)[0] == 0, ok
+        with (repo / L.LEDGER_REL).open("a") as fh:  # an old tool wrote ../
+            ev: dict[str, object] = L.make_event(
+                "lead", "set", "T-1", {"refs": ["../old.md", "doi:10.2/y"]}
+            )
+            fh.write(json.dumps(ev) + "\n")
+        code, out = lrun(repo, "set", "T-1", "--ref-drop", "../old.md")
+        assert code == 0 and L.load(repo)["T-1"].refs == ["doi:10.2/y"], out
+        long: str = "a" * 300 + ".md"
+        with (repo / L.LEDGER_REL).open("a") as fh:
+            fh.write(json.dumps(L.make_event("lead", "set", "T-1", {"refs": [long]})))
+            fh.write("\n")
+        line: str = group(doctor(repo)[1], "missing ref")[0]
+        assert len(line) == L.TITLE_MAX and line.endswith("..."), line
+
+
+def test_reref_whole_path_components() -> None:
+    """crit6 m3: OLD matches whole path components after normpath; NEW inside
+    OLD is refused."""
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        for rel in ("old/a.md", "old2/a.md", "new/a.md", "new/H.md", "H.md.bak"):
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text("x")
+        lrun(repo, "add", "task", "t", "--note", "n", "--ref", "./old/a.md",
+             "--ref", "old2/a.md", "--ref", "H.md.bak")
+        with (repo / L.LEDGER_REL).open("a") as fh:  # a ref to a moved file
+            ev: dict[str, object] = L.make_event(
+                "lead", "set", "T-1", {"refs": ["./old/a.md", "old2/a.md",
+                                                "H.md.bak", "H.md"]}
+            )
+            fh.write(json.dumps(ev) + "\n")
+        code, out = lrun(repo, "reref", "old", "new/")
+        assert code == 0 and out.splitlines()[0] == "T-1 ./old/a.md -> new/a.md", out
+        assert lrun(repo, "reref", "H.md", "new/H.md")[0] == 0
+        assert L.load(repo)["T-1"].refs == [
+            "new/a.md", "old2/a.md", "H.md.bak", "new/H.md"
+        ], L.load(repo)["T-1"].refs
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "reref", "old2", "old2/sub")
+        assert code == 1 and "inside OLD" in out and len(jl(repo)) == n, out
+
+
+def test_compat_previous_ledger_doctor_no_hard() -> None:
+    """Plan T6: a ledger of the previous release, with its folders, gives 0 hard."""
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        (repo / L.LEDGER_REL).write_text(
+            "".join(json.dumps(e) + "\n" for e in COMPAT_0_1_8)
+        )
+        for rel in ("pm/waste/team/run1/sr1-r1.md", "pm/waste/team/02/sr1-r1.md",
+                    "pm/stages/02-paper-new/notes/x.md"):
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text("x")
+        (repo / ".gitignore").write_text("pm/waste/\n")
+        commit_all(repo)
+        code, out = doctor(repo)
+        assert code == 0 and out.endswith(" soft\n") and "HARD" not in out, out
+        assert "doctor: 0 hard," in out, out
+        code, out = doctor(repo, "--stage", "S-2")
+        assert code == 0 and "HARD" not in out, out
 
 
 def main() -> int:
