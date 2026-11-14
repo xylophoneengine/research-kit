@@ -591,13 +591,21 @@ def _rel_refs(
     return out
 
 
+def _there(p: Path) -> bool:
+    """True if p exists; an over-long name is absent, not an error.
+
+    Path.exists() raises OSError for it before Python 3.12.
+    """
+    return os.path.exists(p)
+
+
 def _check_refs(repo: Path, refs: list[str]) -> list[str]:
     """`refs` made repo-relative (_rel_refs); refused if a path does not exist
     in the checkout that holds the ledger."""
     refs = _rel_refs(repo, refs)
-    missing: list[str] = [r for r in refs if _is_path(r) and not (repo / r).exists()]
+    missing: list[str] = [r for r in refs if _is_path(r) and not _there(repo / r)]
     wt: Path | None = _worktree(repo)
-    only_wt: list[str] = [r for r in missing if wt is not None and (wt / r).exists()]
+    only_wt: list[str] = [r for r in missing if wt is not None and _there(wt / r)]
     if only_wt:
         raise LedgerError(
             f"--ref {', '.join(only_wt)}: exists in this worktree {wt} but not in "
@@ -1413,7 +1421,7 @@ def _cmd_reref(a: argparse.Namespace) -> int:
             changed.extend((e.id, r, m) for r, m in hits)
             out.append(make_event(who, "set", e.id, {"refs": refs}))
         missing: list[str] = [
-            f"{i} {n}" for i, _, n in changed if _is_path(n) and not (repo / n).exists()
+            f"{i} {n}" for i, _, n in changed if _is_path(n) and not _there(repo / n)
         ]
         if missing:
             more: str = f"\n  +{len(missing) - 20} more" if len(missing) > 20 else ""
@@ -1845,7 +1853,7 @@ def _findings(
                 continue
             if _outside(r):  # absolute or ../: breaks in a clone, never checked
                 out.append((False, G_OUTSIDE, _clip(f"{e.id} {r}", TITLE_MAX)))
-            elif (repo / r).exists():
+            elif _there(repo / r):
                 present.append((e.id, r))
             elif _imported(e):
                 imp.append((e.id, r))
