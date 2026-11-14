@@ -26,8 +26,9 @@ case "$tool" in
   Edit|Write|MultiEdit)
     fp="$(jq -r '.tool_input.file_path // empty' <<<"$in" 2>/dev/null)" || exit 0
     lc="$(printf '%s' "$fp" | tr '[:upper:]' '[:lower:]')"
+    s=/  # a variable: bash 3.2 keeps the backslash of an escaped slash in the replacement
     while [[ "$lc" == *//* || "$lc" == */./* ]]; do  # pm//x, pm/./x -> pm/x
-      lc="${lc//\/\//\/}"; lc="${lc//\/.\//\/}"
+      lc="${lc//$s$s/$s}"; lc="${lc//$s.$s/$s}"
     done
     case "$lc" in
       */pm/ledger.jsonl|*/pm/status.md|pm/ledger.jsonl|pm/status.md)
