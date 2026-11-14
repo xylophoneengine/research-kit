@@ -22,8 +22,8 @@ fit; without them, run each stage by hand from the rules below.
 | 2 | Plan: tasks sized to one sitting, signatures copied in | `superpowers:writing-plans` | Every task names its files, frozen signatures and a failing test; user approved the plan |
 | 3 | Tests first: failing tests for each task | a `/team` teammate | Test command output shows the new tests red for the stated reason |
 | 4 | Build: one task per implementer | `superpowers:subagent-driven-development` or `/team` | A named teammate ran the gate and the lead read the pasted tail: green |
-| 5 | Review: the loop critic and the round's disposable critic (core 2.1) | `/team` critics | No BLOCKING finding open (core 2.2) or every BLOCKING finding has an owner |
-| 6 | Fix and re-review | `/team` | Re-review read the raw diff; no BLOCKING finding open, or leftovers escalated after 2 rounds |
+| 5 | Review: the loop critic and the round's disposable critic (core 2.1) | `/team` critics | No BLOCKING open and minors logged as debt (core 2.2), or every BLOCKING finding has an owner |
+| 6 | Fix and re-review | `/team` | Re-review read the raw diff; no BLOCKING open, minors logged as debt, or leftovers escalated after 2 rounds |
 | 7 | Verify on the real thing | the user | Hand-check list ticked by the user, failures turned into tasks |
 | 8 | Package and release | the lead plus teammates | README, CHANGELOG, CI green; the user published |
 
@@ -73,7 +73,7 @@ fit; without them, run each stage by hand from the rules below.
 Read `Git policy:` in the appendix of `AGENTS.md`; core section 7 defines both values (`user commits`, `orchestrator commits`). Software additions:
 
 - `user commits`: implementers work in the working tree on disjoint file sets, so parallel tasks never edit the same file.
-- `orchestrator commits`: only the lead merges into main (after no BLOCKING critic finding is open, the Done when check passes, and a named teammate has run the full suite with the lead reading the tail); one `task` entry per plan task; its note records Tests / Impl / Review / Merged, one `--note` line per step (`rk set T-<n> --note ...`; notes append). There is one ledger per repo, in the main checkout: `rk` run inside a git worktree finds the main checkout's `pm/ledger.jsonl` by itself, so nobody passes a path and implementers in worktrees update their task as above. The lead merges with `git merge --no-ff --no-commit <branch>`, then `git add pm/ledger.jsonl`, then `git commit`, so each merge commit carries the ledger; no ledger-only commits; never commit `pm/ledger.jsonl` on a worktree branch.
+- `orchestrator commits`: only the lead merges into main (after no BLOCKING critic finding is open and minors are logged as debt, the Done when check passes, and a named teammate has run the full suite with the lead reading the tail); one `task` entry per plan task; its note records Tests / Impl / Review / Merged, one `--note` line per step (`rk set T-<n> --note ...`; notes append). There is one ledger per repo, in the main checkout: `rk` run inside a git worktree finds the main checkout's `pm/ledger.jsonl` by itself, so nobody passes a path and implementers in worktrees update their task as above. The lead merges with `git merge --no-ff --no-commit <branch>`, then `git add pm/ledger.jsonl`, then `git commit`, so each merge commit carries the ledger; no ledger-only commits; never commit `pm/ledger.jsonl` on a worktree branch.
 
 ## Benchmarks / computational experiments
 

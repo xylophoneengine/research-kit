@@ -1165,13 +1165,14 @@ def _stage_word(e: Entry) -> str:
 
 def _add_tail(e: Entry, state: dict[str, Entry]) -> str:
     """Receipt tail of an add. A closed entry linked to a closed stage gets no
-    stage (the default is the open stage); say how to put it there. An open
-    entry cannot go into a closed stage, so it gets the plain tail."""
+    stage (the default is the open stage); say why. No `set --stage` hint: the
+    closed stage's LEDGER.md is frozen, a correction is an entry of the stage
+    now open. An open entry gets the plain tail."""
     if e.stage or e.type == "stage" or e.status in OPEN_STATUSES:
         return _in_stage(e)
     for x in (state.get(i) for i in e.links):
         if x is not None and x.type == "stage" and x.status == "done":
-            return f" (no stage: {x.id} is closed; rk set {e.id} --stage {x.id})"
+            return f" (no stage: {x.id} is closed)"
     return _in_stage(e)
 
 
@@ -1712,7 +1713,7 @@ def render_stage_record(
 
     close_ev: dict[str, object] = dict(upto)[end]
     out: list[str] = [
-        f"# Ledger of stage {sid} {st.title} (generated)",
+        _record_head(st),
         "",
         f"Generated from {LEDGER_REL} by rk.py when the stage was closed; frozen",
         "with the stage. Do not edit: hand edits are blocked.",
@@ -1737,24 +1738,57 @@ def render_stage_record(
     return "\n".join(out) + "\n"
 
 
-def _write_stage_record(repo: Path, st: Entry) -> str:
-    """Write LEDGER.md into the folder of the just-closed stage `st`; the receipt
-    line. Only stage-close calls this; the file is never edited by hand."""
-    rel: str = f"pm/stages/{st.title}/{STAGE_RECORD}"
+def _record_head(st: Entry) -> str:
+    return f"# Ledger of stage {st.id} {st.title} (generated)"
+
+
+def _record_folder(repo: Path, st: Entry) -> Path | None:
+    """The folder for the record of stage `st`; None when its title is no folder
+    name (`.`, `..`, odd characters) or an imported stage has no folder."""
     folder: Path = repo / "pm" / "stages" / st.title
-    # an imported stage may have no folder, or a title that is no folder name
-    if not NAME_RE.match(st.title) or (_imported(st) and not folder.is_dir()):
+    if st.title in (".", "..") or not NAME_RE.match(st.title):
+        return None
+    return None if _imported(st) and not os.path.isdir(folder) else folder
+
+
+def _first_line(path: Path) -> str | None:
+    """First line of a file; None if it is not there or not readable."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            return fh.readline().rstrip("\n")
+    except OSError:
+        return None
+
+
+def _write_stage_record(repo: Path, st: Entry) -> str:
+    """Write LEDGER.md into the folder of the closed stage `st`; the receipt line.
+    Only stage-close calls this; the file is never edited by hand. A file that
+    is there without the generated header is not overwritten."""
+    rel: str = f"pm/stages/{st.title}/{STAGE_RECORD}"
+    folder: Path | None = _record_folder(repo, st)
+    if folder is None:
         return f"no {STAGE_RECORD}: {st.id} has no folder pm/stages/{st.title}/"
+    tmp: Path = folder / (STAGE_RECORD + ".tmp")
+    again: str = f"; then run rk stage-close {st.id} to write it"
     try:
         text: str = render_stage_record(read_events(repo), st.id)
+        have: str | None = _first_line(folder / STAGE_RECORD)
+        if have is not None and have != _record_head(st):
+            raise LedgerError(
+                f"{st.id} is closed, but {rel} is there and is not a generated "
+                f"record: not overwritten; move it away{again}"
+            )
         folder.mkdir(parents=True, exist_ok=True)
-        tmp: Path = folder / (STAGE_RECORD + ".tmp")
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, folder / STAGE_RECORD)
     except OSError as err:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise LedgerError(
-            f"{st.id} is closed, but {rel} could not be written: {err.strerror}; "
-            f"the ledger holds the same (rk list --stage {st.id} --all)"
+            f"{st.id} is closed, but {rel} could not be written: {err.strerror}"
+            f"; fix that{again}"
         ) from None
     return f"wrote {rel}"
 
@@ -1763,6 +1797,17 @@ def _cmd_stage_close(a: argparse.Namespace) -> int:
     repo: Path = _repo(a)
     who: str = _name(a.who, "--who")
     a.ref = _check_refs(repo, a.ref)
+    state: dict[str, Entry] = load(repo)
+    st: Entry = state[resolve(state, a.id, stage=True)]
+    folder: Path | None = _record_folder(repo, st)
+    if (  # a closed stage with no generated record: write the record only
+        st.status == "done"
+        and folder is not None
+        and _first_line(folder / STAGE_RECORD) != _record_head(st)
+    ):
+        print(f"{st.id} is already closed; no ledger line written")
+        print(_write_stage_record(repo, st))
+        return 0
     _stage_checks(repo, a.id)
     out: list[str] = []
     closed: list[str] = []
@@ -1808,7 +1853,7 @@ def _cmd_stage_close(a: argparse.Namespace) -> int:
         ev["rules"] = rule_stamps(repo)
         return [ev]
 
-    state: dict[str, Entry] = append(repo, build)
+    state = append(repo, build)
     print(out[0])
     print(_write_stage_record(repo, state[closed[0]]))
     return 0
@@ -1860,8 +1905,12 @@ G_STATUS_WORD: str = (
     "imported entry titled with a status word, the old system's state (rk set "
     "ID --title TEXT; the entry's own status is the real one)"
 )
-G_DONE_OPEN: str = "done entry whose title starts with 'open' (rk set ID --title TEXT)"
+G_DONE_OPEN: str = (
+    "done entry whose title starts with 'open:' or 'OPEN ' (rk set ID --title TEXT)"
+)
 STATUS_WORD_RE: re.Pattern[str] = re.compile(r"^(open|done|todo)[:\s]", re.I)
+# "open access check" is a title; "OPEN: ..." / "OPEN ..." is a status
+DONE_OPEN_RE: re.Pattern[str] = re.compile(r"^(?:(?i:open):|OPEN\s)")
 G_STAMPS: str = "rule file behind the kit (run /rk-sync)"
 G_DECISIONS: str = "decisions of the stage not owned by user (for the sign-off)"
 
@@ -2086,15 +2135,14 @@ def _findings(
             line: str = f"{e.id} ({e.owner}, {age(e.started, now)}) {e.title}"
             out.append((False, G_RUNNING, _clip(line)))
     for e in entries:  # a title that still carries the old system's state
-        m: re.Match[str] | None = STATUS_WORD_RE.match(e.title)
-        if m is None:
+        if e.status in ("dropped", "superseded"):
             continue
-        if _imported(e):
+        if _imported(e) and STATUS_WORD_RE.match(e.title):
             out.append((False, G_STATUS_WORD, _clip(f"{e.id} ({e.status}) {e.title}")))
-        elif e.status == "done" and m.group(1).lower() == "open":
+        elif e.status == "done" and DONE_OPEN_RE.match(e.title):
             out.append((False, G_DONE_OPEN, _clip(f"{e.id} {e.title}")))
     if ledger_wide:
-        out += [(False, G_STAMPS,f"{rel} {have}, kit {want}")
+        out += [(False, G_STAMPS, f"{rel} {have}, kit {want}")
                 for rel, have, want in stamps_behind(repo)]
     if only is not None:
         for e in entries:

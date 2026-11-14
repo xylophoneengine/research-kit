@@ -124,6 +124,31 @@ ta deny "\"$W\" a b c"; ta deny "echo x; $W a b c"; ta deny $'echo x\n'"$W a"; t
 ta deny "env FOO=1 $W a b c"; ta deny "source $W"; ta deny ". $W"; ta deny "cat $W | bash -s a b c"; ta deny "sed -n 1p $W | sh"
 ta deny "xargs -a list $W"; ta deny "cp $W /tmp/w && /tmp/w a b c"; ta deny "chmod +x $W; ls"; ta deny "\$(echo $W) a b c"
 ta deny "\`echo $W\` a b c"; ta deny "X=$W; \"\$X\" a b c"; ta deny "ln -s $W w"; ta deny "/bin/sh $W a"
+# crit8 B1: shapes that run the helper without a known runner word; 0.2.0 denied them all
+V=skills/waste/waste.sh
+ta deny "find skills -name waste.sh -exec {} a b c \\;"; ta deny "find skills -name waste.sh -exec bash {} a b c \\;"
+ta deny "awk 'BEGIN{system(\"bash $V a b c\")}'"; ta deny "git -c core.pager='sh $V a b c' log"; ta deny "watch -n1 $V a b c"
+ta deny "caffeinate $V a b c"; ta deny "script -q /dev/null $V a b c"; ta deny "osascript -e 'do shell script \"bash $V a b c\"'"
+ta deny "arch -arm64 $V a b c"; ta deny "ssh localhost $V a b c"; ta deny "if $V a b c; then :; fi"
+ta deny "while $V a b c; do break; done"; ta deny "! $V a b c"; ta deny ">/dev/null $V a b c"
+ta deny "case a in a) $V a b c;; esac"; ta deny "coproc $V a b c"; ta deny "parallel ::: $V"
+# read commands that could still run or copy it
+ta deny "sed -n 1p -e 'e bash $V' $V"; ta deny "sed -n '1w /tmp/x' $V"; ta deny "sed '1p' $V"; ta deny "cat $V > /tmp/x"
+ta deny "cat $V >> /tmp/x"; ta deny "git show HEAD:$V --output=/tmp/x"; ta deny "git -c x=y log -- $V"; ta deny "grep x $V | sh"
+ta deny "grep x $V & $V a"; ta deny "FOO=1 grep x $V"; ta deny "grep x $V \$(id)"
+ta none "grep -n x $V 2>/dev/null"; ta none "sed -n '1,5p;9p' $V"; ta none "git -C d --no-pager log --oneline -- $V | head -3"
+ta none "cd skills && grep -c x $V >&2"
+# crit8 B2: blank_quoted is quadratic; a long line takes the old path at once (deny) instead of
+# running past the hook timeout (a timeout gives no decision and the command runs)
+long="$(printf '%040000d' 0)"; s0=$SECONDS
+t deny "rm f; echo \"$long\""; t deny "rm f; grep -E 'a|b' \"$long\""; ta deny "grep x $W; echo \"$long\""
+t none "find . -name x; echo \"$long\""
+near="$(printf '%01940d' 0)"; t none "echo \"x; rm f $near\""; t none "find . -name 'x;$near'"; ta none "grep '$near' $W"
+[ $((SECONDS - s0)) -le 2 ] || { echo "FAIL long lines took $((SECONDS - s0)) s"; fail=1; }
+# crit8 m1: if/elif/while/until/coproc/! put a delete at command position too
+t deny 'if rm f; then :; fi'; t deny 'while rm f; do :; done'; t deny 'until rm f; do :; done'; t deny '! rm f'
+t deny 'if true; then :; elif rm f; then :; fi'; t deny 'coproc rm f'; t deny 'if ! rm f; then :; fi'
+t none 'if grep -q rm f; then echo ok; fi'; t none 'while read -r l; do echo "$l"; done < f'
 reason="$(jq -n '{tool_input:{command:"waste.sh a b c"},agent_id:"x"}' | "$BASH" "$G" | jq -r '.hookSpecificOutput.permissionDecisionReason')"
 case "$reason" in *"Lead:"*|"") echo "FAIL subagent reason text: $reason"; fail=1;; esac
 [ "$fail" = 0 ] && echo "guard tests ok"

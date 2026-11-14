@@ -2524,10 +2524,10 @@ def test_add_receipt_closed_stage_link() -> None:
         assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 0
         out: str = lrun(repo, "add", "decision", "late", "--owner", "lead",
                         "--link", "S-1")[1]
-        want: str = "(no stage: S-1 is closed; rk set D-2 --stage S-1)"
-        assert out == f"logged D-2: late {want}\n", out
+        assert out == "logged D-2: late (no stage: S-1 is closed)\n", out
+        assert "rk set" not in out  # the closed stage's record is frozen
         assert L.load(repo)["D-2"].stage == ""  # the rule is kept
-        out = lrun(repo, "set", "D-2", "--stage", "S-1")[1]
+        out = lrun(repo, "set", "D-2", "--stage", "S-1")[1]  # set is unchanged
         assert out == "updated D-2: stage (stage S-1)\n", out
         # an open entry cannot go into a closed stage: no hint to do it
         out = lrun(repo, "add", "fetch", "smith", "--link", "S-1")[1]
@@ -2544,18 +2544,28 @@ def test_doctor_status_word_titles() -> None:
         for k, title in enumerate(["OPEN: scan the rest", "todo port it",
                                    "Done reading", "opening move", "Doneness"]):
             lrun(repo, "add", "task", title, "--imported", "--source", f"A.md:{k}")
-        lrun(repo, "add", "fetch", "open access check", "--status", "done")
-        lrun(repo, "add", "fetch", "open-source licence", "--status", "done")
-        lrun(repo, "add", "fetch", "open question for later")  # open: fine
+        for title in ["OPEN: old", "OPEN old"]:
+            lrun(repo, "add", "fetch", title, "--status", "done")  # F-1, F-2
+        for title in ["open access check", "open-source licence"]:
+            lrun(repo, "add", "fetch", title, "--status", "done")  # titles, not states
+        lrun(repo, "add", "fetch", "OPEN: not done yet")  # open: fine
+        lrun(repo, "add", "fetch", "open: gone", "--status", "dropped")  # dropped
         lrun(repo, "add", "task", "todo later", "--note", "n")  # not imported: fine
+        lrun(repo, "add", "task", "TODO: dropped row", "--imported", "--source", "A:9",
+             "--status", "dropped")
         out: str = doctor(repo)[1]
         assert group(out, L.G_STATUS_WORD) == [
             "T-1 (open) OPEN: scan the rest",
             "T-2 (open) todo port it",
             "T-3 (open) Done reading",
-        ], out
-        assert group(out, L.G_DONE_OPEN) == ["F-1 open access check"], out
+        ], out  # the dropped imported row is not listed
+        assert group(out, L.G_DONE_OPEN) == ["F-1 OPEN: old", "F-2 OPEN old"], out
         assert doctor(repo)[0] == 0  # soft only
+        capped: str = doctor(repo, "--limit", "1")[1]  # both groups obey --limit
+        assert group(capped, L.G_STATUS_WORD)[0] == "T-1 (open) OPEN: scan the rest"
+        assert group(capped, L.G_DONE_OPEN)[0] == "F-1 OPEN: old", capped
+        assert "T-2" not in capped and "F-2" not in capped, capped
+        assert capped.count("+2 more") == 1 and capped.count("+1 more") == 1, capped
         lrun(repo, "set", "T-1", "--title", "scan the rest")
         assert len(group(doctor(repo)[1], L.G_STATUS_WORD)) == 2
 
@@ -2682,6 +2692,86 @@ def test_stage_close_record_imported_stage_without_folder() -> None:
             "no LEDGER.md: S-1 has no folder pm/stages/01-pilot/\n"
         ), out
         assert not (repo / "pm/stages").exists()  # no folder made for it
+
+
+def closed_stage_repo(root: Path) -> Path:
+    """Stage S-1 (01-paper-x) with a user sign-off D-1, not yet closed."""
+    repo: Path = new_repo(root)
+    lrun(repo, "add", "stage", "01-paper-x")
+    lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1")
+    return repo
+
+
+def test_stage_record_write_failure_and_regenerate() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = closed_stage_repo(Path(d))
+        folder: Path = repo / "pm/stages/01-paper-x"
+        real: Callable[..., None] = os.replace
+
+        def deny(src: Any, dst: Any) -> None:
+            if str(dst).endswith("LEDGER.md"):
+                raise OSError(13, "denied")
+            real(src, dst)
+
+        L.os.replace = deny
+        try:
+            code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        finally:
+            L.os.replace = real
+        want: str = "pm/stages/01-paper-x/LEDGER.md could not be written: denied"
+        assert code == 1 and want in out, out
+        assert "rk stage-close S-1" in out, out  # says how to write it again
+        assert L.load(repo)["S-1"].status == "done"  # the close line is there
+        assert not (folder / "LEDGER.md").exists(), "no half record"
+        assert not (folder / "LEDGER.md.tmp").exists(), "no tmp left behind"
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 0 and out == (
+            "S-1 is already closed; no ledger line written\n"
+            "wrote pm/stages/01-paper-x/LEDGER.md\n"
+        ), out
+        assert len(jl(repo)) == n  # the record only, no ledger line
+        text: str = (folder / "LEDGER.md").read_text()
+        assert text == L.render_stage_record(L.read_events(repo), "S-1")
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 1 and "S-1 is done, not open" in out, out  # as before
+        assert len(jl(repo)) == n and (folder / "LEDGER.md").read_text() == text
+
+
+def test_stage_record_not_over_a_hand_made_file() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = closed_stage_repo(Path(d))
+        rec: Path = repo / "pm/stages/01-paper-x/LEDGER.md"
+        rec.write_text("my own notes\n")
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 1 and "pm/stages/01-paper-x/LEDGER.md is there" in out, out
+        assert "not overwritten" in out, out
+        assert rec.read_text() == "my own notes\n"
+        assert L.load(repo)["S-1"].status == "done"  # the close line is written
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "stage-close", "S-1")  # still refused, still intact
+        assert code == 1 and "not overwritten" in out, out
+        assert rec.read_text() == "my own notes\n" and len(jl(repo)) == n
+        rec.unlink()  # moved away: now it can be written
+        code, out = lrun(repo, "stage-close", "S-1")
+        assert code == 0 and out.endswith("wrote pm/stages/01-paper-x/LEDGER.md\n")
+        head: str = "# Ledger of stage S-1 01-paper-x (generated)"
+        assert rec.read_text().startswith(head)
+
+
+def test_stage_record_odd_folder_names() -> None:
+    for title in ("..", "."):
+        with tempfile.TemporaryDirectory() as d:
+            repo: Path = new_repo(Path(d))
+            (repo / "pm/stages").mkdir()
+            lrun(repo, "add", "stage", title, "--imported", "--source", "A.md:1")
+            lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1")
+            code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+            assert code == 0 and out.endswith(
+                f"no LEDGER.md: S-1 has no folder pm/stages/{title}/\n"
+            ), out
+            found: list[str] = [str(p) for p in Path(d).rglob("LEDGER.md")]
+            assert found == [], found  # nothing written above or into pm/stages
 
 
 def main() -> int:

@@ -7,7 +7,7 @@ G="$HOOKS/ledger-guard.sh"
 export CLAUDE_PLUGIN_ROOT="$(cd "$HOOKS/.." && pwd)"
 RK="$CLAUDE_PLUGIN_ROOT/skills/research-kit/scripts/rk.py"
 fail=0
-decision() { bash "$G" | jq -r '.hookSpecificOutput.permissionDecision // empty'; }
+decision() { "$BASH" "$G" | jq -r '.hookSpecificOutput.permissionDecision // empty'; }
 t() {
   local got
   got="$(jq -n --arg t "$2" --arg f "$3" --arg v "$4" '{tool_name:$t,tool_input:{($f):$v},cwd:"/nowhere"}' | decision)"
@@ -22,7 +22,7 @@ tj() {
 }
 reason() {
   jq -n --arg t "$1" --arg f "$2" --arg v "$3" '{tool_name:$t,tool_input:{($f):$v}}' |
-    bash "$G" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty'
+    "$BASH" "$G" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty'
 }
 
 R="$(mktemp -d)"
@@ -71,6 +71,35 @@ t deny Write file_path "$R/pm//ledger.jsonl"
 t deny Edit file_path "$R/pm/./ledger.jsonl"
 t deny Write file_path "$R//pm/.//./STATUS.md"
 
+# generated stage record pm/stages/<one folder>/LEDGER.md: denied in every spelling
+t deny Edit file_path "$R/pm/stages/03b/LEDGER.md"
+t deny Write file_path "$R/pm/stages/03b/LEDGER.md"
+t deny MultiEdit file_path "$R/pm/stages/03b/LEDGER.md"
+t deny Edit file_path "$R/pm/stages/03b/ledger.md"
+t deny Edit file_path "$R/PM/Stages/03b/Ledger.MD"
+t deny Edit file_path "pm/stages/03b/LEDGER.md"
+t deny Write file_path "$R/pm//stages//03b/LEDGER.md"
+t deny Write file_path "$R/pm/./stages/./03b/./LEDGER.md"
+t deny Edit file_path "$R//pm/stages/03b//LEDGER.md"
+# the deny text says stage-close writes it
+case "$(reason Edit file_path "$R/pm/stages/03b/LEDGER.md")" in
+  *"written once by stage-close"*"$RK"*"new ledger entry in the current stage"*) ;; *) echo "FAIL stage LEDGER.md reason text"; fail=1;; esac
+# it must not send the reader to run stage-close again (refused on a closed stage)
+case "$(reason Edit file_path "$R/pm/stages/03b/LEDGER.md")" in
+  *"again"*) echo "FAIL stage LEDGER.md reason says stage-close again"; fail=1;; esac
+# not denied: other LEDGER.md files, deeper paths, near misses
+t none Write file_path "$R/pm/waste/LEDGER.md"
+t none Write file_path "$R/LEDGER.md"
+t none Write file_path "$R/pm/LEDGER.md"
+t none Write file_path "$R/docs/LEDGER.md"
+t none Write file_path "$R/pm/stages/LEDGER.md"
+t none Write file_path "$R/pm/stages/03b/notes/LEDGER.md"
+t none Write file_path "$R/pm/stages/03b/LEDGER.md.bak"
+t none Write file_path "$R/pm/stages/03b/MYLEDGER.md"
+t none Write file_path "$R/pm/stages/03b/notes.md"
+t none Write file_path "$R/xpm/stages/03b/LEDGER.md"
+t none Write file_path "$R/pm/stages/a/xpm/stages/b/LEDGER.md"
+
 # tabs and CRLF in a brief: open T-3 passes (and runs), done T-2 is refused
 python3 -I "$RK" add task "crlf" --note n --repo "$R" >/dev/null
 t none Agent prompt $'\t\tDELIVERABLE: x\r\n\tTASK: T-3\r\n'
@@ -114,7 +143,7 @@ CLAUDE_PROJECT_DIR="$W" t deny Write file_path "$M/pm/STATUS.md"
 CLAUDE_PROJECT_DIR="$W" t deny Edit file_path "$W/pm/ledger.jsonl"
 
 # CLAUDE_PROJECT_DIR unset: the payload's cwd is the root
-got="$(env -u CLAUDE_PROJECT_DIR bash -c "jq -n --arg c '$R' '{tool_name:\"Agent\",tool_input:{prompt:\"DELIVERABLE: x\"},cwd:\$c}' | bash '$G'" |
+got="$(env -u CLAUDE_PROJECT_DIR "$BASH" -c "jq -n --arg c '$R' '{tool_name:\"Agent\",tool_input:{prompt:\"DELIVERABLE: x\"},cwd:\$c}' | '$BASH' '$G'" |
   jq -r '.hookSpecificOutput.permissionDecision // empty')"
 [ "$got" = deny ] || { echo "FAIL cwd fallback: got=${got:-none}"; fail=1; }
 
@@ -124,10 +153,10 @@ S="$(mktemp -d)"; mkdir -p "$S/pm" && : > "$S/pm/ledger.jsonl"
 python3 -I "$RK" add task "sid one" --note n --repo "$S" >/dev/null
 python3 -I "$RK" add task "sid two" --note n --repo "$S" >/dev/null
 jq -n '{tool_name:"Agent",tool_input:{prompt:"DELIVERABLE: x\nTASK: T-1"},session_id:"sess-from-json",cwd:"/nowhere"}' |
-  env -u CLAUDE_CODE_SESSION_ID CLAUDE_PROJECT_DIR="$S" bash "$G" >/dev/null
+  env -u CLAUDE_CODE_SESSION_ID CLAUDE_PROJECT_DIR="$S" "$BASH" "$G" >/dev/null
 grep -q 'sess-from-json' "$S/pm/ledger.jsonl" || { echo "FAIL hook event lacks sid from the input's session_id"; fail=1; }
 jq -n '{tool_name:"Agent",tool_input:{prompt:"DELIVERABLE: x\nTASK: T-2"},session_id:"sess-from-json-2",cwd:"/nowhere"}' |
-  CLAUDE_CODE_SESSION_ID=sess-from-env CLAUDE_PROJECT_DIR="$S" bash "$G" >/dev/null
+  CLAUDE_CODE_SESSION_ID=sess-from-env CLAUDE_PROJECT_DIR="$S" "$BASH" "$G" >/dev/null
 grep -q 'sess-from-env' "$S/pm/ledger.jsonl" && ! grep -q 'sess-from-json-2' "$S/pm/ledger.jsonl" ||
   { echo "FAIL env session id does not win over the input's"; fail=1; }
 

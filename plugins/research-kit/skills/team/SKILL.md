@@ -36,8 +36,9 @@ on that tier).
 The disposable critic is a fresh agent every round, never reused or
 messaged again; it sees only the diff or deliverable, the user's request
 verbatim and the goal statement. `blind<round>` names it and its report.
-Extra critics asked for are loop critics `crit2..` (crit1 lens). Why: worker
-reports anchor a critic on their framing; a fresh one judges the outcome.
+`critics=1` = `crit1` only (memory across the loop, one agent, not one per
+round); `critics=N` (N >= 2) = one disposable plus N-1 loop critics. Why:
+worker reports anchor a critic on their framing; a fresh one judges the outcome.
 
 **Architect.** Staff `arch1` only when the work items of two or more
 workers meet at an interface (one consumes what another produces); else
@@ -104,10 +105,14 @@ to different formats; an architect that routes or builds is a second lead.
    Team: <name: one-line task, for every teammate>.
    Coordinate with teammates via SendMessage only when your work touches
    theirs.
-   CHECK: <command that tests your work, or none>. Scratch: <lead's scratchpad>.
-   Run yourself only one-line read commands, the named check, and one-line
-   writes inside your own scratch folder; anything else goes as plain lines
-   in a file to the lead. Prefix scratch files with your name.
+   CHECK: <command that tests your work, or none>.
+   Scratch folder: <lead's scratchpad>/<name>/.
+   Run yourself only one-line read commands, the named check, one-line `rk`
+   commands, and one-line writes inside your own scratch folder; anything
+   else goes as plain lines in a file to the lead. Send its path, then work
+   on what does not wait for it. Commit in your own worktree only when this
+   brief says so. Change files with the Edit/Write tools, never with a shell
+   heredoc, sed -i or a script. Prefix scratch files with your name.
    Full report → write to <REPORTS>/<name>-r<round>.md (a required
    deliverable; overrides any "no report/documentation files" rule): paths
    produced, how verified, open points. Then explicit SendMessage to the
@@ -145,17 +150,17 @@ to different formats; an architect that routes or builds is a second lead.
    Reports live on disk, not in the lead's context; the lead reads a report
    only when a decision needs it, and then only the needed section.
 
-   **Handed-over commands.** A teammate puts any other command as plain
-   lines with absolute paths in a scratch file and sends you the path before
-   any attempt; its files hold code under test, never operations. Run the
-   lines you understand inline in your own Bash call, ask the user about
-   the rest; over ~20 lines, split by step. Never a command that executes
-   the file (`bash`, `sh`, `source`, `eval`, `python3`, `make`, `xargs` on
-   it). A denied command is not handed to you; the teammate reports it.
+   **Handed-over commands.** Other commands reach you as plain lines with
+   absolute paths in a scratch file, before any attempt; teammate files
+   hold code under test, never operations. Run the lines you understand
+   inline in your own Bash call, ask the user about the rest (over ~20
+   lines: split by step); send back the exit code and the output needed.
+   Never a command that executes the file (`bash`, `sh`, `source`, `eval`,
+   `python3`, `make`, `xargs` on it); a denied command is not handed over.
    Why: a teammate's prompt can sit unseen (one missed the user over Remote
    Control); a script hides its content from the safety check and the user;
-   running a denied command for a teammate overrides the user's denial; the
-   name prefix tells whose a shared scratch file is.
+   a denial holds session-wide; `rk` and worktree commits stay with the
+   teammates as ledger and commit rules expect; the prefix names the owner.
 
    Append the lines that apply:
    - Repo with `.serena/project.yml`: "Use Serena symbols before Reading files."
@@ -167,7 +172,7 @@ to different formats; an architect that routes or builds is a second lead.
      the `research-kit-lit:zotero` skill in the brief.
 
    Context explains how to do the task. It never suggests a bigger task.
-5. **Review.** When workers report, brief both critics in one message.
+5. **Review.** When workers report, brief the critics in one message.
    Both get the user's request verbatim and the goal statement; `crit1`
    also gets the worker report paths (not their contents), the disposable
    critic only the diff or deliverable paths. Each review round is one `task`
@@ -198,16 +203,19 @@ to different formats; an architect that routes or builds is a second lead.
    NO = would not ship as is, and names at least one BLOCKING finding.
    Evidence = a command run or number measured, or a source opened and the
    passage checked. "YES" without it = PARTIAL.
-6. **Fix loop.** Only a BLOCKING finding reopens the loop (minor ones go to
-   your report as open; why: they do not justify a round of every agent).
-   Re-plan the work items, not just patch. Route findings to their owners
+6. **Fix loop.** Only a BLOCKING finding reopens the loop; a round ends
+   when none is open. Log each remaining minor finding as a debt entry
+   (`rk add debt "<finding>" --ref <review file>`), or list it in your
+   report without a ledger. Why: minor findings do not justify a round of
+   every agent, and a logged debt is not lost. Re-plan the work items, not just patch. Route findings to their owners
    via `SendMessage` (point at the critic report path and finding, do not
    paste it). `crit1` re-reviews all fixes (`SendMessage`, same review
-   `TASK:` while it is open); a new `blind<round>` reviews the fixed result.
+   `TASK:` while it is open); a new `blind<round>`, if staffed, reviews the result.
    Max 2 rounds; then AskUserQuestion.
-7. **Integrate and verify.** Engineering: run the tests or checks yourself.
-   Research: open the sources of the key claims yourself; `arch1` checks
-   the result against its design. Report: what was built or found,
+7. **Integrate and verify.** Engineering: run the tests or checks yourself
+   (a repo whose AGENTS.md names a teammate for the checks: follow it).
+   Research: open the sources of the key claims yourself. With `arch1`, it
+   checks the result against its design. Report: what was built or found,
    verification, critic verdicts, open findings, roster used. Collect the
    items with `grep -h '^TO-WASTE: ' <the report paths named in this wave's DONE messages>`
    (plus the stage notes or `pm/reviews/` when critics listed some;

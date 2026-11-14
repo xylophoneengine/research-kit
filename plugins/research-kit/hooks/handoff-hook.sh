@@ -51,7 +51,8 @@ auto_state() {
 newest_auto() {
   last=""
   for f in "$root"/pm/handoffs/compact/auto-*.md; do [ -f "$f" ] && last="$f"; done
-  [ -n "$last" ] && echo "$last"
+  # only a file this compact's pre wrote (younger than an hour): an old one is not "the state at the compact"
+  [ -n "$last" ] && [ -n "$(find "$last" -mmin -60 2>/dev/null)" ] && echo "$last"
   return 0
 }
 
@@ -101,7 +102,7 @@ case "$mode" in
     fi
     if [ -n "$ledger" ]; then
       a="$(newest_auto 2>/dev/null)"
-      [ -n "$a" ] && echo "[surviving-compaction] State file written by the PreCompact hook (ledger lists and git status as of the compact, machine-made): $a. Read it next to the handoff file."
+      [ -n "$a" ] && echo "[surviving-compaction] State file written by this compact's PreCompact hook (stamp ${a##*/auto-}; ledger lists and git status as of the compact, machine-made): $a. Read it next to the handoff file."
       ledger_block
       echo "Compare the summary's \"Decisions and done work\" section with these newest entries; log what is missing (rk add decision ... / rk close ...) and show the user each receipt:"
       (cd "$root" && python3 -I "$rk" recent -n 15 2>&1)

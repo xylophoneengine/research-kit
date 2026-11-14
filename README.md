@@ -274,7 +274,7 @@ pm/
     README.md BRIEF.md deliverables/ notes/ code/ chat/                           chat/ gitignored
   handoffs/open/    work packages for later sessions                              committed
   handoffs/done/    executed work packages                                        committed
-  handoffs/compact/ compaction handoffs                                           gitignored
+  handoffs/compact/ compaction handoffs + hook-made auto-<stamp>.md state files   gitignored
   logs/             run and implementation logs; team/<run>/ = teammate reports   committed
                     outside a stage (in a stage: notes/team/)
   reviews/          critic reviews outside stages (light mode)                    gitignored
@@ -325,6 +325,7 @@ so branch merges of the append-only ledger do not conflict.
 | `/rk-upgrade` | light to full: adds `pm/stages/`, flips `Mode:` |
 | `/rk-sync` | updates `AGENTS.md` and the kind files from the plugin templates (see below) |
 | `/rk-close` | closes a named stage with the close checklist |
+| `/rk-doctor` | checks the ledger and its refs (`rk doctor`), read-only; `--stage S-n`, `--limit 0` |
 | `/s-comp prepare` / `resume` | compaction handoff before and after `/compact` |
 
 ## Stage lifecycle

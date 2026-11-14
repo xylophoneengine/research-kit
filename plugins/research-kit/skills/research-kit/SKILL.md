@@ -24,8 +24,9 @@ title is its folder name and is never renamed; every ID argument also takes a
 label or a stage code (`03b`); receipts print the real ID and the entry's stage
 (or `(no stage)`); `set --stage` with the stage the entry already has writes
 nothing (`unchanged`); an `add` that links a closed stage gets no stage, and its
-receipt says so and names the `set <id> --stage S-n` that fixes it (not for an
-open entry: a closed stage takes none); a `TASK:` line in a
+receipt says `(no stage: S-n is closed)` (a closed stage's record is frozen: a
+correction is an entry of the stage now open; an open entry gets the plain
+`(no stage)`); a `TASK:` line in a
 brief names its tasks by id or by label, listed first (a label after other words
 does not count); titles are one line, 160 characters at most. `add task` without
 `--note` is refused (imports exempt); `add stage "<NN-kind-topic>"` creates the
@@ -41,7 +42,8 @@ rule stamps the tool wrote. `doctor [--stage S] [--limit N]` (N lines per group,
 append-only against HEAD) exit 1; SOFT ones (ref in an ignored or waste folder, waste ref whose file is gone,
 done stage not in HEAD, entry without a stage, task running over 24 h, imported
 entries with missing refs, imported entries titled with a status word (OPEN, DONE,
-TODO), done entries titled `open ...`, ignored or outside-the-repo refs a clone would
+TODO; dropped or superseded ones are skipped), done entries titled `open:` or
+`OPEN ...`, ignored or outside-the-repo refs a clone would
 lack, stage folder absent in a clone, rule file behind the kit, and with `--stage` the
 decisions not owned by the user) are listed; no git repo: git checks are skipped.
 `reref OLD NEW [--dry-run]` replaces a leading path prefix in every ref that
@@ -49,8 +51,11 @@ starts with it, all or nothing (refuses and writes nothing if a new path does
 not exist: move the files first). `stage-close` runs the stage checks and refuses on HARD; once closed it writes
 `pm/stages/<stage folder>/LEDGER.md` (the stage's entries and those touched in its
 window, decisions by owner, what stays open, the `kit`, `sid` and rule stamps seen):
-generated, never hand-edited, written by nothing else. Why: the stage's record on
-one page, read without the ledger.
+generated, never hand-edited, written by nothing else (an existing file without
+the generated first line is not overwritten). If the write fails after the close
+line, or the file is missing, `stage-close S-n` on the done stage writes the
+record only, no ledger line. Why: the stage's record on one page, read without
+the ledger.
 `doctor --start` feeds the SessionStart block (`kit <version>`, a line per stale
 rule file: run `/rk-sync` between stages, not inside one); the block also prints
 the line `rk() { python3 -I "<path>/rk.py" "$@"; }` and a notice when `jq` is

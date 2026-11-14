@@ -7,6 +7,8 @@ H="$HOOKS/handoff-hook.sh"
 export CLAUDE_PLUGIN_ROOT="$(cd "$HOOKS/.." && pwd)"
 RK="$CLAUDE_PLUGIN_ROOT/skills/research-kit/scripts/rk.py"
 fail=0
+# "bash" below means the interpreter running this suite: /bin/bash <suite> tests the hook under 3.2
+bash() { "$BASH" "$@"; }
 has() { case "$3" in *"$2"*) ;; *) echo "FAIL $1 lacks: $2"; fail=1;; esac; }
 lacks() { case "$3" in *"$2"*) echo "FAIL $1 has: $2"; fail=1;; esac; }
 last() { [ "$(printf '%s\n' "$3" | tail -n 1)" = "$2" ] || { echo "FAIL $1 last line is not: $2"; fail=1; }; }
@@ -64,6 +66,12 @@ A3="$(mktemp -d)"; mkdir -p "$A3/pm" "$A3/pm/handoffs/compact"; : > "$A3/pm/ledg
 : > "$A3/pm/handoffs/compact/auto-20200101T000000Z.md"; : > "$A3/pm/handoffs/compact/auto-20300101T000000Z.md"
 out="$(CLAUDE_PROJECT_DIR="$A3" bash "$H" post)"
 has post-newest "auto-20300101T000000Z.md" "$out"; lacks post-newest "auto-2020" "$out"
+# stale (older than an hour): not named, as the compact's pre did not write it
+touch -t 202001010000 "$A3/pm/handoffs/compact/auto-20300101T000000Z.md" "$A3/pm/handoffs/compact/auto-20200101T000000Z.md"
+out="$(CLAUDE_PROJECT_DIR="$A3" bash "$H" post)"; lacks post-stale "auto-" "$out"; lacks post-stale "State file written" "$out"
+has post-stale "[surviving-compaction]" "$out"
+touch "$A3/pm/handoffs/compact/auto-20300101T000000Z.md"
+out="$(CLAUDE_PROJECT_DIR="$A3" bash "$H" post)"; has post-fresh "stamp 20300101T000000Z.md" "$out"
 # the file is named next to the hand-kept handoff
 printf '# h\n' > "$A3/pm/handoffs/compact/handoff-2026-01-01.md"
 out="$(CLAUDE_PROJECT_DIR="$A3" bash "$H" post)"
