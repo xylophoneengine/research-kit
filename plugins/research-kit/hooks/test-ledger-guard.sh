@@ -57,7 +57,7 @@ t none Bash command 'ls'
 case "$(reason Edit file_path "$R/pm/ledger.jsonl")" in
   *"$RK"*) ;; *) echo "FAIL edit reason lacks the rk.py path"; fail=1;; esac
 er="$(reason Edit file_path "$R/pm/ledger.jsonl")"   # every write command named, doctor named for a broken line
-for w in add start close drop reopen set supersede reref stage-close import; do
+for w in add start close drop shelve reopen set supersede reref stage-close import; do
   case "$er" in *"|$w|"*|*"<$w|"*|*"|$w>"*) ;; *) echo "FAIL edit reason lacks command: $w"; fail=1;; esac
 done
 case "$er" in *"$RK\" doctor"*"names the line"*) ;; *) echo "FAIL edit reason does not name rk doctor"; fail=1;; esac

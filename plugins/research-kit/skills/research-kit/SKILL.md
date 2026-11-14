@@ -31,14 +31,22 @@ brief names its tasks by id or by label, listed first (a label after other words
 does not count); titles are one line, 160 characters at most. `add task` without
 `--note` is refused (imports exempt); `add stage "<NN-kind-topic>"` creates the
 stage folder and records it as ref. Every `--ref` (add, set, close, drop,
-reopen, supersede, stage-close) must name an existing file, relative to the repo
+shelve, reopen, supersede, stage-close) must name an existing file, relative to the repo
 root (a `://` URL, `doi:` or `arXiv:` passes; a path outside the repo is refused;
 imports exempt; checked against the main checkout, so in a worktree merge first):
 write the report first.
-`close`, `drop` and `reopen` also store their `--note` as the field `reason` (why
-the entry has its current status; the next one replaces it; the note still
-appends as before); `show` prints `reason: ...`, the stage record shows it beside
-dropped entries. Old entries have none and print none.
+`shelve ID --note "<why>" [--ref P] [--link ID]` moves an open or running entry
+(any type but decision and stage) to `shelved`: known, not planned now (deferred
+= parked, waits on something). A shelved entry leaves every open count and view:
+no `rk list` row unless `--all`, no stage-close block, its own `## Shelved`
+section in STATUS.md. Out of shelved: `reopen` (open; the closed-stage rule
+applies) or `drop`; `close`, `start` and a second `shelve` are refused. `add
+--status shelved` only with `--imported`. Why: the reason is required, so
+"not now" is a decision with its why, not a silent open item.
+`close`, `drop`, `shelve` and `reopen` also store their `--note` as the field
+`reason` (why the entry has its current status; the next one replaces it; the
+note still appends as before); `show` prints `reason: ...`, the stage record
+shows it beside dropped and shelved entries. Old entries have none and print none.
 `set <id> --ref-drop <path>` (repeatable) removes a wrong ref. `show` takes
 several ids and prints, under each history line, the kit version, session id and
 rule stamps the tool wrote. `doctor [--stage S] [--limit N]` (N lines per group, default 20, 0 = all) is read-only: HARD findings
@@ -172,7 +180,7 @@ refused (exit 1, one `already imported as ID` line per row): put only the new
 rows in their own file rather than importing twice (a duplicate earlier in the
 same batch is refused too). Look an imported row up afterwards
 with `rk.py search --source S` or `--legacy-id L` (exact match on the stored
-value). Later notes on an entry append (`set|close|drop|reopen --note`);
+value). Later notes on an entry append (`set|close|drop|shelve|reopen --note`);
 `set --note-replace TEXT` replaces.
 `rk.py import --help` has the full key list and example rows.
 

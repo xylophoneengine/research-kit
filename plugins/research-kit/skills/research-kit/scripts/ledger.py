@@ -29,7 +29,9 @@ from pathlib import Path
 LEDGER_REL: str = "pm/ledger.jsonl"
 STATUS_REL: str = "pm/STATUS.md"
 STAGE_RECORD: str = "LEDGER.md"  # in the stage folder, written by stage-close
-STATUSES: tuple[str, ...] = ("open", "running", "done", "dropped", "superseded")
+STATUSES: tuple[str, ...] = (
+    "open", "running", "done", "dropped", "superseded", "shelved"
+)
 OPEN_STATUSES: tuple[str, ...] = ("open", "running")
 BUILTIN_TYPES: dict[str, str] = {
     "task": "T",
@@ -60,7 +62,7 @@ TASK_NOTE: str = (
 )
 COMMANDS: frozenset[str] = frozenset(
     {
-        "add", "start", "close", "drop", "reopen", "set", "supersede",
+        "add", "start", "close", "drop", "shelve", "reopen", "set", "supersede",
         "list", "show", "search", "recent", "render", "stage-close", "brief-check",
         "import", "doctor", "reref",
     }
@@ -750,6 +752,10 @@ def render_status(state: dict[str, Entry], now: datetime) -> str:
                 if e.type == typ and e.status == "open" and e.owner != "user"
             ],
         )
+    shelved: list[Entry] = sorted(  # known, not planned now: not in the open view
+        (e for e in state.values() if e.status == "shelved"), key=_sort_key
+    )
+    section("Shelved", [_item(e, now) for e in shelved])
     decs: list[Entry] = [
         e for e in state.values() if e.type == "decision" and e.status == "done"
     ]
@@ -859,8 +865,8 @@ def _add_step(
         )
         if val is not None
     ]
-    if a.status == "superseded":
-        import_only.append("--status superseded")
+    if a.status in ("superseded", "shelved"):  # shelved needs a reason: rk shelve
+        import_only.append(f"--status {a.status}")
     if import_only and not a.imported:
         raise LedgerError(f"{', '.join(import_only)}: only with --imported")
     if a.imported and not a.source:
@@ -990,8 +996,8 @@ list of strings):
              pm/kinds/
   title      one line, at most 160 characters
   source     where the row came from, e.g. "pm/living/TASKS.md:44"
-  status     open (default; a decision: done), running, done, dropped or
-             superseded
+  status     open (default; a decision: done), running, done, dropped,
+             superseded or shelved (known, not planned now)
   owner      name, default lead; a decision needs it (who decided)
   stage      a stage id, the exact title of one stage, its code (03b) or
              its label; default: no stage
@@ -1233,7 +1239,9 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
     note: str = _need_note(a)
     a.ref = _check_refs(repo, a.ref)
     cmd: str = a.cmd
-    new: str = {"close": "done", "drop": "dropped", "reopen": "open"}[cmd]
+    new: str = {
+        "close": "done", "drop": "dropped", "shelve": "shelved", "reopen": "open"
+    }[cmd]
     ids: list[str] = []
 
     def build(state: dict[str, Entry]) -> list[dict[str, object]]:
@@ -1241,15 +1249,17 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
         ids.append(e.id)
         if e.type == "stage":
             raise LedgerError(f"{e.id} is a stage: use stage-close")
-        if cmd in ("close", "reopen") and e.type == "decision":
+        if e.type == "decision" and cmd != "drop":  # shelve: Q1, every type but this
             raise LedgerError(
                 f"{e.id} is a decision; decisions are in force when logged: "
                 "supersede or drop"
             )
         allowed: tuple[str, ...] = {
             "close": OPEN_STATUSES,
-            "drop": OPEN_STATUSES + (("done",) if e.type == "decision" else ()),
-            "reopen": ("done", "dropped"),
+            "drop": OPEN_STATUSES + ("shelved",)
+            + (("done",) if e.type == "decision" else ()),
+            "shelve": OPEN_STATUSES,
+            "reopen": ("done", "dropped", "shelved"),
         }[cmd]
         if e.status not in allowed:
             raise LedgerError(f"cannot {cmd} {e.id}: it is {e.status}")
@@ -1270,7 +1280,9 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
         return [make_event(who, "set", e.id, f)]
 
     state: dict[str, Entry] = append(repo, build)
-    verb: str = {"close": "closed", "drop": "dropped", "reopen": "reopened"}[cmd]
+    verb: str = {
+        "close": "closed", "drop": "dropped", "shelve": "shelved", "reopen": "reopened"
+    }[cmd]
     print(f"{verb} {ids[0]}: {_cut(note)}{_in_stage(state[ids[0]])}")
     return 0
 
@@ -1704,7 +1716,7 @@ def render_stage_record(
         why: object = e.extra.get("reason")  # beside a dropped entry: the why
         tail: str = (
             f" -- reason: {_cut(why)}"
-            if e.status == "dropped" and isinstance(why, str) and why
+            if e.status in ("dropped", "shelved") and isinstance(why, str) and why
             else ""
         )
         return f"- {e.id} {e.type} {e.status} ({e.owner}) {e.title}{tail}"
@@ -1847,8 +1859,8 @@ def _cmd_stage_close(a: argparse.Namespace) -> int:
             t: str = busy[0].id
             problems.append(
                 ", ".join(f"{e.id} {e.status}" for e in busy)
-                + f": close, drop, re-stage (set {t} --stage S-<x>) or defer them"
-                f" (add deferred ... --link {t}, then drop {t} --note"
+                + f": close, drop, shelve, re-stage (set {t} --stage S-<x>) or "
+                f"defer them (add deferred ... --link {t}, then drop {t} --note"
                 ' "deferred as DF-<k>")'
             )
         problems += _sign_off_problems(state, sid, sign)
@@ -2333,7 +2345,7 @@ def _parser() -> argparse.ArgumentParser:
     ps: argparse.ArgumentParser = sub.add_parser("start", parents=[common])
     ps.add_argument("id")
     ps.add_argument("--owner", default=None)
-    for name in ("close", "drop", "reopen"):
+    for name in ("close", "drop", "shelve", "reopen"):
         pc: argparse.ArgumentParser = sub.add_parser(name, parents=[common])
         pc.add_argument("id")
         pc.add_argument("--note", default=None, help="added as a new line of the note")
@@ -2434,6 +2446,7 @@ HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "start": _cmd_start,
     "close": _close_drop_reopen,
     "drop": _close_drop_reopen,
+    "shelve": _close_drop_reopen,
     "reopen": _close_drop_reopen,
     "set": _cmd_set,
     "supersede": _cmd_supersede,

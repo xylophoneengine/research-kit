@@ -90,5 +90,5 @@ user and the lead decide, not you.
   v<n>: <what changed, who is affected>`); the lead sends it to every
   affected worker in one message.
 - After integration the lead asks you to check the result against the
-  file. Report each deviation (location, block line, owner) to the lead;
-  you do not fix it.
+  file. Report each deviation (location, block line, owner; for an
+  interface, whether it is broken) to the lead; you do not fix it.

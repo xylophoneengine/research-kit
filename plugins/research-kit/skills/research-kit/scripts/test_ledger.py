@@ -2730,6 +2730,175 @@ def test_reason_field_of_close_drop_reopen() -> None:
         assert "reason" not in L.load(repo)["D-1"].extra
 
 
+# ---- shelved: known, not planned now ----------------------------------------
+
+
+def test_shelve_cycle() -> None:  # R1-R3, R8, R9, I1, I3
+    assert L.STATUSES[-1] == "shelved" and L.OPEN_STATUSES == ("open", "running")
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        (repo / "notes").mkdir()
+        (repo / "notes/a.md").write_text("x")
+        lrun(repo, "add", "task", "a", "--note", "n")  # T-1
+        lrun(repo, "add", "task", "b", "--note", "n")  # T-2
+        lrun(repo, "add", "debt", "flaky test")  # DB-1
+        lrun(repo, "add", "decision", "dd", "--owner", "user")  # D-1
+        lrun(repo, "add", "stage", "01-paper-x")  # S-1
+        # refusals: no note, a stage, a decision
+        code, out = lrun(repo, "shelve", "T-1")
+        assert code == 1 and out == "error: shelve needs --note\n", out
+        code, out = lrun(repo, "shelve", "S-1", "--note", "x")
+        assert code == 1 and out == "error: S-1 is a stage: use stage-close\n", out
+        code, out = lrun(repo, "shelve", "D-1", "--note", "x")
+        assert code == 1 and out == (
+            "error: D-1 is a decision; decisions are in force when logged: "
+            "supersede or drop\n"
+        ), out
+        assert L.load(repo)["T-1"].status == "open"
+        # the move: receipt (I3), event (I1)
+        code, out = lrun(repo, "shelve", "T-1", "--note", "not now: no user need\nmore")
+        assert code == 0 and out == (
+            "shelved T-1: not now: no user need (no stage)\n"
+        ), out
+        ev: dict[str, Any] = jl(repo)[-1]
+        assert ev["ev"] == "set" and ev["id"] == "T-1" and "kit" in ev, ev
+        assert ev["f"] == {
+            "status": "shelved",
+            "note": "n\nnot now: no user need\nmore",
+            "reason": "not now: no user need\nmore",
+        }, ev["f"]
+        # refs and links only when given
+        code, out = lrun(repo, "shelve", "DB-1", "--note", "later", "--ref",
+                         "notes/a.md", "--link", "T-2")
+        assert code == 0 and out == "shelved DB-1: later (no stage)\n", out
+        f: dict[str, Any] = jl(repo)[-1]["f"]
+        assert set(f) == {"status", "note", "reason", "refs", "links"}, f
+        assert f["refs"] == ["notes/a.md"] and f["links"] == ["T-2"], f
+        # out of shelved: only reopen and drop; the existing refusal texts
+        for cmd, text in (
+            ("shelve", "cannot shelve T-1: it is shelved"),
+            ("close", "cannot close T-1: it is shelved"),
+            ("start", "T-1 is shelved: use reopen first"),
+        ):
+            argv: list[str] = [cmd, "T-1"] + ([] if cmd == "start" else ["--note", "x"])
+            code, out = lrun(repo, *argv)
+            assert code == 1 and out == f"error: {text}\n", (cmd, out)
+        code, out = bcheck(repo, "DELIVERABLE: x\nTASK: T-1\n")  # R8
+        assert code == 2 and "T-1 is shelved" in out, out
+        code, out = lrun(repo, "reopen", "T-1", "--note", "wanted again")
+        assert code == 0 and out == "reopened T-1: wanted again (no stage)\n", out
+        e: Any = L.load(repo)["T-1"]
+        assert e.status == "open" and e.extra["reason"] == "wanted again", e
+        lrun(repo, "shelve", "T-1", "--note", "again not now")
+        code, out = lrun(repo, "drop", "T-1", "--note", "never")
+        assert code == 0 and out == "dropped T-1: never (no stage)\n", out
+        assert L.load(repo)["T-1"].extra["reason"] == "never"
+        # only from open or running
+        lrun(repo, "start", "T-2")
+        assert lrun(repo, "shelve", "T-2", "--note", "from running")[0] == 0
+        code, out = lrun(repo, "shelve", "T-1", "--note", "x")  # dropped
+        assert code == 1 and out == "error: cannot shelve T-1: it is dropped\n", out
+        lrun(repo, "reopen", "T-2", "--note", "r")
+        lrun(repo, "close", "T-2", "--note", "d")
+        code, out = lrun(repo, "shelve", "T-2", "--note", "x")  # done
+        assert code == 1 and out == "error: cannot shelve T-2: it is done\n", out
+        # add --status shelved: import only, no reason; import rows may carry it
+        code, out = lrun(repo, "add", "task", "z", "--note", "n", "--status", "shelved")
+        assert code == 1 and "--status shelved: only with --imported" in out, out
+        code, out = lrun(repo, "add", "task", "z", "--imported", "--source", "A:1",
+                         "--status", "shelved")
+        assert code == 0, out
+        assert "reason" not in L.load(repo)["T-3"].extra
+        rows: Path = write_rows(
+            Path(d), [{"type": "debt", "title": "old", "source": "B:2",
+                       "status": "shelved"}]
+        )
+        code, out = lrun(repo, "import", str(rows))
+        assert code == 0 and "shelved 1" in out, out
+        assert L.load(repo)["DB-2"].status == "shelved"
+
+
+def test_shelve_views() -> None:  # R4-R6, I2
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "01-paper-x")  # S-1
+        lrun(repo, "add", "task", "run me", "--note", "n")  # T-1
+        lrun(repo, "add", "task", "keep", "--note", "n")  # T-2
+        lrun(repo, "add", "task", "for the user", "--note", "n", "--owner", "user")
+        lrun(repo, "add", "debt", "flaky timing test on CI")  # DB-1
+        lrun(repo, "add", "fetch", "smith2020")  # F-1
+        lrun(repo, "add", "deferred", "plot later")  # DF-1
+        lrun(repo, "start", "T-1")
+        before: str = (repo / L.STATUS_REL).read_text()
+        assert "## Shelved" not in before and "Open: 7." in before, before
+        lrun(repo, "add", "task", "imp", "--imported", "--source", "A:1")  # T-4
+        for eid in ("T-1", "T-3", "DB-1", "T-4", "DF-1"):
+            assert lrun(repo, "shelve", eid, "--note", "not now")[0] == 0
+        st: str = (repo / L.STATUS_REL).read_text()
+        assert "Open: 3." in st, st  # S-1, T-2, F-1
+        sec: dict[str, str] = sections(st)
+        assert "## Running" not in sec and "## Needs you" not in sec, st
+        assert "T-2" in sec["## Open tasks"] and "T-1" not in st.split("## Shelved")[0]
+        assert "tasks: 1 open" in sec["## Stages"], sec["## Stages"]
+        heads: list[str] = [ln for ln in st.splitlines() if ln.startswith("## ")]
+        assert heads == ["## Stages", "## Open tasks", "## Open fetches",
+                         "## Shelved"], heads  # after the last open section
+        lines: list[str] = sec["## Shelved"].splitlines()
+        want: list[str] = [  # builtin type order, then id number; no reason
+            "- T-1 (lead, ", "- T-3 (user, ", "- T-4 (lead, ", "- DF-1 (lead, ",
+            "- DB-1 (lead, ",
+        ]
+        assert len(lines) == 5, lines
+        for ln, w in zip(lines, want):
+            assert ln.startswith(w) and "not now" not in ln, ln
+        assert lines[0].endswith(") run me") and lines[2].endswith(") imp [imported]")
+        assert lines[4].endswith(") flaky timing test on CI"), lines
+        out: str = lrun(repo, "list")[1]  # R6: hidden, head line counts open only
+        assert out.splitlines()[0].startswith("open 3 (running 0)"), out
+        assert "shelved" not in out and "T-1" not in out and "DB-1" not in out, out
+        out = lrun(repo, "list", "--all")[1]
+        rows: list[str] = [ln for ln in out.splitlines() if "shelved" in ln]
+        assert len(rows) == 5 and rows[0].startswith("T-3   shelved"), out
+        assert out.index("F-1 ") < out.index("T-3 "), out  # after the open rows
+        assert lrun(repo, "render")[1] == "wrote pm/STATUS.md (3 open)\n"
+        lrun(repo, "reopen", "T-1", "--note", "back")
+        assert "T-1" in sections((repo / L.STATUS_REL).read_text())["## Open tasks"]
+
+
+def test_shelve_stage_close() -> None:  # R4, R7, D1
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "01-paper-x")
+        lrun(repo, "add", "task", "side", "--note", "n")  # T-1
+        lrun(repo, "add", "task", "main", "--note", "n")  # T-2
+        lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1")
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 1 and (
+            "T-1 open, T-2 open: close, drop, shelve, re-stage (set T-1 --stage "
+            "S-<x>) or defer them (add deferred ... --link T-1, then drop T-1 "
+            '--note "deferred as DF-<k>")'
+        ) in out, out
+        long: str = "x" * 70 + "\nsecond line"
+        lrun(repo, "shelve", "T-1", "--note", long)
+        lrun(repo, "close", "T-2", "--note", "done")
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")  # no block
+        assert code == 0 and "closed S-1: sign-off D-1" in out, out
+        rec: str = (repo / "pm/stages/01-paper-x/LEDGER.md").read_text()
+        assert f"- T-1 task shelved (lead) side -- reason: {'x' * 60}\n" in rec, rec
+        assert "## Left open\nnone" in rec, rec  # shelved is not left open
+        # D1: stays in the closed stage; reopen needs an open stage, drop does not
+        code, out = lrun(repo, "reopen", "T-1", "--note", "again")
+        assert code == 1 and out == (
+            "error: S-1 is closed (done); an open entry cannot go into it: "
+            "re-stage it first: set T-1 --stage S-<x>\n"
+        ), out
+        lrun(repo, "add", "stage", "02-paper-y")  # S-2
+        code, out = lrun(repo, "set", "T-1", "--stage", "S-2")  # any stage is fine
+        assert code == 0 and out == "updated T-1: stage (stage S-2)\n", out
+        assert L.load(repo)["T-1"].status == "shelved"
+        assert lrun(repo, "reopen", "T-1", "--note", "again")[0] == 0
+
+
 def closed_stage_repo(root: Path) -> Path:
     """Stage S-1 (01-paper-x) with a user sign-off D-1, not yet closed."""
     repo: Path = new_repo(root)

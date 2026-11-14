@@ -480,9 +480,13 @@ def test_help_usage_lists_ledger_commands() -> None:
     usage: str = r.stdout.split("\n\n", 1)[0]
     positional: str = r.stdout.split("positional arguments:", 1)[1]
     positional = positional.split("options:", 1)[0]
-    for cmd in ("sync", "add", "import", "list", "stage-close", "brief-check"):
+    cmds: tuple[str, ...] = (
+        "sync", "add", "import", "list", "stage-close", "brief-check", "shelve"
+    )
+    for cmd in cmds:
         assert re.search(rf"[{{,]{cmd}[,}}]", usage), usage
         assert re.search(rf"[{{,]{cmd}[,}}]", positional), positional
+    assert "rk.py shelve ID --note TEXT" in r.stdout, r.stdout  # the reference
 
 
 # ---- Tasks 5-8: real template content (other teammates deliver it) -----------

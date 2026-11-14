@@ -49,9 +49,8 @@ instead: `INTERFACES:` (producer, consumer, exact format, example) and
 Brief `arch1` from `architect-brief.md` in this folder. It thinks and
 designs: one design file at the path you give, before any worker starts.
 It never routes, spawns or implements; it stays reachable for interface
-questions (via you) and after integration checks the result against its
-design, reporting deviations to you. Why: interfaces fixed first keep
-workers from building to different formats; a rule changed in one place
+questions (via you) and checks the result in step 7. Why: interfaces fixed
+first keep workers from building to different formats; a changed rule
 stays stale elsewhere; an architect that routes or builds is a second lead.
 
 ## Steps
@@ -219,10 +218,11 @@ stays stale elsewhere; an architect that routes or builds is a second lead.
    Max 2 rounds; then AskUserQuestion.
 7. **Integrate and verify.** Engineering: run the tests or checks yourself
    (a repo whose AGENTS.md names a teammate for the checks: follow it).
-   Research: open the sources of the key claims yourself. With `arch1`, it
-   checks the result against its design. Report: what was built or found,
-   verification, critic verdicts, open findings, roster used. Collect the
-   items with `grep -h '^TO-WASTE: ' <the report paths named in this wave's DONE messages>`
+   Research: open the sources of the key claims yourself. `arch1` checks the
+   result against its design: a deviation from a REQUIREMENTS AND CHECKS
+   line, or an interface it calls broken, is BLOCKING (reopens step 6);
+   others are minor. Report: what was built or found, verification, critic
+   verdicts, open findings, roster used. Collect the items with `grep -h '^TO-WASTE: ' <the report paths named in this wave's DONE messages>`
    (plus the stage notes or `pm/reviews/` when critics listed some;
    never read whole reports for this; a line already in `pm/waste/LEDGER.md`
    is done), then close each task on its report

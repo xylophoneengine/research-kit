@@ -33,7 +33,7 @@ case "$tool" in
     done
     case "$lc" in
       */pm/ledger.jsonl|*/pm/status.md|pm/ledger.jsonl|pm/status.md)
-        deny "pm/ledger.jsonl and pm/STATUS.md are written only by the ledger tool: python3 -I \"$rk\" <add|start|close|drop|reopen|set|supersede|reref|stage-close|import> ... STATUS.md is regenerated after every write (render rebuilds it). A broken ledger line: run doctor (python3 -I \"$rk\" doctor), it names the line; the fix is by hand outside Claude, so ask the user."
+        deny "pm/ledger.jsonl and pm/STATUS.md are written only by the ledger tool: python3 -I \"$rk\" <add|start|close|drop|shelve|reopen|set|supersede|reref|stage-close|import> ... STATUS.md is regenerated after every write (render rebuilds it). A broken ledger line: run doctor (python3 -I \"$rk\" doctor), it names the line; the fix is by hand outside Claude, so ask the user."
         ;;
     esac
     # pm/stages/<one folder>/LEDGER.md: generated; a variable keeps the regex bash 3.2 safe

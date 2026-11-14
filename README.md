@@ -185,7 +185,7 @@ stage opens in a fresh session named after its folder (`/rename`).
 |---|---|---|
 | setup | `/rk-init` (kinds: paper; full; user commits) | `pm/` tree, appendix, `.gitignore` block. Paper first-session steps: ARS check, library tag asked (e.g. `mypaper`), appendix lines (title, venue, authors, topic) |
 | 01 | `/rename MYP_01_paper_goal-scan`, then "open stage: goal + lit-scan" | Lead writes `BRIEF.md` with a `Done when`. Lead runs the GOALS dialogue (`deep-research`, `socratic`) and writes `pm/living/GOALS.md`; you confirm. `/team`: a teammate runs `deep-research` `three-way-scan` into `deliverables/`; `crit1` + a disposable critic review into `notes/` |
-| | "close stage" (or `/rk-close 01`) | Close checklist: `Done when` output pasted; every stage task done, dropped, re-staged or deferred; `pm/README.md` numbers and traps; handoffs closed; kind freeze steps; chat archive (main transcript copied last); your sign-off asked with the `rk doctor --stage` output and logged as a decision; `rk stage-close` last. Stage is frozen |
+| | "close stage" (or `/rk-close 01`) | Close checklist: `Done when` output pasted; every stage task done, dropped, shelved, re-staged or deferred; `pm/README.md` numbers and traps; handoffs closed; kind freeze steps; chat archive (main transcript copied last); your sign-off asked with the `rk doctor --stage` output and logged as a decision; `rk stage-close` last. Stage is frozen |
 | 02 | "open stage: source sync" | `/team` with `research-kit-lit:zotero-worker` teammates: preflight, import, tag, ledger = PDFs = library entries; corpus passport rebuilt for ARS |
 | 03 | `/rk-add-kind software`, "open stage: software solver" | Software kind in parallel (one open stage per kind): design via `superpowers:brainstorming` or grilling, plan via `writing-plans`, build via `/team`; numbers stamped at a clean commit go to "Load-bearing numbers" in `pm/README.md` |
 | 04 | "open stage: plan" | `academic-paper` `plan` in the lead session (dialogue with you): `chapter_plan.md`, `insight_collection.md`; your decisions logged in the ledger |
@@ -267,7 +267,7 @@ the close checklist.
 pm/
   README.md         finding aid: stages, "Load-bearing numbers", "Do not quote"   committed
   ledger.jsonl      tasks, decisions, deferred items, stages: append-only log      committed
-  STATUS.md         generated open list, rebuilt after every ledger write         gitignored
+  STATUS.md         generated open list + shelved, rebuilt after every write      gitignored
   living/           GOALS, edited in place                                        committed
   kinds/            active kind files (replaced on sync)                          committed
   stages/NN-<kind>-<topic>/                                                       committed, except chat/
@@ -299,8 +299,9 @@ the main checkout, so in a worktree merge first).
 ```
 rk add <type> <title>       log a task, decision, deferred item, ...
 rk start|close|drop|reopen  change status (close and drop take --note)
+rk shelve                   known, not planned now: leaves the open list (needs --note)
 rk set | rk supersede       edit fields (--ref-drop PATH removes a wrong ref); replace a decision
-rk list | show | search     open items, one entry, text search
+rk list | show | search     open items (--all: closed and shelved), one entry, text search
 rk recent                   newest events
 rk doctor [--stage S-n]     read-only check of ledger, folders, git: exit 1 on hard findings
 rk reref OLD NEW [--dry-run]   point refs at OLD to NEW, after a file was moved by hand
