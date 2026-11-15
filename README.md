@@ -43,8 +43,10 @@ License: MIT (see `LICENSE`).
 | `research-kit` (core) | skills `research-kit`, `team`, `waste`, `surviving-compaction`; commands `rk-*`, `s-comp`; agents `worker-{low,medium,high,xhigh}`, `fetcher` (lean lookups); hooks; all kind files; the ledger viewer (`rk ui`, its built bundle in `skills/research-kit/ui/dist/`) |
 | `research-kit-lit` (optional) | skill `zotero` (tested Zotero MCP procedure, preflight, stop conditions), agent `zotero-worker`; for the `paper` and `thesis` kinds |
 
-Skills also answer to their bare name (`/team`) unless another skill already
-uses it. Agents only answer to the `research-kit:` name.
+The full name always works: `/research-kit:<name>` for commands and skills,
+`research-kit:<name>` for agents. A skill also answers to its bare name (`/team`)
+unless another command already uses that name; for commands and agents Claude
+Code's docs promise only the prefixed name.
 
 ## Install
 
@@ -213,7 +215,7 @@ paper/library/pdfs/                 (manuscript/ appears at the draft stage)
 ```
 
 Light mode works the same without stage folders: `/team` tasks, critics into
-`pm/reviews/`, the stage tables as a checklist.
+`pm/logs/team/<run>/`, the stage tables as a checklist.
 
 ## Zotero (`research-kit-lit`)
 
@@ -280,8 +282,8 @@ pm/
   handoffs/done/    executed work packages                                        committed
   handoffs/compact/ compaction handoffs + hook-made auto-<stamp>.md state files   gitignored
   logs/             run and implementation logs; team/<run>/ = teammate reports   committed
-                    outside a stage (in a stage: notes/team/)
-  reviews/          critic reviews outside stages (light mode)                    gitignored
+                    and critic reviews outside a stage (in a stage: notes/)
+  reviews/          older critic reviews outside stages (light mode)              gitignored
   scratch/          throwaway work                                                gitignored
   waste/            discarded files + LEDGER.md                                   gitignored
 ```
@@ -303,6 +305,9 @@ the main checkout, so in a worktree merge first). `close`, `drop`, `shelve` and
 current status; `rk show` prints it). `rk stage-close` writes the stage's
 `pm/stages/<stage>/LEDGER.md`: generated, frozen with the stage, never edited by
 hand; it shows what was known at close and a later `rk set` does not rewrite it.
+A stage closed too early comes back with `rk reopen S-n --note "<why>"`
+(refused while another stage of its kind is open); its next `stage-close` needs
+a new sign-off and writes the record again.
 
 ```
 rk add <type> <title>       log a task, decision, deferred item, ...
@@ -310,8 +315,9 @@ rk start|close|drop|reopen  change status (close and drop take --note)
 rk shelve                   known, not planned now: leaves the open list (needs --note)
 rk set | rk supersede       edit fields (--ref-drop PATH removes a wrong ref); replace a decision
                             --stage of every type but task and stage (e.g. debt, deferred, fetch,
-                            handoff) = raised in: it may be set into a closed stage while
-                            open (an open task cannot)
+                            handoff) = raised in: while open it may be put into a closed
+                            stage by add, set or import, and start / reopen work there
+                            (an open or running task cannot)
 rk list | show | search     open items (--all: closed and shelved), one or more entries, text search
 rk recent                   newest events
 rk import FILE.jsonl        legacy history into the ledger, marked imported (--dry-run first)
@@ -349,9 +355,9 @@ source (it does not compare the bundle itself).
 
 ## Commands
 
-The table shows the short names. If a session answers `Unknown command`, use
-the full name with the plugin prefix: `/research-kit:<name>`, for example
-`/research-kit:rk-viewer`.
+The table shows short names, which Claude Code's docs do not promise for
+commands. If a session answers `Unknown command` or runs another command, use
+the full name `/research-kit:<name>`, for example `/research-kit:rk-viewer`.
 
 | Command | Does |
 |---|---|
@@ -468,7 +474,7 @@ flowchart TD
 - Briefs open with `DELIVERABLE:` (artifact + exact path) and `NOT IN SCOPE:`.
 - Teammates run only one-line read commands, the named check, one-line `rk` commands and one-line writes in their own scratch folder; anything else goes to the lead as plain lines in a file, which the lead runs inline, never as a script (a teammate's permission prompt may never reach you).
 - Full reports go to `<REPORTS>/<name>-r<round>.md`: the open stage's `notes/team/` in full mode, `pm/logs/team/<run>/` in light mode or with no open stage (`<run>` = start time `YYYY-MM-DD-HHMM`), outside a `pm/` repo the session scratchpad. `<round>` is the next free number for that name, so a report is never overwritten. Reports are committed, never in `pm/waste/`: a ledger ref to a report must outlive the waste folder. The lead gets a message of 500 chars or fewer, and the teammate's final text is one line with the report path. Each report reaches the lead twice: once as the message and once as the idle notification.
-- Critics write their review to the open stage's `notes/` (committed) or, with no open stage, `pm/reviews/`.
+- Critics write their review to the open stage's `notes/` (committed) or, with no open stage, `pm/logs/team/<run>/` (committed).
 - Files to discard: teammates list `TO-WASTE:` lines in their report; the lead collects them with one grep (see Deleting is off).
 - When reusing an idle teammate, restate the deliverable and the report lines.
 - Critics never fix; owners fix; max 2 rounds, then ask the user.

@@ -188,8 +188,9 @@ stays stale elsewhere; an architect that routes or builds is a second lead.
    Final text: the single line `Reported to lead (report file: <path>).`
 
    `<REVIEWS>`: repo with `pm/` in full mode and an open stage = that
-   stage's `<repo>/pm/stages/NN-<kind>-<topic>/notes/`; `pm/` repo in light
-   mode or with no open stage = `<repo>/pm/reviews/`; no `pm/` = `<REPORTS>`.
+   stage's `<repo>/pm/stages/NN-<kind>-<topic>/notes/`; otherwise (light mode,
+   no open stage, no `pm/`) = `<REPORTS>`, in a `pm/` repo `<repo>/pm/logs/team/<run>/`.
+   Why: `pm/reviews/` is git-ignored, so a ref to a review there is a doctor finding.
    `<file>`: with `pm/`, core AGENTS.md 4.4 naming
    `critic_review_<name>-<what>_v<round>_<YYYY-MM-DD>.md` (`<what>` = short
    topic, `<name>` keeps the critics apart); without `pm/`,
@@ -223,7 +224,7 @@ stays stale elsewhere; an architect that routes or builds is a second lead.
    line, or an interface it calls broken, is BLOCKING (reopens step 6);
    others are minor. Report: what was built or found, verification, critic
    verdicts, open findings, roster used. Collect the items with `grep -h '^TO-WASTE: ' <the report paths named in this wave's DONE messages>`
-   (plus the stage notes or `pm/reviews/` when critics listed some;
+   (plus the stage notes when critics listed some;
    never read whole reports for this; a line already in `pm/waste/LEDGER.md`
    is done), then close each task on its report
    (`python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" close T-<n> --note "<outcome>" --ref <report path>`; after a
