@@ -875,7 +875,10 @@ def test_stage_close_refusals() -> None:
         assert code == 1 and "superseded" in out, out
         code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
         assert code == 0 and CLOSED_D1 in out, out
-        assert "SOFT entry without stage" in out and "D-2 (S-1) lead ok" in out, out
+        # D-2 was made while S-1 and S-2 were open: one hint names both (opened
+        # last first), at S-1's close as in 0.2.3, and the same line in doctor
+        assert "SOFT entry without stage" in out and "D-2 (S-2, S-1) lead ok" in out
+        assert "D-2 (S-2, S-1) lead ok" in doctor(repo, "--stage", "S-2")[1]
         s: Any = L.load(repo)["S-1"]
         assert s.status == "done" and "D-1" in s.links, s
         assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 1
@@ -2159,7 +2162,8 @@ def test_doctor_imported_open_stage_reopened() -> None:  # blind15 F1
         rec: str = (repo / "pm/stages/02-paper-x/LEDGER.md").read_text()
         assert "- T-1 task open (lead) loose [no stage]" in rec, rec  # in span 0
         out: str = doctor(repo)[1]
-        assert group(out, L.G_NOSTAGE) == ["T-1 (S-2) loose"], out  # as the record
+        # made while S-2 and S-3 were open: both, S-3 (opened last) first
+        assert group(out, L.G_NOSTAGE) == ["T-1 (S-3, S-2) loose"], out
         assert group(out, L.G_LATE) == [], out
 
 
@@ -2181,6 +2185,54 @@ def test_doctor_import_line_is_no_close() -> None:  # exp6-r4 Lead's call 1
         lrun(repo, "add", "debt", "d2")  # DB-2: late after S-3
         out = doctor(repo)[1]
         assert group(out, L.G_LATE) == ["DB-2 (after S-3) d2"], out
+
+
+def test_doctor_and_pre_check_name_one_stage() -> None:  # crit8-r14 B1
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = closed_s1_repo(Path(d))  # lines 1 to 3
+        lrun(repo, "add", "stage", "02-paper-x", "--imported", "--source", "a:1")
+        lrun(repo, "add", "stage", "03-experiment-y", "--imported", "--source",
+             "a:2")  # S-3: imported open before S-2's reopen, never closed
+        (repo / "pm/stages/02-paper-x").mkdir(parents=True)
+        lrun(repo, "add", "decision", "ok2", "--owner", "user", "--link", "S-2",
+             "--stage", "S-2")
+        lrun(repo, "stage-close", "S-2", "--sign-off", "D-2")
+        lrun(repo, "reopen", "S-2", "--note", "again")
+        lrun(repo, "add", "decision", "ok3", "--owner", "user", "--link", "S-2")
+        hint: str = "D-3 (S-2, S-3) ok3"  # both open: S-2 (reopened) opened last
+        assert group(doctor(repo)[1], L.G_NOSTAGE) == [hint]
+        assert group(doctor(repo, "--stage", "S-2")[1], L.G_NOSTAGE) == [hint]
+        assert group(doctor(repo, "--stage", "S-3")[1], L.G_NOSTAGE) == [hint]
+        code, out = lrun(repo, "stage-close", "S-2", "--sign-off", "D-3")
+        assert code == 0 and f"  {hint}\n" in out, out  # the pre-check: the same
+
+
+def test_doctor_hint_one_open_stage() -> None:  # exp6-r7: the 0.2.3 form
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "01-paper-x")
+        with (repo / L.LEDGER_REL).open("a") as fh:  # stage-less, S-1 alone open
+            fh.write(ev_line("T-1", "inside"))
+        assert group(doctor(repo)[1], L.G_NOSTAGE) == ["T-1 (S-1) inside"]
+
+
+def test_doctor_stage_late_pass_sees_all_stages() -> None:  # blind16 F1
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "01-paper-a")
+        lrun(repo, "add", "stage", "02-software-b")
+        lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1",
+             "--stage", "S-1")
+        lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")  # S-2 still open
+        with (repo / L.LEDGER_REL).open("a") as fh:  # stage-less, after S-1 closed
+            fh.write(ev_line("DB-1", "while S-2", typ="debt"))
+        out: str = doctor(repo)[1]
+        assert group(out, L.G_NOSTAGE) == ["DB-1 (S-2) while S-2"], out
+        assert group(out, L.G_LATE) == [], out
+        out = doctor(repo, "--stage", "S-1")[1]  # was "DB-1 (after S-1)"
+        assert group(out, L.G_LATE) == [] and group(out, L.G_NOSTAGE) == [], out
+        out = doctor(repo, "--stage", "S-2")[1]
+        assert group(out, L.G_NOSTAGE) == ["DB-1 (S-2) while S-2"], out
 
 
 def test_doctor_imported_open_stage_closed_here() -> None:  # crit8-r13 m1
@@ -2322,8 +2374,10 @@ def test_doctor_entries_without_stage() -> None:
         lrun(repo, "add", "task", "imp", "--imported", "--source", "A:1")
         g: str = L.G_NOSTAGE
         assert g.endswith(" (set ID --stage S-n)"), g  # the heading names the fix
-        assert group(doctor(repo)[1], g) == ["T-2 (S-1) inside"]
-        assert group(doctor(repo, "--stage", "S-2")[1], g) == ["T-2 (S-2) inside"]
+        both: list[str] = ["T-2 (S-2, S-1) inside"]  # two open: both, S-2 first
+        assert group(doctor(repo)[1], g) == both
+        assert group(doctor(repo, "--stage", "S-1")[1], g) == both
+        assert group(doctor(repo, "--stage", "S-2")[1], g) == both
         late: str = L.G_LATE
         assert "(set ID --stage S-n;" in late, late
         assert group(doctor(repo)[1], late) == []

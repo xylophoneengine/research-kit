@@ -2321,33 +2321,44 @@ def _findings(
         e for e in state.values()
         if e.type != "stage" and not e.stage and not _imported(e)
     ]
+    # every stage of the ledger, also under `only` (stage-close pre-check,
+    # doctor --stage): each entry gets one hint, the same line either way, and
+    # `only` keeps just the hints that name it
     mine: list[tuple[int, int | None, Entry]] = sorted(
         (
             (lo, hi, st)
-            for st in entries if st.type == "stage"  # imported too: the record's
-            for lo, hi in spans[st.id]  # spans, no exception
+            for st in state.values() if st.type == "stage"  # imported too: the
+            for lo, hi in spans[st.id]  # record's spans, no exception
         ),
-        key=lambda x: x[0],
+        key=lambda x: -x[0],  # opened most recently first
     )
+    seen: set[str] = set()
+    for e in loose:  # made while stages were open: every one of them is named
+        first: int = e.lines[0]
+        open_at: list[str] = list(dict.fromkeys(
+            st.id for lo, hi, st in mine if lo < first and (hi is None or first < hi)
+        ))
+        if not open_at:
+            continue
+        seen.add(e.id)
+        if only is None or only in open_at:
+            out.append((False, G_NOSTAGE,
+                        _clip(f"{e.id} ({', '.join(open_at)}) {e.title}")))
     by_close: list[tuple[int, int | None, Entry]] = sorted(  # gaps: the stage
         (x for x in mine if x[1] is not None and x[0] < x[1]),  # closed last
         key=lambda x: -(x[1] or 0),  # before an entry, by a real close (above)
     )
-    seen: set[str] = set()
-    for late in (False, True):  # while a stage was open first, then the gaps
-        for start, end, st in by_close if late else mine:
-            after: int | None = next((k for k in opens if k > (end or 0)), None)
-            lo, hi = (end or 0, after) if late else (start, end)
-            for e in loose:
-                first: int = e.lines[0]
-                if e.id in seen or first <= lo or (hi is not None and first >= hi):
-                    continue
-                seen.add(e.id)
-                tag: str = f"after {st.id}" if late else st.id
-                out.append(
-                    (False, G_LATE if late else G_NOSTAGE,
-                     _clip(f"{e.id} ({tag}) {e.title}"))
-                )
+    for _, end, st in by_close:  # then the gaps
+        after: int | None = next((k for k in opens if k > (end or 0)), None)
+        for e in loose:
+            first = e.lines[0]
+            if e.id in seen or first <= (end or 0) or (
+                after is not None and first >= after
+            ):
+                continue
+            seen.add(e.id)
+            if only is None or st.id == only:
+                out.append((False, G_LATE, _clip(f"{e.id} (after {st.id}) {e.title}")))
     now: datetime = datetime.now().astimezone()
     for e in entries:
         if e.type != "task" or e.status != "running" or not e.started:
