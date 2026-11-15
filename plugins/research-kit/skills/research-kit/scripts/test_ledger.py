@@ -474,16 +474,20 @@ def test_non_task_open_entry_into_closed_stage() -> None:  # 0.2.2 R1-R5
         assert L.load(repo)["F-2"].stage == "S-1"
         # R2: an open or running task still cannot, same text
         lrun(repo, "add", "task", "t", "--note", "n")  # T-1 in S-2
-        want: str = (
-            "error: S-1 is closed (done); an open entry cannot go into it: "
-        )
+        want: str = "error: S-1 is closed (done); an open task cannot go into it: "
         code, out = lrun(repo, "set", "T-1", "--stage", "S-1")
         assert code == 1 and out == want + "pick an open stage\n", out
         code, out = lrun(repo, "add", "task", "u", "--note", "n", "--stage", "S-1")
         assert code == 1 and out == want + "pass --stage with an open stage\n", out
+        # type stage keeps the old rule: no open stage inside a done one
+        code, out = lrun(repo, "add", "stage", "03-paper-z", "--stage", "S-1")
+        assert code == 1 and "an open stage cannot go into it" in out, out
         lrun(repo, "start", "T-1")
         code, out = lrun(repo, "set", "T-1", "--stage", "S-1")
-        assert code == 1 and "cannot go into it: pick an open stage" in out, out
+        assert code == 1 and out == (
+            "error: S-1 is closed (done); a running task cannot go into it: "
+            "pick an open stage\n"
+        ), out
         assert L.load(repo)["T-1"].stage == "S-2"
         # R3: a done or shelved non-task reopens in the done stage; a task does not
         lrun(repo, "close", "DB-1", "--note", "fixed")
@@ -2593,7 +2597,7 @@ def test_add_receipt_closed_stage_link() -> None:
         assert L.load(repo)["D-2"].stage == ""  # the rule is kept
         out = lrun(repo, "set", "D-2", "--stage", "S-1")[1]  # set is unchanged
         assert out == "updated D-2: stage (stage S-1)\n", out
-        # an open entry cannot go into a closed stage: no hint to do it
+        # an open entry gets the plain tail (it may be set into S-1 by hand)
         out = lrun(repo, "add", "fetch", "smith", "--link", "S-1")[1]
         assert out == "logged F-1: smith (no stage)\n", out
         # a link to something that is not a stage, or to an open stage
@@ -2985,7 +2989,7 @@ def test_shelve_stage_close() -> None:  # R4, R7, D1
         # D1: stays in the closed stage; reopen needs an open stage, drop does not
         code, out = lrun(repo, "reopen", "T-1", "--note", "again")
         assert code == 1 and out == (
-            "error: S-1 is closed (done); an open entry cannot go into it: "
+            "error: S-1 is closed (done); an open task cannot go into it: "
             "re-stage it first: set T-1 --stage S-<x>\n"
         ), out
         lrun(repo, "add", "stage", "02-paper-y")  # S-2

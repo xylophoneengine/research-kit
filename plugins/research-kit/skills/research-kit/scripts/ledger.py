@@ -631,18 +631,20 @@ def _note_plus(old: str, text: str) -> str:
 def _check_stage_open(
     state: dict[str, Entry], sid: str, typ: str, status: str, fix: str
 ) -> None:
-    """Refuse putting an open or running task into a stage that is done. Only
-    tasks block a stage close; for any other type `stage` means "raised in", and
-    an open one may sit in (or be set into) a closed stage."""
+    """Refuse putting an open or running task (or stage) into a stage that is
+    done. Only tasks block a stage close; for any other type `stage` means
+    "raised in", and an open one may sit in (or be set into) a closed stage. A
+    stage entry keeps the old rule: no open stage inside a done one."""
     st: Entry | None = state.get(sid) if sid else None
     if (
-        typ == "task"
+        typ in ("task", "stage")
         and st is not None
         and status in OPEN_STATUSES
         and st.status == "done"
     ):
+        art: str = "an" if status == "open" else "a"
         raise LedgerError(
-            f"{sid} is closed (done); an {status} entry cannot go into it: {fix}"
+            f"{sid} is closed (done); {art} {status} {typ} cannot go into it: {fix}"
         )
 
 
@@ -1180,9 +1182,10 @@ def _stage_word(e: Entry) -> str:
 
 def _add_tail(e: Entry, state: dict[str, Entry]) -> str:
     """Receipt tail of an add. A closed entry linked to a closed stage gets no
-    stage (the default is the open stage); say why. No `set --stage` hint: the
-    closed stage's LEDGER.md is frozen, a correction is an entry of the stage
-    now open. An open entry gets the plain tail."""
+    stage (the default is the open stage); say why. No `set --stage` hint: for
+    an entry that is done a late fact belongs to the stage now open, and the
+    closed stage's LEDGER.md is frozen. An open entry gets the plain tail (its
+    stage is the default one, or none; it may be set into a closed stage)."""
     if e.stage or e.type == "stage" or e.status in OPEN_STATUSES:
         return _in_stage(e)
     for x in (state.get(i) for i in e.links):

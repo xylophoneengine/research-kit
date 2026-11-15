@@ -23,14 +23,19 @@ reference is core AGENTS.md 4.2. `add` and `set` take `--label L` (form
 title is its folder name and is never renamed; every ID argument also takes a
 label or a stage code (`03b`); receipts print the real ID and the entry's stage
 (or `(no stage)`); `set --stage` with the stage the entry already has writes
-nothing (`unchanged`); an `add` that links a closed stage gets no stage, and its
-receipt says `(no stage: S-n is closed)` (an open entry gets the plain
-`(no stage)`). Only open tasks block a stage close, so for every other type
-(debt, deferred, fetch, handoff, declared types) `stage` means "raised in": an
-open one may be put into a closed stage (`add --stage`, `set --stage`, import,
-reopen, start), which backfills imported entries; an open or running task is
-refused (`re-stage it first`). Why: a closed stage's record is frozen and shows
-what was known at close; such a `set` does not rewrite it, `rk list --stage S-n
+nothing (`unchanged`); an `add` gets the single open stage by default; when no
+stage is open and the new entry is closed (a decision) and `--link`s a closed
+stage, the receipt says `(no stage: S-n is closed)` (an open entry gets the plain
+`(no stage)`). Only open tasks block a stage close, so for every type but task
+and stage (debt, deferred, fetch, handoff, declared types) `stage` means "raised
+in": an open one may be put into a closed stage (`add --stage`, `set --stage`,
+an import row), and one already there may `start` or `reopen` (neither changes
+`stage`); this backfills imported entries. An open or running task, and an open
+stage, are refused: `S-n is closed (done); an open task cannot go into it: `
+then `pick an open stage` (set), `pass --stage with an open stage` (add, import)
+or `re-stage it first: set <id> --stage S-<x>` (start, reopen). Why: a closed
+stage's record is frozen and shows what was known at close; such a `set` does not
+rewrite it, `rk list --stage S-n
 --all` shows the entry. A `TASK:` line in a
 brief names its tasks by id or by label, listed first (a label after other words
 does not count); titles are one line, 160 characters at most. `add task` without

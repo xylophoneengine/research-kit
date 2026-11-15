@@ -305,8 +305,9 @@ rk add <type> <title>       log a task, decision, deferred item, ...
 rk start|close|drop|reopen  change status (close and drop take --note)
 rk shelve                   known, not planned now: leaves the open list (needs --note)
 rk set | rk supersede       edit fields (--ref-drop PATH removes a wrong ref); replace a decision
-                            --stage of a debt, deferred, fetch or handoff = raised in: it may
-                            be set into a closed stage while open (an open task cannot)
+                            --stage of every type but task (e.g. debt, deferred, fetch,
+                            handoff) = raised in: it may be set into a closed stage while
+                            open (an open task cannot)
 rk list | show | search     open items (--all: closed and shelved), one entry, text search
 rk recent                   newest events
 rk doctor [--stage S-n]     read-only check of ledger, folders, git: exit 1 on hard findings
