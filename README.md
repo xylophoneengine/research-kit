@@ -366,13 +366,16 @@ To see the viewer in Claude Code, use this line, the same on every machine, as
 your status line command, or append its output to the one you have:
 
 ```
-p=$(cat ~/.cache/research-kit/ui/rk_path 2>/dev/null) && python3 -I "$p" ui --statusline
+f=~/.cache/research-kit/ui/rk_path; [ -f "$f" ] && [ ! -L "$f" ] && [ -O "$f" ] && python3 -I "$(cat "$f")" ui --statusline
 ```
 
 Each viewer start writes the path of its own `rk.py` into that file (next to the
 state files, in a directory only you can write), so the line follows a plugin
-update; it runs the path stored there. Nothing is printed until a viewer has been
-started once on the machine. The line prints `🔍rk:<port>` when a viewer of the repo you are in
+update; it runs the path stored there, and only if the file is a regular file
+owned by you and not a symlink. Nothing is printed until a viewer has been
+started once on the machine. If the stored path no longer exists (a plugin
+version was removed), the line prints a Python error on stderr until the next
+viewer start rewrites the file. The line prints `🔍rk:<port>` when a viewer of the repo you are in
 runs (the repo is taken from the `workspace.current_dir` or `cwd` of the JSON that
 Claude Code pipes to a status line command, else from the current directory), and
 nothing at all otherwise, so it adds no clutter in other sessions. The segment is

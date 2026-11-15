@@ -263,11 +263,11 @@ def _port_taken_message(port: int, viewer: bool) -> str:
     )
 
 
-def _state_dir_ok() -> bool:
-    """STATE_DIR is a real directory (no symlink) owned by us and not group or
-    world writable: only then are files in it written or trusted."""
+def _own_private_dir(d: Path) -> bool:
+    """d is a real directory (no symlink) owned by us and not group or world
+    writable."""
     try:
-        st: os.stat_result = os.lstat(STATE_DIR)
+        st: os.stat_result = os.lstat(d)
     except OSError:
         return False
     if not stat.S_ISDIR(st.st_mode):
@@ -277,15 +277,45 @@ def _state_dir_ok() -> bool:
     return st.st_uid == os.getuid() and not st.st_mode & 0o022
 
 
-def _write_in_state_dir(name: str, text: str) -> Path | None:
-    """STATE_DIR/<name> = text: a temp file in the same dir, then os.replace.
-    None if the dir is not ours or private, or on any write error."""
+def _state_dir_ok() -> bool:
+    """STATE_DIR and its parent are own, private directories (see
+    _own_private_dir; whoever can write the parent can swap STATE_DIR): only then
+    are files in STATE_DIR written or trusted. The parent's parent (~/.cache) is
+    not judged."""
+    return _own_private_dir(STATE_DIR.parent) and _own_private_dir(STATE_DIR)
+
+
+def _mkdir_private(d: Path) -> None:
+    """Create d with mode 0700 whatever the umask; an existing d is left as is."""
     try:
-        STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.mkdir(d, 0o700)
+    except FileExistsError:
+        return
+    os.chmod(d, 0o700)
+
+
+def _write_in_state_dir(name: str, text: str) -> Path | None:
+    """STATE_DIR/<name> = text (mode 0600): a temp file created exclusively and
+    without following a symlink, in the same dir, then os.replace. A leftover at
+    the temp name (a crash, a reused pid, a planted link) is unlinked, not
+    followed, and the create is tried once more. None if the dirs are not ours
+    or private, or on any write error."""
+    try:
+        STATE_DIR.parent.parent.mkdir(parents=True, exist_ok=True)
+        _mkdir_private(STATE_DIR.parent)
+        _mkdir_private(STATE_DIR)
         if not _state_dir_ok():
             return None
         tmp: Path = STATE_DIR / f".{name}.{os.getpid()}.tmp"
-        tmp.write_text(text)
+        flags: int = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd: int = os.open(tmp, flags, 0o600)
+        except FileExistsError:
+            os.unlink(tmp)
+            fd = os.open(tmp, flags, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
         final: Path = STATE_DIR / name
         os.replace(tmp, final)
     except OSError:

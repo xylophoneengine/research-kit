@@ -765,6 +765,79 @@ def test_rk_path_rewritten_and_ignored() -> None:
             assert call_main_io(["--status"])[1] == "no viewer runs\n"  # not probed
 
 
+def test_state_dirs_and_files_private_under_umask_002() -> None:
+    """The dirs the viewer creates (the research-kit dir and ui/) are 0700 and
+    its files 0600 whatever the umask; ~/.cache itself is created as usual."""
+    with tmpdir() as tmp:
+        repo: Path = mk_repo(tmp, TWO)
+        state: Path = tmp / "cache" / "research-kit" / "ui"
+        old_mask: int = os.umask(0o002)
+        try:
+            with patched(STATE_DIR=state):
+                assert ui._write_state(51500, repo) == state / "51500.json"
+        finally:
+            os.umask(old_mask)
+        for d in (state.parent, state):
+            assert d.stat().st_mode & 0o777 == 0o700, (d, oct(d.stat().st_mode))
+        for name in ("51500.json", "rk_path"):
+            mode: int = (state / name).stat().st_mode & 0o777
+            assert mode == 0o600, (name, oct(mode))
+        assert sorted(p.name for p in state.iterdir()) == ["51500.json", "rk_path"]
+
+
+def test_state_dir_parent_must_be_ours_and_private() -> None:
+    """A group or world writable parent could have `ui` swapped: nothing is
+    written there, and nothing is read from it."""
+    for mode in (0o770, 0o707):
+        with tmpdir() as tmp:
+            repo: Path = mk_repo(tmp, TWO)
+            parent: Path = tmp / "research-kit"
+            state: Path = parent / "ui"
+            put_state(state, 51501, os.getpid(), str(repo))
+            parent.chmod(mode)
+            try:
+                with patched(STATE_DIR=state):
+                    assert ui._write_state(51502, repo) is None, oct(mode)
+                    assert call_main_io(["--status"]) == (0, "no viewer runs\n", "")
+                    argv: list[str] = ["--statusline", "--repo", str(repo)]
+                    assert call_main_io(argv) == (0, "", ""), oct(mode)
+                assert sorted(p.name for p in state.iterdir()) == ["51501.json"]
+            finally:
+                parent.chmod(0o700)
+            with patched(STATE_DIR=state):  # the same tree, parent private again
+                assert ui._write_state(51502, repo) == state / "51502.json"
+
+
+def test_state_temp_name_is_not_followed() -> None:
+    """A symlink (live or dangling) or a leftover file at the temp name is
+    unlinked and replaced, never followed, and does not make the write fail."""
+    with tmpdir() as tmp:
+        repo: Path = mk_repo(tmp, TWO)
+        state: Path = tmp / "research-kit" / "ui"
+        put_state(state, 51503, os.getpid(), str(repo))
+        victim: Path = tmp / "victim"
+        victim.write_text("untouched")
+        gone: Path = tmp / "not-there"
+        pid: int = os.getpid()
+        for plant in ("link", "dangling", "file"):
+            for name in ("51504.json", "rk_path"):
+                t: Path = state / f".{name}.{pid}.tmp"
+                if plant == "link":
+                    t.symlink_to(victim)
+                elif plant == "dangling":
+                    t.symlink_to(gone)
+                else:
+                    t.write_text("leftover")
+            with patched(STATE_DIR=state):
+                assert ui._write_state(51504, repo) == state / "51504.json", plant
+            assert victim.read_text() == "untouched", plant
+            assert not gone.exists(), plant
+            assert not any(p.name.endswith(".tmp") for p in state.iterdir()), plant
+            got: dict[str, Any] = json.loads((state / "51504.json").read_text())
+            assert got["port"] == 51504 and got["repo"] == str(repo), got
+            assert (state / "rk_path").read_text() == f"{RK_PY.resolve()}\n"
+
+
 def test_status_nothing_runs() -> None:
     with tmpdir() as tmp:
         for state in (tmp / "missing", tmp):
