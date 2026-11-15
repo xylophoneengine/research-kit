@@ -301,7 +301,9 @@ def _write_in_state_dir(name: str, text: str) -> Path | None:
     followed, and the create is tried once more. None if the dirs are not ours
     or private, or on any write error."""
     try:
-        STATE_DIR.parent.parent.mkdir(parents=True, exist_ok=True)
+        cache: Path = STATE_DIR.parent.parent  # ~/.cache: private if we create it
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        _mkdir_private(cache)
         _mkdir_private(STATE_DIR.parent)
         _mkdir_private(STATE_DIR)
         if not _state_dir_ok():

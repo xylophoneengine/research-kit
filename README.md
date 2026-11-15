@@ -375,7 +375,9 @@ update; it runs the path stored there, and only if the file is a regular file
 owned by you and not a symlink. Nothing is printed until a viewer has been
 started once on the machine. If the stored path no longer exists (a plugin
 version was removed), the line prints a Python error on stderr until the next
-viewer start rewrites the file. The line prints `🔍rk:<port>` when a viewer of the repo you are in
+viewer start rewrites the file. The line is safe as long as no other account can
+write your home directory or `~/.cache`; the viewer creates the directories it
+needs (`~/.cache` if missing, `research-kit`, `ui`) private. The line prints `🔍rk:<port>` when a viewer of the repo you are in
 runs (the repo is taken from the `workspace.current_dir` or `cwd` of the JSON that
 Claude Code pipes to a status line command, else from the current directory), and
 nothing at all otherwise, so it adds no clutter in other sessions. The segment is

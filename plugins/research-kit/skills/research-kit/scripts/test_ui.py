@@ -766,8 +766,9 @@ def test_rk_path_rewritten_and_ignored() -> None:
 
 
 def test_state_dirs_and_files_private_under_umask_002() -> None:
-    """The dirs the viewer creates (the research-kit dir and ui/) are 0700 and
-    its files 0600 whatever the umask; ~/.cache itself is created as usual."""
+    """The dirs the viewer creates (~/.cache when missing, the research-kit dir
+    and ui/) are 0700 and its files 0600 whatever the umask; an existing
+    ~/.cache is left as it is."""
     with tmpdir() as tmp:
         repo: Path = mk_repo(tmp, TWO)
         state: Path = tmp / "cache" / "research-kit" / "ui"
@@ -775,9 +776,15 @@ def test_state_dirs_and_files_private_under_umask_002() -> None:
         try:
             with patched(STATE_DIR=state):
                 assert ui._write_state(51500, repo) == state / "51500.json"
+            keep: Path = tmp / "kept"  # an existing ~/.cache: not changed, not judged
+            keep.mkdir()
+            keep.chmod(0o755)
+            with patched(STATE_DIR=keep / "research-kit" / "ui"):
+                assert ui._write_state(51500, repo) is not None
         finally:
             os.umask(old_mask)
-        for d in (state.parent, state):
+        assert keep.stat().st_mode & 0o777 == 0o755, oct(keep.stat().st_mode)
+        for d in (state.parent.parent, state.parent, state):
             assert d.stat().st_mode & 0o777 == 0o700, (d, oct(d.stat().st_mode))
         for name in ("51500.json", "rk_path"):
             mode: int = (state / name).stat().st_mode & 0o777
