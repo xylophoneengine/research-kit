@@ -4,6 +4,8 @@ import {
   NONE,
   age,
   backlinks,
+  BOARD_COLS,
+  boardCol,
   byId,
   byType,
   entryDay,
@@ -251,6 +253,21 @@ test("stageGroups: stages by id number, unstaged last, items by day", () => {
   expect(stageGroups(all, [s1]).map((x) => x.key)).toEqual(["S-1"]); // no unstaged group
   // a filter that hides the stage entries keeps the stages that hold visible items
   expect(stageGroups(all, [inS2]).map((x) => x.key)).toEqual(["S-2"]);
+});
+
+test("boardCol: deferred column holds open and running deferred entries only", () => {
+  const e = (type: string, status: string): Entry => ({ ...t1, type, status });
+  expect(boardCol(e("task", "open"))).toBe("open");
+  expect(boardCol(e("task", "running"))).toBe("running");
+  expect(boardCol(e("deferred", "open"))).toBe("deferred");
+  expect(boardCol(e("deferred", "running"))).toBe("deferred");
+  expect(boardCol(e("deferred", "done"))).toBe("done");
+  expect(boardCol(e("deferred", "dropped"))).toBe("dropped");
+  expect(boardCol(e("task", "shelved"))).toBe("shelved");
+  expect(boardCol(e("decision", "superseded"))).toBe("superseded");
+  // every column the board lists is reachable
+  expect(new Set(["open", "running", "done", "dropped", "superseded", "shelved"].map((s) => boardCol(e("task", s)))).size).toBe(6);
+  expect(BOARD_COLS).toHaveLength(7);
 });
 
 test("byType: builtin order first, declared types after by name", () => {

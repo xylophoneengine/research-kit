@@ -22,6 +22,16 @@ export type Route = {
 export const NONE = "-"; // filter token for an empty owner / stage
 export const STATUSES = ["open", "running", "done", "dropped", "superseded", "shelved"];
 
+export const BOARD_COLS = ["running", "open", "deferred", "shelved", "done", "dropped", "superseded"];
+
+// Board column of an entry: its status, except that an open or running
+// `deferred` entry goes to the "deferred" column (it is parked, not open).
+export function boardCol(e: Entry): string {
+  return e.type === "deferred" && (e.status === "open" || e.status === "running")
+    ? "deferred"
+    : e.status;
+}
+
 const TABS: readonly string[] = ["list", "board", "stages", "timeline"];
 const ID_ONLY = /^[A-Z]{1,3}-[1-9][0-9]*$/;
 const ID_TOKEN = /\b[A-Z]{1,3}-[1-9][0-9]*\b/g;

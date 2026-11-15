@@ -334,6 +334,7 @@ so branch merges of the append-only ledger do not conflict.
 | `/rk-sync` | updates `AGENTS.md` and the kind files from the plugin templates (see below) |
 | `/rk-close` | closes a named stage with the close checklist |
 | `/rk-doctor` | checks the ledger and its refs (`rk doctor`), read-only; `--stage S-n`, `--limit 0` |
+| `/rk-viewer` / `/rk-viewer stop` | starts or stops the ledger viewer (`rk ui`): a local, read-only web page for `pm/ledger.jsonl` (list, board, stages, timeline, search); 127.0.0.1 only; `--port N`, `--repo DIR` |
 | `/s-comp prepare` / `resume` | compaction handoff before and after `/compact` |
 
 ## Stage lifecycle

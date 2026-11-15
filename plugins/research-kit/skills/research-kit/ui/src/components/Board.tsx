@@ -1,10 +1,11 @@
+import { EyeOffIcon } from "lucide-react";
 import { useState } from "react";
 import { TypeBadge } from "@/components/TypeBadge";
 import { Button } from "@/components/ui/button";
-import type { Entry } from "@/lib/ledger";
+import { BOARD_COLS, boardCol, type Entry } from "@/lib/ledger";
 
-const COLS = ["running", "open", "done"];
-const FOLDED = ["shelved", "dropped", "superseded"];
+const KEY = "rk-ui-board-folded";
+const COLLAPSED = ["shelved", "dropped", "superseded"]; // hidden until the user shows them
 const PAGE = 30;
 
 const ms = (s: string): number => {
@@ -67,7 +68,27 @@ function Cards({
   );
 }
 
-// `entries` already passed visible(); a set status filter hides the other columns
+function load(): Set<string> {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(KEY) ?? "null");
+    if (Array.isArray(v) && v.every((x) => typeof x === "string")) return new Set<string>(v);
+  } catch {
+    // storage blocked or not JSON: use the default
+  }
+  return new Set(COLLAPSED);
+}
+
+function save(s: Set<string>): void {
+  try {
+    localStorage.setItem(KEY, JSON.stringify([...s]));
+  } catch {
+    // storage blocked: the choice just does not persist
+  }
+}
+
+// `entries` already passed visible(). A column gets a chip when its status
+// passes the status filter (deferred: when open or running does), even with 0
+// entries; a hidden column takes no room on the board.
 export function Board({
   entries,
   statusFilter,
@@ -79,47 +100,71 @@ export function Board({
   selected: string | null;
   onSelect: (id: string) => void;
 }) {
-  const by = (s: string): Entry[] => entries.filter((e) => e.status === s);
-  const shown = (s: string): boolean =>
+  const [hidden, setHidden] = useState<Set<string>>(load);
+  const flip = (c: string): void => {
+    const n = new Set(hidden);
+    if (!n.delete(c)) n.add(c);
+    setHidden(n);
+    save(n);
+  };
+  const pass = (s: string): boolean =>
     !statusFilter || statusFilter.length === 0 || statusFilter.includes(s);
-  const cols = COLS.filter(shown);
-  const folded = FOLDED.filter(shown);
+  const cols = BOARD_COLS.filter((c) =>
+    c === "deferred" ? pass("open") || pass("running") : pass(c),
+  );
+  const count = (c: string): number => entries.filter((e) => boardCol(e) === c).length;
+  const visibleCols = cols.filter((c) => !hidden.has(c));
   return (
-    <div className="flex gap-3 p-3">
-      {cols.map((s) => (
-        <div key={s} className="min-w-0 flex-1">
-          <h3 className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-            {s} ({by(s).length})
-          </h3>
-          <Cards entries={by(s)} selected={selected} onSelect={onSelect} />
-          {s === "done" &&
-            folded.map((f) => (
-              <details key={f} className="mt-3">
-                <summary className="cursor-pointer text-xs text-muted-foreground">
-                  {f} ({by(f).length})
-                </summary>
-                <div className="mt-2">
-                  <Cards entries={by(f)} selected={selected} onSelect={onSelect} />
-                </div>
-              </details>
-            ))}
-        </div>
-      ))}
-      {/* done column hidden but dropped/superseded shown: fold them on their own */}
-      {!cols.includes("done") && folded.length > 0 && (
-        <div className="min-w-0 flex-1">
-          {folded.map((f) => (
-            <details key={f} className="mb-3">
-              <summary className="cursor-pointer text-xs text-muted-foreground">
-                {f} ({by(f).length})
-              </summary>
-              <div className="mt-2">
-                <Cards entries={by(f)} selected={selected} onSelect={onSelect} />
-              </div>
-            </details>
-          ))}
-        </div>
+    <div className="p-3">
+      <div className="mb-3 flex flex-wrap gap-1.5">
+        {cols.map((c) => {
+          const on = !hidden.has(c);
+          return (
+            <button
+              key={c}
+              type="button"
+              aria-pressed={on}
+              title={on ? `hide ${c} column` : `show ${c} column`}
+              onClick={() => flip(c)}
+              className={
+                "rounded-full border px-2.5 py-0.5 text-xs " +
+                (on
+                  ? "bg-secondary font-medium text-secondary-foreground"
+                  : "text-muted-foreground hover:bg-muted")
+              }
+            >
+              {c} {count(c)}
+            </button>
+          );
+        })}
+      </div>
+      {visibleCols.length === 0 && (
+        <p className="text-xs text-muted-foreground">all columns hidden</p>
       )}
+      <div className="flex gap-3 overflow-x-auto">
+        {visibleCols.map((c) => {
+          const es = entries.filter((e) => boardCol(e) === c);
+          return (
+            <div key={c} className="min-w-[12rem] flex-1">
+              <div className="mb-2 flex items-center justify-between gap-1 text-xs font-semibold text-muted-foreground uppercase">
+                <span>
+                  {c} ({es.length})
+                </span>
+                <button
+                  type="button"
+                  aria-label={`hide ${c} column`}
+                  title={`hide ${c} column`}
+                  onClick={() => flip(c)}
+                  className="rounded p-0.5 hover:bg-muted hover:text-foreground"
+                >
+                  <EyeOffIcon className="size-3.5" />
+                </button>
+              </div>
+              <Cards entries={es} selected={selected} onSelect={onSelect} />
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
