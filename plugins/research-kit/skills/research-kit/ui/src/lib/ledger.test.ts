@@ -21,7 +21,11 @@ import {
   linkify,
   matches,
   pinExact,
+  clickSort,
   parseRoute,
+  projectName,
+  sortBy,
+  sortGroups,
   stageCodeOf,
   stageCodes,
   visible,
@@ -67,6 +71,93 @@ test("matches", () => {
   expect(matches(d1, "OLD.MD")).toBe(true);    // source
   expect(matches(d1, "utf-8")).toBe(true);     // note
   expect(matches(d1, "zzz")).toBe(false);
+});
+test("id-only search: exact id or label, terms split on spaces and commas", () => {
+  const t12: Entry = { ...base, id: "T-12", type: "task", title: "twelve", status: "open",
+    owner: "x", stage: "", extra: { legacy_id: "03b/W1" } };
+  const L12: Ledger = { ...L, entries: [t1, t12, d1] };
+  const r = (q: string): string[] => ids(visible(L12, { ...route("#/board"), q, idOnly: true }));
+  expect(r("T-1")).toEqual(["T-1"]);                      // not T-12
+  expect(r("t-12, D-1 03B/W1")).toEqual(["T-12", "D-1"]);
+  expect(r("D-07")).toEqual(["D-1"]);                     // legacy_id of d1
+  expect(r("pick")).toEqual([]);                          // no substring match
+  expect(r(" , ")).toEqual([]);
+  expect(r("")).toEqual(["T-1", "T-12", "D-1"]);          // empty query: all
+  expect(ids(visible(L12, { ...route("#/list?q=T-12"), idOnly: true }))).toEqual(["T-12"]);
+  expect(matches(t12, "tw", false)).toBe(true);           // toggle off: fuzzy as before
+  expect(parseRoute("#/list?idonly=1").idOnly).toBe(true);
+  expect(formatRoute(parseRoute("#/list?q=T-1&idonly=1"))).toBe("#/list?q=T-1&idonly=1");
+  expect(formatRoute(parseRoute("#/list"))).toBe("#/list");
+});
+test("projectName: last path segment, any separator", () => {
+  expect(projectName("/srv/work/research-kit-ui")).toBe("research-kit-ui");
+  expect(projectName("/a/b/proj/")).toBe("proj");
+  expect(projectName("C:\\work\\proj\\")).toBe("proj");
+  expect(projectName("/")).toBe("/");
+  expect(projectName("")).toBe("");
+});
+test("column sorts live in the route; header click cycles; pinning stays", () => {
+  const mk = (id: string, o: Partial<Entry>): Entry =>
+    ({ ...base, id, type: "task", title: id, status: "open", owner: "", stage: "", ...o });
+  const a = mk("T-1", { owner: "zed", title: "beta", created: "2026-11-01T10:00:00+01:00" });
+  const b = mk("T-2", { owner: "amy", title: "alpha", created: "2026-11-03T10:00:00+01:00" });
+  const c = mk("T-3", { owner: "", title: "gamma", status: "running",
+    created: "2026-11-02T10:00:00+01:00", started: "2026-11-04T10:00:00+01:00" });
+  const bad = mk("T-4", { owner: "bob", title: "delta", created: "not a date" });
+  const LC: Ledger = { ...L, entries: [a, b, c, bad] };
+  const s = (h: string): string[] => ids(visible(LC, route(`#/list?status=all&${h}`)));
+  expect(s("sort=owner")).toEqual(["T-3", "T-2", "T-4", "T-1"]);               // "" first
+  expect(s("sort=owner&dir=desc")).toEqual(["T-1", "T-4", "T-2", "T-3"]);
+  expect(s("sort=title")).toEqual(["T-2", "T-1", "T-4", "T-3"]);
+  expect(s("sort=status")).toEqual(["T-1", "T-2", "T-4", "T-3"]);              // open < running
+  expect(s("sort=age")).toEqual(["T-3", "T-2", "T-1", "T-4"]);                 // youngest first; running by start; bad date last
+  expect(s("sort=age&dir=desc")).toEqual(["T-4", "T-1", "T-2", "T-3"]);
+  expect(s("sort=title&q=t-4")).toEqual(["T-4"]);
+  expect(ids(pinExact(sortBy([a, b, c, bad], "title", false), "t-3"))).toEqual(["T-3", "T-2", "T-1", "T-4"]);
+  expect(clickSort("default", false, "id")).toEqual({ sort: "id", desc: false });
+  expect(clickSort("id", false, "id")).toEqual({ sort: "id", desc: true });
+  expect(clickSort("id", true, "id")).toEqual({ sort: "default", desc: false });
+  expect(clickSort("id", true, "owner")).toEqual({ sort: "owner", desc: false });
+});
+test("sortBy: a missing timestamp sorts first, ties keep the incoming order (also descending)", () => {
+  const mk = (id: string, upd: string): Entry =>
+    ({ ...base, id, type: "task", title: id, status: "done", owner: "", stage: "", updated: upd });
+  const none = mk("T-3", "");
+  const x = mk("T-1", "2026-11-01T10:00:00+01:00");
+  const y = mk("T-2", "2026-11-01T10:00:00+01:00");
+  expect(ids(sortBy([x, y, none], "updated", false))).toEqual(["T-3", "T-1", "T-2"]);
+  expect(ids(sortBy([y, x], "updated", false))).toEqual(["T-2", "T-1"]); // tie: unchanged
+  expect(ids(sortBy([x, y, none], "updated", true))).toEqual(["T-1", "T-2", "T-3"]); // tie kept, none last
+  expect(ids(sortBy([y, x], "updated", true))).toEqual(["T-2", "T-1"]);
+  expect(ids(sortBy([x, y, none], "default", true))).toEqual(["T-3", "T-2", "T-1"]); // default desc reverses
+});
+test("sort: key and direction, kept in the route, list tab only", () => {
+  const mk = (id: string, upd: string, cre: string): Entry =>
+    ({ ...base, id, type: "task", title: id, status: "done", owner: "", stage: "",
+      updated: upd, created: cre });
+  const a = mk("T-10", "2026-11-01T10:00:00+01:00", "2026-10-03T10:00:00+01:00");
+  const b = mk("T-2", "2026-11-03T10:00:00+01:00", "2026-10-02T10:00:00+01:00");
+  const c = mk("D-5", "2026-11-02T10:00:00+01:00", "2026-10-01T10:00:00+01:00");
+  const LS: Ledger = { ...L, entries: [a, b, c] };
+  const s = (h: string): string[] => ids(visible(LS, route(h)));
+  const all = "status=all";
+  expect(s(`#/list?${all}`)).toEqual(["T-2", "D-5", "T-10"]);               // default (same type: by number)
+  expect(s(`#/list?${all}&dir=desc`)).toEqual(["T-10", "D-5", "T-2"]);
+  expect(s(`#/list?${all}&sort=id`)).toEqual(["D-5", "T-2", "T-10"]);       // prefix, then number
+  expect(s(`#/list?${all}&sort=id&dir=desc`)).toEqual(["T-10", "T-2", "D-5"]);
+  expect(s(`#/list?${all}&sort=updated`)).toEqual(["T-10", "D-5", "T-2"]);
+  expect(s(`#/list?${all}&sort=updated&dir=desc`)).toEqual(["T-2", "D-5", "T-10"]);
+  expect(s(`#/list?${all}&sort=created`)).toEqual(["D-5", "T-2", "T-10"]);
+  expect(s(`#/board?${all}&sort=id`)).toEqual(["D-5", "T-2", "T-10"]);      // the board follows the sort
+  expect(s(`#/board?${all}&sort=id&dir=desc`)).toEqual(["T-10", "T-2", "D-5"]);
+  expect(s(`#/board?${all}`)).toEqual(["T-2", "D-5", "T-10"]);              // nothing in the hash: as before
+  expect(s(`#/stages?${all}&sort=id`)).toEqual(["T-2", "D-5", "T-10"]);     // stages and timeline ignore it
+  expect(s(`#/timeline?${all}&sort=id`)).toEqual(["T-2", "D-5", "T-10"]);
+  expect(s(`#/list?${all}&sort=id&q=t-2`)).toEqual(["T-2"]);
+  expect(ids(pinExact(sortBy([a, b, c], "id", true), "d-5"))).toEqual(["D-5", "T-10", "T-2"]);
+  expect(route("#/list?sort=bogus")).toMatchObject({ sort: "default", desc: false });
+  expect(formatRoute(route("#/list?sort=updated&dir=desc"))).toBe("#/list?sort=updated&dir=desc");
+  expect(formatRoute(route("#/list"))).toBe("#/list");                      // old links unchanged
 });
 test("visible: default status only without a query (Review Focus 1)", () => {
   expect(ids(visible(L, route("#/list")))).toEqual(["T-1", "T-2", "S-1"]);
@@ -253,6 +344,14 @@ test("stageGroups: stages by id number, unstaged last, items by day", () => {
   expect(stageGroups(all, [s1]).map((x) => x.key)).toEqual(["S-1"]); // no unstaged group
   // a filter that hides the stage entries keeps the stages that hold visible items
   expect(stageGroups(all, [inS2]).map((x) => x.key)).toEqual(["S-2"]);
+  // the route sort orders the items inside each group; the stage path keeps its order
+  const keys = (gs: ReturnType<typeof stageGroups>): string[] => gs.map((x) => x.key);
+  const first = (gs: ReturnType<typeof stageGroups>): string[] => gs[0].items.map((e) => e.id);
+  expect(first(sortGroups(g, "default", false))).toEqual(["T-3", "T-5"]);      // as today
+  expect(first(sortGroups(g, "id", true))).toEqual(["T-5", "T-3"]);
+  expect(first(sortGroups(g, "default", true))).toEqual(["T-5", "T-3"]);       // reverses today's order
+  expect(first(sortGroups(g, "created", true))).toEqual(["T-5", "T-3"]);
+  expect(keys(sortGroups(g, "id", true))).toEqual(["S-1", "S-2", "S-10", ""]);
 });
 
 test("boardCol: deferred column holds open and running deferred entries only", () => {

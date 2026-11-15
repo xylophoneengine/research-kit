@@ -6,6 +6,11 @@ frontend bundle in ../ui/dist on 127.0.0.1. Never writes the ledger or STATUS.md
 
 Usage:
   python3 -I rk.py ui [--repo DIR] [--port N] [--no-open]
+  python3 -I rk.py ui --status       list running viewers
+  python3 -I rk.py ui --statusline   segment for a Claude Code status line
+
+While serving it keeps ~/.cache/research-kit/ui/<port>.json (pid, port, repo)
+for the two options above and removes it on exit (SIGTERM included).
 """
 
 from __future__ import annotations
@@ -16,18 +21,27 @@ import importlib.util
 import json
 import errno
 import mimetypes
+import os
+import select
+import signal
 import socket
+import stat
 import sys
 import time
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.machinery import ModuleSpec
 from pathlib import Path
-from types import ModuleType
+from types import FrameType, ModuleType
 from typing import Any
 from urllib.parse import unquote
 
 DIST: Path = Path(__file__).resolve().parent.parent / "ui" / "dist"
+# One <port>.json per running viewer, for --status and --statusline.
+STATE_DIR: Path = Path.home() / ".cache" / "research-kit" / "ui"
+MAX_REPO_CHARS: int = 4096  # longest repo path --status will print
+STATE_BYTES: int = 1 << 16  # a state file is a few hundred bytes; read at most this
 DEFAULT_PORT: int = 8765  # first port tried when no --port is given
 PORT_TRIES: int = 10  # ports tried from DEFAULT_PORT upward without --port
 # A write to a socket whose peer is gone. macOS is said to report EPROTOTYPE or
@@ -248,6 +262,187 @@ def _port_taken_message(port: int, viewer: bool) -> str:
     )
 
 
+def _state_dir_ok() -> bool:
+    """STATE_DIR is a real directory (no symlink) owned by us and not group or
+    world writable: only then are files in it written or trusted."""
+    try:
+        st: os.stat_result = os.lstat(STATE_DIR)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(st.st_mode):
+        return False
+    if not hasattr(os, "getuid"):  # no uids or modes to check (Windows)
+        return True
+    return st.st_uid == os.getuid() and not st.st_mode & 0o022
+
+
+def _write_state(port: int, repo: Path) -> Path | None:
+    """Write STATE_DIR/<port>.json ({"pid", "port", "repo"}) for --status and
+    --statusline: a temp file in the same dir, then os.replace. None (the caller
+    says so) if the dir is not ours or private, or on any write error."""
+    try:
+        STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not _state_dir_ok():
+            return None
+        tmp: Path = STATE_DIR / f".{port}.{os.getpid()}.tmp"
+        tmp.write_text(
+            json.dumps({"pid": os.getpid(), "port": port, "repo": str(repo)})
+        )
+        final: Path = STATE_DIR / f"{port}.json"
+        os.replace(tmp, final)
+    except OSError:
+        return None
+    return final
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:  # os.kill(0, 0) would address a whole process group
+        return False
+    if sys.platform == "win32":  # os.kill terminates the process there
+        return True  # ponytail: no liveness check on Windows; --status still probes
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True  # it exists, another user owns it
+    except (OSError, OverflowError):
+        return False
+    return True
+
+
+def _read_small(f: Path) -> bytes | None:
+    """Content of a regular file of at most STATE_BYTES, else None. A symlink is
+    not followed and a FIFO or device is never read, so this cannot block."""
+    flags: int = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd: int = os.open(f, flags | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        data: bytes = os.read(fd, STATE_BYTES + 1)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return data if len(data) <= STATE_BYTES else None
+
+
+def _valid_state(d: object, name: str) -> tuple[int, int, str] | None:
+    """(port, pid, repo) if `d` is the content of the state file `name`: a dict
+    with pid (1 to 2**31-1) and port (1 to 65535) as real ints (no bool) and a
+    printable repo of 1 to MAX_REPO_CHARS chars, stored as <port>.json."""
+    if not isinstance(d, dict):
+        return None
+    pid, port, repo = d.get("pid"), d.get("port"), d.get("repo")
+    if type(pid) is not int or type(port) is not int or not isinstance(repo, str):
+        return None
+    if not (0 < pid < 2**31 and 0 < port < 65536 and name == f"{port}.json"):
+        return None
+    if not (0 < len(repo) <= MAX_REPO_CHARS and repo.isprintable()):
+        return None
+    return port, pid, repo
+
+
+def _read_states(prune: bool) -> list[tuple[int, int, str]]:
+    """(port, pid, repo) of every valid state file (see _valid_state) with a live
+    pid, sorted by port. Nothing is read from a directory that is not ours and
+    private. prune: delete the file of a dead pid (our own stale file). Nothing
+    is probed here."""
+    out: list[tuple[int, int, str]] = []
+    if not _state_dir_ok():
+        return out
+    for f in STATE_DIR.glob("*.json"):
+        raw: bytes | None = _read_small(f)
+        try:
+            d: object = None if raw is None else json.loads(raw)
+        except (ValueError, RecursionError):
+            continue
+        valid: tuple[int, int, str] | None = _valid_state(d, f.name)
+        if valid is None:
+            continue
+        port, pid, repo = valid
+        if _pid_alive(pid):
+            out.append((port, pid, repo))
+        elif prune:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+    return sorted(out)
+
+
+def _status() -> int:
+    """One line per live viewer, `<port>  <repo>`, by port; else `no viewer runs`.
+    Live: typed state file, live pid, and the port confirmed as a viewer of that
+    repo (probed in parallel). The repo shown is the state file's, never the
+    port holder's."""
+    states: list[tuple[int, int, str]] = _read_states(prune=True)
+    with ThreadPoolExecutor(max_workers=max(1, len(states))) as pool:
+        ok: list[bool] = list(
+            pool.map(
+                _is_viewer_of, [s[0] for s in states], [Path(s[2]) for s in states]
+            )
+        )
+    lines: list[str] = [f"{s[0]}  {s[2]}" for s, good in zip(states, ok) if good]
+    print("\n".join(lines) if lines else "no viewer runs")
+    return 0
+
+
+def _stdin_dir() -> Path | None:
+    """workspace.current_dir or cwd of the JSON a status line command gets on
+    stdin (Claude Code pipes it); None for a tty, no data, or anything else."""
+    if sys.stdin is None or sys.stdin.isatty():
+        return None
+    raw: str | bytes
+    try:
+        fd: int = sys.stdin.fileno()
+    except (OSError, ValueError):  # not a real file descriptor (a test double)
+        raw = sys.stdin.read(1 << 20)
+    else:
+        try:
+            if not select.select([fd], [], [], 0.5)[0]:
+                return None  # an open pipe nobody writes to: do not wait for it
+            raw = os.read(fd, 1 << 20)  # what is there; no wait for EOF
+        except OSError:
+            return None
+    try:
+        data: object = json.loads(raw)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    ws: object = data.get("workspace")
+    d: object = ws.get("current_dir") if isinstance(ws, dict) else None
+    d = d or data.get("cwd")
+    return Path(d) if isinstance(d, str) and d else None
+
+
+def _statusline(repo_arg: Path | None) -> int:
+    """Print `🔍rk:<port>` (lowest port, wrapped in an OSC 8 hyperlink to
+    http://127.0.0.1:<port>/) if a state file of the repo here has a live pid,
+    else nothing. For a status line script: no probe, no network, never an error
+    text, exit 0 always."""
+    try:
+        start: Path = repo_arg or _stdin_dir() or Path.cwd()
+        repo: Path = ledger.find_repo(start, explicit=repo_arg is not None)
+        # ponytail: pid alive only, so a reused pid could show a stale port;
+        # `--status` does the real check.
+        ports: list[int] = [
+            port for port, _pid, r in _read_states(prune=False) if r == str(repo)
+        ]
+        if ports:  # an OSC 8 terminal link to our own port; plain text elsewhere
+            link: str = f"\x1b]8;;http://127.0.0.1:{ports[0]}/\x1b\\"
+            print(f"{link}🔍rk:{ports[0]}\x1b]8;;\x1b\\", end="", flush=True)
+    except Exception:  # a status line must stay quiet, whatever went wrong
+        pass
+    return 0
+
+
+def _on_term(signum: int, frame: FrameType | None) -> None:
+    raise KeyboardInterrupt  # SIGTERM / SIGHUP end serve_forever like Ctrl-C
+
+
 def main(argv: list[str]) -> int:
     p: argparse.ArgumentParser = argparse.ArgumentParser(
         prog="rk.py ui",
@@ -260,7 +455,19 @@ def main(argv: list[str]) -> int:
         help=f"default: the first free port from {DEFAULT_PORT}, {PORT_TRIES} tried",
     )
     p.add_argument("--no-open", action="store_true", help="do not open a browser")
+    p.add_argument(
+        "--status", action="store_true", help="list running viewers and exit"
+    )
+    p.add_argument(
+        "--statusline",
+        action="store_true",
+        help="print the status line segment for this repo's viewer, or nothing",
+    )
     a: argparse.Namespace = p.parse_args(argv)
+    if a.status:
+        return _status()
+    if a.statusline:
+        return _statusline(a.repo)
     try:
         repo: Path = (
             ledger.find_repo(a.repo, explicit=True)
@@ -281,11 +488,20 @@ def main(argv: list[str]) -> int:
     ports: list[int] = (
         [a.port] if explicit else [DEFAULT_PORT + i for i in range(PORT_TRIES)]
     )
+    # check and probe all ports at once: about one deadline, not one per port
+    with ThreadPoolExecutor(max_workers=len(ports)) as pool:
+        taken: list[int] = [q for q, t in zip(ports, pool.map(_taken, ports)) if t]
+        found: list[bool] = list(pool.map(_is_viewer_of, taken, [repo] * len(taken)))
+    viewers: list[int] = [q for q, ok in zip(taken, found) if ok]
+    if viewers or (explicit and taken):  # never a second viewer by accident
+        shown: int = viewers[0] if viewers else taken[0]  # ports ascend
+        print(_port_taken_message(shown, bool(viewers)), file=sys.stderr)
+        return 1
     server: ThreadingHTTPServer | None = None
     for port in ports:
+        if port in taken:
+            continue
         try:
-            if _taken(port):
-                raise OSError(errno.EADDRINUSE, "Address already in use")
             server = ThreadingHTTPServer(
                 ("127.0.0.1", port), make_handler(repo, DIST)
             )
@@ -299,10 +515,14 @@ def main(argv: list[str]) -> int:
                     file=sys.stderr,
                 )
                 return 1
-        viewer: bool = _is_viewer_of(port, repo)
-        if viewer or explicit:  # never a second viewer of this repo by accident
-            print(_port_taken_message(port, viewer), file=sys.stderr)
-            return 1
+            if explicit:  # taken after all (e.g. bound, not listening): say so
+                print(
+                    _port_taken_message(port, _is_viewer_of(port, repo)),
+                    file=sys.stderr,
+                )
+                return 1
+            # ponytail: lost a race for this port; go on to the next free one with
+            # no new probe round, so a viewer of this repo that won it is not seen.
     if server is None:
         print(
             f"error: 127.0.0.1:{ports[0]} to {ports[-1]} are all taken; "
@@ -311,15 +531,36 @@ def main(argv: list[str]) -> int:
         )
         return 1
     url: str = f"http://127.0.0.1:{server.server_port}/"
-    print(f"rk ui: {repo} at {url}", flush=True)
-    if not a.no_open:
-        webbrowser.open(url)
+    # SIGTERM (a stopped background task) and SIGHUP (a closed terminal) end
+    # serve_forever like Ctrl-C; installed before the state file exists
+    sigs: list[int] = [signal.SIGTERM]
+    if hasattr(signal, "SIGHUP"):
+        sigs.append(signal.SIGHUP)
+    old: dict[int, Any] = {s: signal.signal(s, _on_term) for s in sigs}
+    state: Path | None = None
     try:
+        state = _write_state(server.server_port, repo)
+        print(f"rk ui: {repo} at {url}", flush=True)
+        if state is None:  # after the first line, which is the one that is read
+            print(
+                f"warning: cannot write a state file in {STATE_DIR}; --status "
+                "and --statusline will not list this viewer",
+                file=sys.stderr,
+            )
+        if not a.no_open:
+            webbrowser.open(url)
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        for s, h in old.items():
+            signal.signal(s, signal.SIG_DFL if h is None else h)
         server.server_close()
+        if state is not None:
+            try:
+                state.unlink()
+            except OSError:
+                pass
     return 0
 
 

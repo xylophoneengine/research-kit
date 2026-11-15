@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Badge } from "@/components/ui/badge";
+import { useEffect } from "react";
+import { StatusBadge } from "@/components/StatusBadge";
 import { TypeBadge } from "@/components/TypeBadge";
 import {
   Table,
@@ -9,16 +9,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { age, labelOf, parseRoute, type Entry } from "@/lib/ledger";
+import { DEFAULT_ORDER, age, clickSort, labelOf, parseRoute, type Entry, type SortKey } from "@/lib/ledger";
 
-type Col = "id" | "label" | "type" | "status" | "title" | "owner" | "stage" | "age";
-const COLS: Col[] = ["id", "label", "type", "status", "title", "owner", "stage", "age"];
-type Sort = { col: Col; dir: 1 | -1 } | null;
-
-function ageMs(e: Entry, now: Date): number {
-  const t = Date.parse(e.status === "running" && e.started ? e.started : e.created);
-  return Number.isNaN(t) ? Infinity : now.getTime() - t;
-}
+// the column names are sort keys (see SORT_KEYS)
+const COLS = ["id", "label", "type", "status", "title", "owner", "stage", "age"] as const;
+type Col = (typeof COLS)[number];
+const DEFAULT_HINT = `default order: ${DEFAULT_ORDER.list}`;
 
 function inField(t: EventTarget | null): boolean {
   return (
@@ -29,38 +25,31 @@ function inField(t: EventTarget | null): boolean {
 
 export function EntryTable({
   entries,
+  sort,
+  desc,
+  onSort,
   selected,
   onSelect,
   onStep,
 }: {
-  entries: Entry[];
+  entries: Entry[]; // in the order of `sort` / `desc` (see visible())
+  sort: SortKey;
+  desc: boolean;
+  onSort: (key: SortKey, desc: boolean) => void; // header click: writes the route
   selected: string | null;
   onSelect: (id: string) => void; // click: a history step
   onStep: (id: string) => void; // arrow keys: replace the current history entry
 }) {
-  const [sort, setSort] = useState<Sort>(null); // local, not in the URL
   const now = new Date();
-  const rows = useMemo(() => {
-    if (!sort) return entries; // default order from visible()
-    const t = new Date();
-    const val = (e: Entry): string | number =>
-      sort.col === "age" ? ageMs(e, t) : sort.col === "label" ? labelOf(e) : e[sort.col];
-    return [...entries].sort((a, b) => {
-      const x = val(a);
-      const y = val(b);
-      const c =
-        typeof x === "number" && typeof y === "number"
-          ? x - y
-          : String(x).localeCompare(String(y), undefined, { numeric: true });
-      return c * sort.dir;
-    });
-  }, [entries, sort]);
+  const rows = entries; // already sorted by visible(): the one sort state is in the route
 
   // asc, then desc, then back to the default order
-  const header = (c: Col): void =>
-    setSort((s) =>
-      !s || s.col !== c ? { col: c, dir: 1 } : s.dir === 1 ? { col: c, dir: -1 } : null,
-    );
+  // in the default order the triangle sits on its primary key, the status column
+  const dflt: Col | null = sort === "default" ? "status" : null;
+  const header = (c: Col): void => {
+    const n = clickSort(sort, desc, c);
+    onSort(n.sort, n.desc);
+  };
 
   // Up / Down walk the rows when focus is not in an input or a menu
   useEffect(() => {
@@ -96,10 +85,24 @@ export function EntryTable({
             <TableHead
               key={c}
               className="cursor-pointer select-none"
+              aria-sort={
+                sort === c ? (desc ? "descending" : "ascending") : dflt === c ? "other" : "none"
+              }
               onClick={() => header(c)}
             >
-              {c}
-              {sort?.col === c ? (sort.dir === 1 ? " ▲" : " ▼") : ""}
+              {/* the button makes the header keyboard sortable; its click bubbles to the th */}
+              <button type="button" className="cursor-pointer select-none">
+                {c}
+                {(sort === c || dflt === c) && (
+                  <span
+                    className={dflt === c ? "text-muted-foreground" : "text-foreground"}
+                    title={dflt === c ? DEFAULT_HINT : undefined}
+                  >
+                    {/* hollow and muted: the default order; solid: a sort that was chosen */}
+                    {dflt === c ? (desc ? " ▽" : " △") : desc ? " ▼" : " ▲"}
+                  </span>
+                )}
+              </button>
             </TableHead>
           ))}
         </TableRow>
@@ -120,7 +123,7 @@ export function EntryTable({
               <TypeBadge type={e.type} />
             </TableCell>
             <TableCell>
-              <Badge variant={e.status === "running" ? "default" : "outline"}>{e.status}</Badge>
+              <StatusBadge status={e.status} />
             </TableCell>
             <TableCell className="max-w-0 w-full truncate" title={e.title}>
               {e.title}

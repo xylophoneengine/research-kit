@@ -13,9 +13,11 @@ import { labelOf, matches, pinExact, type Entry } from "@/lib/ledger";
 // (no filters), first 50 hits
 export function Palette({
   entries,
+  idOnly,
   onOpen,
 }: {
   entries: Entry[];
+  idOnly: boolean; // the header's id toggle
   onOpen: (id: string) => void;
 }) {
   const [show, setShow] = useState(false);
@@ -33,11 +35,14 @@ export function Palette({
     return () => window.removeEventListener("keydown", on);
   }, []);
 
-  const hits = pinExact(entries.filter((e) => matches(e, input)), input).slice(0, 50);
+  const hits = pinExact(entries.filter((e) => matches(e, input, idOnly)), input).slice(0, 50);
   return (
     <CommandDialog open={show} onOpenChange={setShow} title="Search" description="Find an entry">
       <Command shouldFilter={false}>
-        <CommandInput value={input} onValueChange={setInput} placeholder="search id, title, note..." />
+        <CommandInput value={input} onValueChange={setInput} placeholder={idOnly ? "ids and labels, exact" : "search id, title, note..."} />
+        {idOnly && (
+          <div className="px-3 py-1 text-xs text-muted-foreground">id mode: exact ids and labels</div>
+        )}
         <CommandList>
           <CommandEmpty>no match</CommandEmpty>
           {hits.map((e) => (

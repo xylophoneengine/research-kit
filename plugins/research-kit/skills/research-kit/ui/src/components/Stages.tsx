@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/StatusBadge";
 import {
   Table,
   TableBody,
@@ -19,9 +19,9 @@ function Counts({ es }: { es: Entry[] }) {
       {STATUSES.map((s) => {
         const n = es.filter((e) => e.status === s).length;
         return n > 0 ? (
-          <Badge key={s} variant="outline">
+          <StatusBadge key={s} status={s}>
             {s} {n}
-          </Badge>
+          </StatusBadge>
         ) : null;
       })}
     </div>
@@ -76,7 +76,7 @@ export function Stages({
             </TableCell>
             <TableCell>{st.title}</TableCell>
             <TableCell>
-              <Badge variant="outline">{st.status}</Badge>
+              <StatusBadge status={st.status} />
             </TableCell>
             <TableCell>
               <Counts es={entries.filter((e) => e.stage === st.id)} />

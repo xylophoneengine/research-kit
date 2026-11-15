@@ -2,7 +2,9 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Log } from "@/components/timeline/Log";
 import { Storyline } from "@/components/timeline/Storyline";
+import { SortMenu } from "@/components/SortMenu";
 import type { TimelineProps } from "@/components/timeline/parts";
+import type { Route } from "@/lib/ledger";
 
 const KEY = "rk-ui-timeline";
 const VIEWS = ["timeline", "log"] as const;
@@ -26,7 +28,10 @@ function save(v: View): void {
   }
 }
 
-export function Timeline(p: TimelineProps) {
+export function Timeline({
+  patch,
+  ...p
+}: TimelineProps & { patch: (p: Partial<Route>) => void }) {
   const [view, setView] = useState<View>(load);
   const pick = (v: View): void => {
     setView(v);
@@ -46,6 +51,7 @@ export function Timeline(p: TimelineProps) {
             {v}
           </Button>
         ))}
+        {view === "timeline" && <SortMenu tab="timeline" route={{ sort: p.sort, desc: p.desc }} patch={patch} />}
       </div>
       {view === "timeline" && <Storyline {...p} />}
       {view === "log" && <Log entries={p.entries} events={p.events} ledgerIds={p.ledgerIds} />}

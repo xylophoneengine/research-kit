@@ -1,5 +1,5 @@
 import { createContext, useContext } from "react";
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/StatusBadge";
 import { TypeBadge } from "@/components/TypeBadge";
 import { typeClasses } from "@/lib/typeColor";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
@@ -26,7 +26,7 @@ function Preview({ e }: { e: Entry }) {
         <span className="font-mono font-semibold">{e.id}</span>
         {labelOf(e) && <span className="font-mono text-muted-foreground">{labelOf(e)}</span>}
         <TypeBadge type={e.type} />
-        <Badge variant={e.status === "running" ? "default" : "outline"}>{e.status}</Badge>
+        <StatusBadge status={e.status} />
       </div>
       <div className="font-medium break-words">{e.title}</div>
       <div className="text-muted-foreground">

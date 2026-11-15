@@ -1,6 +1,6 @@
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge as SharedBadge } from "@/components/StatusBadge";
 import { IdLink } from "@/components/IdLink";
-import type { Entry, Ev } from "@/lib/ledger";
+import type { Entry, Ev, SortKey } from "@/lib/ledger";
 
 // props of every timeline variant: `all` supplies the stages, `entries` is
 // the filtered list the variants show
@@ -11,6 +11,8 @@ export type TimelineProps = {
   ledgerIds: Set<string>;
   selected: string | null; // the entry open in the detail pane
   onSelect: (id: string) => void;
+  sort: SortKey; // the route sort: orders the items inside a stage group (storyline only)
+  desc: boolean;
 };
 
 export const PAGE = 200;
@@ -24,12 +26,10 @@ export function statusClass(status: string): string {
 
 export function StatusBadge({ status }: { status: string }) {
   return (
-    <Badge
-      variant={status === "running" ? "default" : "outline"}
+    <SharedBadge
+      status={status}
       className={"shrink-0 " + (status === "open" || status === "running" ? "" : "text-muted-foreground")}
-    >
-      {status}
-    </Badge>
+    />
   );
 }
 

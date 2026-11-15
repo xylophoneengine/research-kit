@@ -16,7 +16,21 @@ export type Ledger = {
 export type Tab = "list" | "board" | "stages" | "timeline";
 export type Route = {
   tab: Tab; status: string[] | null; type: string[];
-  stage: string[]; owner: string[]; q: string; e: string | null;
+  stage: string[]; owner: string[]; q: string; idOnly: boolean;
+  sort: SortKey; desc: boolean; e: string | null;
+};
+// the table's columns (same names), then the two timestamps that have no column
+export const SORT_KEYS = [
+  "default", "id", "label", "type", "status", "title", "owner", "stage", "age",
+  "updated", "created",
+] as const;
+export type SortKey = (typeof SORT_KEYS)[number];
+// what `default` means on each tab that has the sort menu (the one place for these texts)
+export type SortTab = "list" | "board" | "timeline";
+export const DEFAULT_ORDER: Record<SortTab, string> = {
+  list: "status (running, open, rest), then type, then id",
+  board: "newest update first",
+  timeline: "oldest day first (imported date, else created), then id; no day last",
 };
 
 export const NONE = "-"; // filter token for an empty owner / stage
@@ -85,6 +99,9 @@ export function parseRoute(hash: string): Route {
     stage: multi("stage"),
     owner: multi("owner"),
     q: dec(raw("q") ?? ""),
+    idOnly: raw("idonly") === "1",
+    sort: SORT_KEYS.find((k) => k === raw("sort")) ?? "default",
+    desc: raw("dir") === "desc",
     e: eq ? dec(eq) : ID_ONLY.test(path) ? path : null,
   };
 }
@@ -97,8 +114,16 @@ export function formatRoute(r: Route): string {
   if (r.stage.length) p.push(`stage=${enc(r.stage)}`);
   if (r.owner.length) p.push(`owner=${enc(r.owner)}`);
   if (r.q) p.push(`q=${encodeURIComponent(r.q)}`);
+  if (r.idOnly) p.push("idonly=1");
+  if (r.sort !== "default") p.push(`sort=${r.sort}`);
+  if (r.desc) p.push("dir=desc");
   if (r.e) p.push(`e=${encodeURIComponent(r.e)}`);
   return `#/${r.tab}${p.length ? "?" + p.join("&") : ""}`;
+}
+
+// last segment of the repo path; "/" or "" keep the path as is
+export function projectName(repo: string): string {
+  return repo.split(/[\\/]/).filter(Boolean).pop() ?? repo;
 }
 
 export function byId(l: Ledger): Map<string, Entry> {
@@ -117,9 +142,15 @@ export function backlinks(l: Ledger): Map<string, string[]> {
   return m;
 }
 
-export function matches(e: Entry, q: string): boolean {
+// idOnly: the query is a list of ids / labels (split on spaces and commas);
+// an entry matches when its id or label equals one of them exactly
+export function matches(e: Entry, q: string, idOnly = false): boolean {
   const n = q.trim().toLowerCase();
   if (!n) return true;
+  if (idOnly) {
+    const terms = n.split(/[\s,]+/).filter(Boolean);
+    return terms.includes(e.id.toLowerCase()) || terms.includes(labelOf(e).toLowerCase());
+  }
   const hay = [e.id, e.title, e.note, e.extra.legacy_id, e.extra.source];
   return hay.some((h) => typeof h === "string" && h.toLowerCase().includes(n));
 }
@@ -138,9 +169,46 @@ export function visible(l: Ledger, r: Route): Entry[] {
       (r.type.length === 0 || r.type.includes(e.type)) &&
       pick(r.stage, e.stage) &&
       pick(r.owner, e.owner) &&
-      matches(e, q),
+      matches(e, q, r.idOnly),
   );
-  return pinExact(sortDefault(out, l.types), q);
+  // the sort (header click and menu alike) applies on the list and board tabs; the others keep the default order
+  const s = r.tab === "list" || r.tab === "board" ? sortBy(sortDefault(out, l.types), r.sort, r.desc) : sortDefault(out, l.types);
+  return pinExact(s, q);
+}
+
+// a click on column `col`: ascending, then descending, then the default order
+export function clickSort(sort: SortKey, desc: boolean, col: SortKey): { sort: SortKey; desc: boolean } {
+  if (sort !== col) return { sort: col, desc: false };
+  return desc ? { sort: "default", desc: false } : { sort: col, desc: true };
+}
+
+// `es` is in default order; ties of a key keep it, also when descending; `default` descending reverses all
+export function sortBy(es: Entry[], key: SortKey, desc: boolean): Entry[] {
+  const day = (e: Entry): number => Date.parse(key === "created" ? e.created : e.updated) || 0;
+  const pre = (id: string): string => id.slice(0, id.lastIndexOf("-"));
+  const text = (f: (e: Entry) => string) => (a: Entry, b: Entry): number =>
+    f(a).localeCompare(f(b), undefined, { numeric: true });
+  // the age column as it always sorted: ascending = youngest first (running: since
+  // it started), an entry without a usable timestamp last
+  const ageKey = (e: Entry): number => {
+    const t = Date.parse(e.status === "running" && e.started ? e.started : e.created);
+    return Number.isNaN(t) ? Infinity : -t;
+  };
+  const cmp: Record<SortKey, (a: Entry, b: Entry) => number> = {
+    default: () => 0,
+    id: (a, b) => pre(a.id).localeCompare(pre(b.id)) || num(a.id) - num(b.id),
+    label: text(labelOf),
+    type: text((e) => e.type),
+    status: text((e) => e.status),
+    title: text((e) => e.title),
+    owner: text((e) => e.owner),
+    stage: text((e) => e.stage),
+    age: (a, b) => (ageKey(a) < ageKey(b) ? -1 : ageKey(a) > ageKey(b) ? 1 : 0),
+    updated: (a, b) => day(a) - day(b),
+    created: (a, b) => day(a) - day(b),
+  };
+  if (key === "default") return desc ? [...es].reverse() : [...es]; // its comparator ties everything
+  return [...es].sort((a, b) => (desc ? -1 : 1) * cmp[key](a, b));
 }
 
 // an entry whose id or label equals the query (case-insensitive) goes first; stable otherwise
@@ -411,6 +479,12 @@ export function stageGroups(all: Entry[], entries: Entry[]): Group[] {
     .sort((a, b) => num(a.id) - num(b.id))
     .map((s) => make(s.id, s));
   return items.has("") ? [...stages, make("", null)] : stages;
+}
+
+// the route sort inside every group (the stage path keeps its order); `default`
+// ascending keeps the groups' own chronological order, `default` descending reverses it
+export function sortGroups(gs: Group[], key: SortKey, desc: boolean): Group[] {
+  return gs.map((g) => ({ ...g, items: sortBy(g.items, key, desc) }));
 }
 
 export const TYPE_ORDER = ["task", "decision", "deferred", "debt", "fetch", "handoff"];

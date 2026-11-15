@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import errno
 import hashlib
@@ -11,6 +12,9 @@ import importlib.util
 import io
 import json
 import os
+import random
+import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -36,6 +40,11 @@ _spec.loader.exec_module(ui)
 
 REAL_DIST: Path = ui.DIST
 RK_PY: Path = Path(__file__).with_name("rk.py")
+
+# main() writes a state file: never into the real ~/.cache, whatever a test does.
+_STATE_ROOT: str = tempfile.mkdtemp(prefix="rk-ui-state-")
+atexit.register(shutil.rmtree, _STATE_ROOT, ignore_errors=True)
+ui.STATE_DIR = Path(_STATE_ROOT) / "ui"
 
 TWO: list[str] = [
     '{"ts":"2026-11-13T12:00:00+01:00","who":"lead","ev":"add","id":"T-1","f":'
@@ -125,7 +134,7 @@ def call_main(argv: list[str]) -> tuple[int, str]:
     """ui.main(argv) with stderr captured. Under QuickServer: a main() that gets
     as far as serving returns at once, so a broken test fails instead of hanging."""
     err: io.StringIO = io.StringIO()
-    with contextlib.redirect_stderr(err), patched(ThreadingHTTPServer=QuickServer):
+    with contextlib.redirect_stderr(err), patched(ThreadingHTTPServer=quick_server()):
         rc: int = ui.main(argv)
     return rc, err.getvalue()
 
@@ -368,17 +377,22 @@ def patched(**values: Any) -> Iterator[None]:
 
 
 @contextlib.contextmanager
-def port_run(n: int) -> Iterator[tuple[list[socket.socket], list[int]]]:
-    """n listening sockets on consecutive free 127.0.0.1 ports, and the ports.
-    A caller closes the socket of every port it wants free again."""
+def port_run(
+    n: int, listening: bool = True
+) -> Iterator[tuple[list[socket.socket], list[int]]]:
+    """n sockets on consecutive free 127.0.0.1 ports (listening, or only bound),
+    and the ports. A caller closes the socket of every port it wants free. The
+    run starts below the OS ephemeral ranges (macOS 49152+, Linux 32768+), so the
+    client sockets of a connect check cannot sit on a port the test means to bind."""
     socks: list[socket.socket] = []
     try:
-        for _ in range(100):
+        for _ in range(200):
+            base: int = random.randrange(10000, 30000)
             try:
                 for i in range(n):
                     s: socket.socket = socket.socket()
                     socks.append(s)
-                    s.bind(("127.0.0.1", socks[0].getsockname()[1] + i if i else 0))
+                    s.bind(("127.0.0.1", base + i))
             except (OSError, OverflowError):  # a port of the run is in use
                 for s in socks:
                     s.close()
@@ -388,7 +402,8 @@ def port_run(n: int) -> Iterator[tuple[list[socket.socket], list[int]]]:
         else:
             raise AssertionError("no run of free ports found")
         for s in socks:
-            s.listen()
+            if listening:
+                s.listen()
         yield socks, [s.getsockname()[1] for s in socks]
     finally:
         for s in socks:
@@ -404,14 +419,25 @@ def serve_on(port: int, repo: Path, dist: Path) -> ThreadingHTTPServer:
     return server
 
 
-def call_main_io(argv: list[str]) -> tuple[int, str, str]:
-    """ui.main(argv) with stdout and stderr captured: rc, stdout, stderr. Under
-    QuickServer, like call_main."""
+def quick_server() -> type[ThreadingHTTPServer]:
+    """QuickServer, or the QuickServer subclass a test has patched in."""
+    cur: type[ThreadingHTTPServer] = ui.ThreadingHTTPServer
+    return cur if issubclass(cur, QuickServer) else QuickServer
+
+
+def call_main_io(argv: list[str], stdin: str = "") -> tuple[int, str, str]:
+    """ui.main(argv) with stdout and stderr captured, and `stdin` as its standard
+    input: rc, stdout, stderr. Under QuickServer, like call_main."""
     out: io.StringIO = io.StringIO()
     err: io.StringIO = io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        with patched(ThreadingHTTPServer=QuickServer):
-            rc: int = ui.main(argv)
+    old_stdin: Any = sys.stdin
+    sys.stdin = io.StringIO(stdin)
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            with patched(ThreadingHTTPServer=quick_server()):
+                rc: int = ui.main(argv)
+    finally:
+        sys.stdin = old_stdin
     return rc, out.getvalue(), err.getvalue()
 
 
@@ -501,6 +527,417 @@ def test_all_default_ports_taken() -> None:
     assert err == (
         f"error: 127.0.0.1:{ports[0]} to {ports[2]} are all taken; pick a --port\n"
     ), repr(err)
+
+
+def test_walk_sees_viewer_above_free_port() -> None:
+    """A viewer of this repo on a higher port of the range is found even though
+    the first port is free; with two, the lowest is named; nothing is served."""
+    with tmpdir() as tmp, port_run(3) as (socks, ports):
+        repo: Path = mk_repo(tmp, TWO)
+        dist: Path = mk_dist(tmp)
+        ui.DIST = dist
+        for s in socks:
+            s.close()
+        viewers: list[ThreadingHTTPServer] = [
+            serve_on(ports[1], repo, dist),
+            serve_on(ports[2], repo, dist),
+        ]
+        try:
+            with patched(DEFAULT_PORT=ports[0], PORT_TRIES=3):
+                rc, out, err = call_main_io(["--repo", str(repo), "--no-open"])
+        finally:
+            for v in viewers:
+                v.shutdown()
+                v.server_close()
+    assert rc == 1 and out == "", (rc, out)  # ports[0] was free, not served
+    assert err == same_viewer_msg(ports[1]), repr(err)
+
+
+def test_walk_probes_taken_ports_in_parallel() -> None:
+    """Silent holders cost about one probe deadline together, not one each."""
+    holders: int = 6
+    deadline: float = 1.0
+    with tmpdir() as tmp, port_run(holders + 1) as (socks, ports):
+        repo: Path = mk_repo(tmp, TWO)
+        ui.DIST = mk_dist(tmp)
+        socks[holders].close()  # the last port is free
+        with patched(
+            DEFAULT_PORT=ports[0], PORT_TRIES=holders + 1, PROBE_SECONDS=deadline
+        ):
+            t0: float = time.monotonic()
+            rc, out, err = call_main_io(["--repo", str(repo), "--no-open"])
+            elapsed: float = time.monotonic() - t0
+    assert rc == 0 and err == "", (rc, err)
+    assert out == f"rk ui: {repo} at http://127.0.0.1:{ports[holders]}/\n", out
+    # one after the other it would take holders * deadline = 6 s
+    assert elapsed < 3.0, elapsed
+
+
+def test_walk_moves_on_after_lost_bind_race() -> None:
+    """The lowest free port turns out taken at bind time (here: bound, not
+    listening, so the connect check sees nothing): the next one is served."""
+    with tmpdir() as tmp, port_run(2, listening=False) as (socks, ports):
+        repo: Path = mk_repo(tmp, TWO)
+        ui.DIST = mk_dist(tmp)
+        socks[1].close()
+        with patched(DEFAULT_PORT=ports[0], PORT_TRIES=2):
+            rc, out, err = call_main_io(["--repo", str(repo), "--no-open"])
+    assert rc == 0 and err == "", (rc, err)
+    assert out == f"rk ui: {repo} at http://127.0.0.1:{ports[1]}/\n", out
+
+
+def test_walk_taken_check_in_parallel() -> None:
+    """The connect check runs through the pool too: ports that are bound but
+    silent (a connect to them waits out its 0.5 s timeout on macOS) cost about
+    one timeout together, not one each (8 of them: 4 s one after the other)."""
+    holders: int = 8
+    with tmpdir() as tmp, port_run(holders + 1, listening=False) as (socks, ports):
+        repo: Path = mk_repo(tmp, TWO)
+        ui.DIST = mk_dist(tmp)
+        socks[holders].close()
+        with patched(DEFAULT_PORT=ports[0], PORT_TRIES=holders + 1):
+            t0: float = time.monotonic()
+            rc, out, err = call_main_io(["--repo", str(repo), "--no-open"])
+            elapsed: float = time.monotonic() - t0
+    assert rc == 0 and err == "", (rc, err)
+    assert out == f"rk ui: {repo} at http://127.0.0.1:{ports[holders]}/\n", out
+    assert elapsed < 2.5, elapsed
+
+
+def put_state(state: Path, port: int, pid: int, repo: str) -> Path:
+    """A viewer state file as ui.py writes it (or a faked one)."""
+    state.mkdir(parents=True, exist_ok=True)
+    state.chmod(0o700)  # ui.py only trusts a private dir, whatever the umask
+    f: Path = state / f"{port}.json"
+    f.write_text(json.dumps({"pid": pid, "port": port, "repo": repo}))
+    return f
+
+
+def dead_pid() -> int:
+    """pid of a process this test started and has already reaped."""
+    proc: subprocess.Popen[bytes] = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    return proc.pid
+
+
+def test_state_file_while_serving() -> None:
+    seen: list[dict[str, Any]] = []
+
+    class Watching(QuickServer):
+        def serve_forever(self, poll_interval: float = 0.5) -> None:
+            for f in ui.STATE_DIR.glob("*.json"):
+                seen.append(dict(json.loads(f.read_text()), file=f.name))
+
+    with tmpdir() as tmp, port_run(1) as (socks, ports):
+        repo: Path = mk_repo(tmp, TWO)
+        ui.DIST = mk_dist(tmp)
+        state: Path = tmp / "cache" / "ui"  # not there yet: main() creates it
+        socks[0].close()
+        with patched(
+            STATE_DIR=state,
+            DEFAULT_PORT=ports[0],
+            PORT_TRIES=1,
+            ThreadingHTTPServer=Watching,
+        ):
+            rc, out, err = call_main_io(["--repo", str(repo), "--no-open"])
+        assert rc == 0 and err == "", (rc, err)
+        assert out == f"rk ui: {repo} at http://127.0.0.1:{ports[0]}/\n", out
+        assert seen == [
+            {
+                "pid": os.getpid(),
+                "port": ports[0],
+                "repo": str(repo),
+                "file": f"{ports[0]}.json",
+            }
+        ], seen
+        assert list(state.iterdir()) == []  # removed after the normal end
+        assert state.stat().st_mode & 0o077 == 0  # created private
+
+
+def test_state_file_removed_on_sigterm() -> None:
+    state_file_removed_on_signal(signal.SIGTERM)
+
+
+def test_state_file_removed_on_sighup() -> None:
+    state_file_removed_on_signal(signal.SIGHUP)
+
+
+def state_file_removed_on_signal(sig: int) -> None:
+    """A real viewer process (started here, stopped here) with HOME in a temp
+    dir: the state file lands in ~/.cache/research-kit/ui and `sig` removes it."""
+    assert (REAL_DIST / "index.html").is_file(), "ui/dist is not built"
+    with tmpdir() as tmp, port_run(1) as (socks, ports):
+        repo: Path = mk_repo(tmp, TWO)
+        home: Path = tmp / "home"
+        home.mkdir()
+        socks[0].close()
+        f: Path = home / ".cache" / "research-kit" / "ui" / f"{ports[0]}.json"
+        cmd: list[str] = [sys.executable, "-I", str(RK_PY), "ui", "--repo", str(repo)]
+        proc: subprocess.Popen[bytes] = subprocess.Popen(
+            cmd + ["--port", str(ports[0]), "--no-open"],
+            env=dict(os.environ, HOME=str(home)),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            deadline: float = time.monotonic() + 20
+            while not f.is_file():
+                if proc.poll() is not None:
+                    raise AssertionError(proc.stderr.read() if proc.stderr else b"")
+                assert time.monotonic() < deadline, "no state file after 20 s"
+                time.sleep(0.05)
+            got: dict[str, Any] = json.loads(f.read_text())
+            assert got == {"pid": proc.pid, "port": ports[0], "repo": str(repo)}, got
+            proc.send_signal(sig)  # SIGTERM: how a stopped task ends; SIGHUP: tty gone
+            assert proc.wait(timeout=15) == 0
+            assert not f.exists(), f"state file left behind after signal {sig}"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            if proc.stderr:
+                proc.stderr.close()
+
+
+def test_status_lists_live_viewers_only() -> None:
+    with tmpdir() as tmp, tmpdir() as tmp2, port_run(4) as (socks, ports):
+        repo: Path = mk_repo(tmp, TWO)
+        other: Path = mk_repo(tmp2, TWO)
+        dist: Path = mk_dist(tmp)
+        state: Path = tmp / "state"
+        socks[0].close()
+        socks[3].close()
+        viewers: list[ThreadingHTTPServer] = [
+            serve_on(ports[0], repo, dist),  # live: the one that must be listed
+            serve_on(ports[3], other, dist),  # live pid, but a viewer of another repo
+        ]
+        put_state(state, ports[0], os.getpid(), str(repo))
+        put_state(state, ports[1], dead_pid(), str(repo))  # dead pid: pruned
+        put_state(state, ports[2], os.getpid(), str(repo))  # port holds a non-viewer
+        put_state(state, ports[3], os.getpid(), str(repo))
+        (state / "7.json").write_text("not json")
+        (state / "8.json").write_text(json.dumps({"pid": "1", "port": 8, "repo": "/r"}))
+        (state / "9.json").write_text(json.dumps({"pid": 1, "port": 8, "repo": "/r"}))
+        try:
+            with patched(STATE_DIR=state, PROBE_SECONDS=0.5):
+                rc, out, err = call_main_io(["--status"])
+        finally:
+            for v in viewers:
+                v.shutdown()
+                v.server_close()
+        assert rc == 0 and err == "", (rc, err)
+        assert out == f"{ports[0]}  {repo}\n", out
+        assert not (state / f"{ports[1]}.json").exists()
+        for p in (ports[2], ports[3], 7, 8, 9):  # skipped, not removed
+            assert (state / f"{p}.json").exists(), p
+
+
+def test_status_nothing_runs() -> None:
+    with tmpdir() as tmp:
+        for state in (tmp / "missing", tmp):
+            with patched(STATE_DIR=state):
+                rc, out, err = call_main_io(["--status"])
+            assert (rc, out, err) == (0, "no viewer runs\n", ""), (rc, out, err)
+
+
+def test_statusline() -> None:
+    def seg(port: int) -> str:
+        """The exact bytes: OSC 8 link to our port, U+1F50D, rk:<port>, link end."""
+        return (
+            f"\x1b]8;;http://127.0.0.1:{port}/\x1b\\\U0001f50drk:{port}\x1b]8;;\x1b\\"
+        )
+
+    with tmpdir() as tmp, tmpdir() as tmp2, tmpdir() as bare:
+        repo: Path = mk_repo(tmp, TWO)
+        other: Path = mk_repo(tmp2, TWO)
+        state: Path = tmp / "state"
+        put_state(state, 51001, os.getpid(), str(repo))
+        put_state(state, 51000, os.getpid(), str(repo))  # lowest wins
+        put_state(state, 51002, dead_pid(), str(other))  # dead pid: not shown
+        put_state(state, 51003, os.getpid(), str(other))
+
+        def line(argv: list[str], stdin: str = "") -> str:
+            with patched(STATE_DIR=state):
+                rc, out, err = call_main_io(["--statusline"] + argv, stdin)
+            assert rc == 0 and err == "", (rc, err)
+            return out
+
+        # nothing listens on these ports: no probe, the pid alone decides
+        assert line(["--repo", str(repo)]) == seg(51000)
+        # the bytes, spelled out once: ESC ] 8 ; ; URL ESC \ text ESC ] 8 ; ; ESC \
+        assert seg(51000) == (
+            "\x1b]8;;http://127.0.0.1:51000/\x1b\\"
+            "\U0001f50d"
+            "rk:51000"
+            "\x1b]8;;\x1b\\"
+        )
+        assert line(["--repo", str(other)]) == seg(51003)
+        # the directory from the JSON a status line command gets on stdin
+        ws: str = json.dumps({"workspace": {"current_dir": str(repo)}, "cwd": "/"})
+        assert line([], ws) == seg(51000)
+        assert line([], json.dumps({"cwd": str(repo / "pm")})) == seg(51000)
+        # nothing: no repo, a repo without a viewer, junk input, a broken state
+        assert line([], json.dumps({"cwd": str(bare)})) == ""
+        assert line(["--repo", str(bare)]) == ""
+        assert line([], "not json") == ""
+        assert line([], json.dumps({"cwd": 5})) == ""
+        (state / "51000.json").write_text("not json")
+        (state / "51001.json").write_text(json.dumps({"pid": 1, "port": 51001}))
+        assert line(["--repo", str(repo)]) == ""
+
+
+def test_status_rejects_bad_repo_text() -> None:
+    """Here the port answers as a viewer of exactly the state file's repo text, so
+    only the printable and length checks keep a bad one out of --status."""
+    cases: list[tuple[str, bool]] = [
+        ("/some/repo", True),  # control: the same set-up lists a good one
+        ("/x\x1b[2J", False),  # terminal escape
+        ("/x\nrk ui: forged line", False),  # newline
+        ("A" * 5000, False),  # longer than MAX_REPO_CHARS
+    ]
+    with tmpdir() as tmp:
+        state: Path = tmp / "state"
+        for text, listed in cases:
+            body: bytes = b'{"repo": ' + json.dumps(text).encode() + b"}"
+            server, _seen = squatter(200, body)
+            port: int = server.server_port
+            try:
+                put_state(state, port, os.getpid(), text)
+                with patched(STATE_DIR=state):
+                    rc, out, err = call_main_io(["--status"])
+            finally:
+                server.shutdown()
+                server.server_close()
+            want: str = f"{port}  {text}\n" if listed else "no viewer runs\n"
+            assert (rc, out, err) == (0, want, ""), (text[:20], rc, out[:80], err)
+            (state / f"{port}.json").unlink()
+
+
+def test_state_numbers_out_of_range() -> None:
+    """A pid or port outside a sane range makes the file invalid for both
+    commands: no traceback, no segment for it."""
+    with tmpdir() as tmp:
+        repo: Path = mk_repo(tmp, TWO)
+        state: Path = tmp / "state"
+        state.mkdir()
+        state.chmod(0o700)
+        me: int = os.getpid()
+        files: dict[str, dict[str, Any]] = {
+            "1.json": {"pid": 2**40, "port": 1},  # os.kill would overflow
+            "2.json": {"pid": 0, "port": 2},
+            "3.json": {"pid": -5, "port": 3},
+            "4.json": {"pid": True, "port": 4},
+            "5.json": {"pid": me, "port": True},
+            "6.json": {"pid": 2**31, "port": 6},
+            "-1.json": {"pid": me, "port": -1},
+            "0.json": {"pid": me, "port": 0},
+            "70000.json": {"pid": me, "port": 70000},
+            f"{10**31}.json": {"pid": me, "port": 10**31},
+            "7.5.json": {"pid": me, "port": 7.5},
+        }
+        for name, d in files.items():
+            (state / name).write_text(json.dumps(dict(d, repo=str(repo))))
+        with patched(STATE_DIR=state):
+            rc, out, err = call_main_io(["--status"])
+            assert (rc, out, err) == (0, "no viewer runs\n", ""), (rc, out, err)
+            rc, out, err = call_main_io(["--statusline", "--repo", str(repo)])
+            assert (rc, out, err) == (0, "", ""), (rc, out, err)
+
+
+def test_state_files_regular_and_small_only() -> None:
+    """A symlink is not followed, a FIFO is not read and an oversize file is
+    refused; the lowest port left is the regular small file."""
+    with tmpdir() as tmp, tmpdir() as tmp2:
+        repo: Path = mk_repo(tmp, TWO)
+        state: Path = tmp / "state"
+        me: int = os.getpid()
+        put_state(state, 51203, me, str(repo))  # the one that counts
+        os.mkfifo(state / "51200.json")
+        elsewhere: Path = put_state(tmp2 / "real", 51201, me, str(repo))
+        (state / "51201.json").symlink_to(elsewhere)
+        big: dict[str, Any] = {"pid": me, "port": 51202, "repo": str(repo)}
+        (state / "51202.json").write_text(json.dumps(big) + " " * ui.STATE_BYTES)
+        with patched(STATE_DIR=state):
+            rc, out, err = call_main_io(["--statusline", "--repo", str(repo)])
+    assert (rc, err) == (0, ""), (rc, err)
+    assert "rk:51203" in out and "51200" not in out, repr(out)
+    assert "51201" not in out and "51202" not in out, repr(out)
+
+
+def test_state_dir_must_be_ours_and_private() -> None:
+    with tmpdir() as tmp, port_run(1) as (socks, ports):
+        repo: Path = mk_repo(tmp, TWO)
+        ui.DIST = mk_dist(tmp)
+        state: Path = tmp / "state"
+        old: Path = put_state(state, 51300, os.getpid(), str(repo))
+        state.chmod(0o770)  # group writable: not used for reading or writing
+        with patched(STATE_DIR=state):
+            assert call_main_io(["--status"]) == (0, "no viewer runs\n", "")
+            argv: list[str] = ["--statusline", "--repo", str(repo)]
+            assert call_main_io(argv) == (0, "", "")
+            socks[0].close()
+            buf: io.StringIO = io.StringIO()  # one stream: the order is the point
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                with patched(DEFAULT_PORT=ports[0], PORT_TRIES=1):
+                    with patched(ThreadingHTTPServer=QuickServer):
+                        rc: int = ui.main(["--repo", str(repo), "--no-open"])
+        assert rc == 0, rc
+        assert buf.getvalue() == (
+            f"rk ui: {repo} at http://127.0.0.1:{ports[0]}/\n"  # first line first
+            f"warning: cannot write a state file in {state}; --status and "
+            "--statusline will not list this viewer\n"
+        ), buf.getvalue()
+        assert list(state.iterdir()) == [old]  # nothing written there
+        # the owner check, with another uid; a symlink and a missing dir
+        state.chmod(0o700)
+
+        def other_uid() -> int:
+            return real_uid() + 1
+
+        real_uid: Callable[[], int] = os.getuid
+        with patched(STATE_DIR=state):
+            assert ui._state_dir_ok()
+            setattr(os, "getuid", other_uid)
+            try:
+                assert not ui._state_dir_ok()
+            finally:
+                setattr(os, "getuid", real_uid)
+        link: Path = tmp / "link"
+        link.symlink_to(state)
+        for bad in (link, tmp / "missing"):
+            with patched(STATE_DIR=bad):
+                assert not ui._state_dir_ok(), bad
+
+
+def run_bounded(fn: Callable[[], Any], seconds: float) -> Any:
+    """fn() in a daemon thread; fails (instead of hanging) if it takes too long."""
+    box: list[Any] = []
+
+    def target() -> None:
+        box.append(fn())
+
+    t: threading.Thread = threading.Thread(target=target, daemon=True)
+    t.start()
+    t.join(seconds)
+    assert not t.is_alive(), f"blocked for more than {seconds} s"
+    return box[0]
+
+
+def test_stdin_dir_does_not_wait_for_eof() -> None:
+    """A status line caller that keeps stdin open must not hang --statusline."""
+    r, w = os.pipe()
+    old_stdin: Any = sys.stdin
+    pipe_in: Any = os.fdopen(r, "r")
+    sys.stdin = pipe_in
+    try:
+        os.write(w, json.dumps({"cwd": "/some/dir"}).encode())  # w stays open
+        got: Path | None = run_bounded(ui._stdin_dir, 4)
+        assert got == Path("/some/dir"), got
+        assert run_bounded(ui._stdin_dir, 4) is None  # open, silent: gives up
+    finally:
+        sys.stdin = old_stdin
+        os.close(w)  # also unblocks a reader that is stuck, should the code regress
+        pipe_in.close()
 
 
 def squatter(

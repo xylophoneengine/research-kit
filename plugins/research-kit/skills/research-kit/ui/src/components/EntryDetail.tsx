@@ -1,5 +1,6 @@
 import { useContext, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/StatusBadge";
 import { EntryIndex, IdLink, Linked } from "@/components/IdLink";
 import { TypeBadge } from "@/components/TypeBadge";
 import {
@@ -124,7 +125,7 @@ export function EntryDetail({ ledger, id }: { ledger: Ledger; id: string }) {
         {t && (
           <>
             {" "}
-            <Badge variant="outline">{t.status}</Badge> <Linked text={t.title} ledgerIds={ids} own={own} />
+            <StatusBadge status={t.status} /> <Linked text={t.title} ledgerIds={ids} own={own} />
           </>
         )}
         {t && shown && (
@@ -186,7 +187,7 @@ export function EntryDetail({ ledger, id }: { ledger: Ledger; id: string }) {
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-mono text-lg font-semibold">{e.id}</span>
         <TypeBadge type={e.type} />
-        <Badge variant={e.status === "running" ? "default" : "outline"}>{e.status}</Badge>
+        <StatusBadge status={e.status} />
         {e.extra.imported === true && <Badge variant="outline">imported</Badge>}
       </div>
       <h2 className="mt-2 text-base font-medium">

@@ -2,16 +2,11 @@ import { EyeOffIcon } from "lucide-react";
 import { useState } from "react";
 import { TypeBadge } from "@/components/TypeBadge";
 import { Button } from "@/components/ui/button";
-import { BOARD_COLS, boardCol, type Entry } from "@/lib/ledger";
+import { BOARD_COLS, boardCol, sortBy, type Entry, type SortKey } from "@/lib/ledger";
 
 const KEY = "rk-ui-board-folded";
 const COLLAPSED = ["shelved", "dropped", "superseded"]; // hidden until the user shows them
 const PAGE = 30;
-
-const ms = (s: string): number => {
-  const t = Date.parse(s);
-  return Number.isNaN(t) ? 0 : t;
-};
 
 function Card({
   e,
@@ -44,16 +39,21 @@ function Card({
 
 function Cards({
   entries,
+  sort,
+  desc,
   selected,
   onSelect,
 }: {
   entries: Entry[];
+  sort: SortKey;
+  desc: boolean;
   selected: string | null;
   onSelect: (id: string) => void;
 }) {
   const [n, setN] = useState(PAGE);
-  // newest `updated` first
-  const sorted = [...entries].sort((a, b) => ms(b.updated) - ms(a.updated));
+  // the board's own default: newest `updated` first (descending sort reverses it);
+  // any other sort key arrives already applied in `entries` (see visible())
+  const sorted = sort === "default" ? sortBy(entries, "updated", !desc) : entries;
   return (
     <div className="space-y-2">
       {sorted.slice(0, n).map((e) => (
@@ -91,11 +91,15 @@ function save(s: Set<string>): void {
 // entries; a hidden column takes no room on the board.
 export function Board({
   entries,
+  sort,
+  desc,
   statusFilter,
   selected,
   onSelect,
 }: {
   entries: Entry[];
+  sort: SortKey;
+  desc: boolean;
   statusFilter: string[] | null;
   selected: string | null;
   onSelect: (id: string) => void;
@@ -160,7 +164,7 @@ export function Board({
                   <EyeOffIcon className="size-3.5" />
                 </button>
               </div>
-              <Cards entries={es} selected={selected} onSelect={onSelect} />
+              <Cards entries={es} sort={sort} desc={desc} selected={selected} onSelect={onSelect} />
             </div>
           );
         })}

@@ -355,6 +355,24 @@ to end with it. It needs Python only: the built frontend is committed under
 `dist/src.sha256`; `test_ui.py` fails when that hash no longer matches the
 source (it does not compare the bundle itself).
 
+While it serves, the viewer keeps a small state file
+`~/.cache/research-kit/ui/<port>.json` (pid, port, repo) and removes it when it
+ends, also on SIGTERM. `rk ui --status` uses these files to list the running
+viewers, one line `<port>  <repo>` each, or `no viewer runs`; it only reports a
+viewer whose pid is alive and whose port answers as a viewer of that repo, and it
+starts nothing. The browser tab is titled `rk ui · <repo folder> · :<port>`.
+
+To see the viewer in Claude Code, append the output of
+`python3 -I <plugin>/skills/research-kit/scripts/rk.py ui --statusline` to your own
+status line command. It prints `🔍rk:<port>` when a viewer of the repo you are in
+runs (the repo is taken from the `workspace.current_dir` or `cwd` of the JSON that
+Claude Code pipes to a status line command, else from the current directory), and
+nothing at all otherwise, so it adds no clutter in other sessions. The segment is
+an OSC 8 terminal hyperlink to `http://127.0.0.1:<port>/`: clickable in terminals
+that support OSC 8 links, plain text elsewhere. It does no probe
+and checks only that the pid is alive, so a reused pid could show a stale port;
+`--status` does the full check. The plugin does not set a status line by itself.
+
 ## Commands
 
 The table shows short names, which Claude Code's docs do not promise for

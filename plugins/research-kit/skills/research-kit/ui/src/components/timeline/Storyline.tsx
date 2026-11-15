@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { typeClasses } from "@/lib/typeColor";
-import { byType, entryDay, shortDay, stageGroups, type Entry, type Group } from "@/lib/ledger";
+import { byType, entryDay, shortDay, sortGroups, stageGroups, type Entry, type Group } from "@/lib/ledger";
 import { Chev, Id, PAGE, StatusBadge, plural, statusClass, type TimelineProps } from "./parts";
 
 const FIRST_LINE = 40; // cards rendered in a collapsed (one line) branch
@@ -35,8 +35,11 @@ function save(v: number): void {
 
 // A vertical path of stage blocks; an open stage drops one branch of entry
 // cards per type from the path. No time scale.
-export function Storyline({ all, entries, ledgerIds, selected, onSelect }: TimelineProps) {
-  const groups = useMemo(() => stageGroups(all, entries), [all, entries]);
+export function Storyline({ all, entries, ledgerIds, selected, onSelect, sort, desc }: TimelineProps) {
+  const groups = useMemo(
+    () => sortGroups(stageGroups(all, entries), sort, desc),
+    [all, entries, sort, desc],
+  );
   // key of the group that holds the selected entry (a stage holds itself)
   const selKey = useMemo(() => {
     const e = selected === null ? undefined : all.find((x) => x.id === selected);
@@ -144,7 +147,7 @@ function Block({
       });
     });
     return () => cancelAnimationFrame(frame);
-  }, [selected]); // only when the selection changes
+  }, [selected, g.items]); // when the selection or the items' order changes (a re-sort); it only expands
 
   const dot = holds
     ? "bg-primary ring-4 ring-primary/25"

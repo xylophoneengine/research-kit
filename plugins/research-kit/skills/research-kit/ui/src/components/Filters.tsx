@@ -3,6 +3,7 @@ import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -43,6 +44,26 @@ function Multi({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="max-h-80 overflow-y-auto">
+        <div className="sticky top-0 z-10 flex gap-1 bg-popover pb-1">
+          <DropdownMenuItem
+            className="text-muted-foreground"
+            onSelect={(ev) => {
+              ev.preventDefault(); // keep the menu open
+              onChange(options.map((o) => o.value));
+            }}
+          >
+            all
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className="text-muted-foreground"
+            onSelect={(ev) => {
+              ev.preventDefault();
+              onChange([]);
+            }}
+          >
+            none
+          </DropdownMenuItem>
+        </div>
         {options.map((o) => (
           <DropdownMenuCheckboxItem
             key={o.value}
@@ -52,7 +73,9 @@ function Multi({
               onChange(on ? [...selected, o.value] : selected.filter((s) => s !== o.value))
             }
           >
-            {o.text}
+            <span className="max-w-[32ch] truncate" title={o.text}>
+              {o.text}
+            </span>
           </DropdownMenuCheckboxItem>
         ))}
       </DropdownMenuContent>
@@ -75,7 +98,7 @@ export function Filters({
     vs.map((v) => ({ value: v, text: v === NONE ? "(none)" : v }));
   const stages = f.stage.map((v) => ({
     value: v,
-    text: v === NONE ? "unstaged" : `${v}${ids.get(v)?.title.slice(0, 50) ?? ""}`.trim(),
+    text: v === NONE ? "unstaged" : `${v} ${ids.get(v)?.title ?? ""}`.trim(),
   }));
   const set = (k: Key) => (v: string[]) => patch({ [k]: v });
   const any =
