@@ -349,6 +349,10 @@ source (it does not compare the bundle itself).
 
 ## Commands
 
+The table shows the short names. If a session answers `Unknown command`, use
+the full name with the plugin prefix: `/research-kit:<name>`, for example
+`/research-kit:rk-viewer`.
+
 | Command | Does |
 |---|---|
 | `/rk` | menu: shows the options below for the repo's state and runs your choice (start here). Full name `/research-kit:rk`; on first use it offers a personal `/rk` shortcut (`~/.claude/commands/rk.md`) so it ranks first in the slash menu |
