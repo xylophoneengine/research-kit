@@ -15,9 +15,7 @@ import dataclasses
 import importlib.util
 import json
 import errno
-import http.client
 import mimetypes
-import re
 import socket
 import sys
 import time
@@ -102,16 +100,21 @@ def make_handler(repo: Path, dist: Path) -> type[BaseHTTPRequestHandler]:
         def log_message(self, format: str, *args: object) -> None:
             pass
 
+        def handle_one_request(self) -> None:
+            """A client that hangs up early (a probing second rk ui) is not an
+            error on any path, send_error's 403 / 404 / 405 included."""
+            try:
+                super().handle_one_request()
+            except ConnectionError:
+                self.close_connection = True
+
         def _send(self, code: int, ctype: str, body: bytes) -> None:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
-            try:
-                self.end_headers()
-                self.wfile.write(body)
-            except ConnectionError:
-                pass  # client left early (e.g. a second rk ui probing the port)
+            self.end_headers()
+            self.wfile.write(body)
 
         def _json(self, code: int, obj: object) -> None:
             body: bytes = json.dumps(obj).encode()
@@ -177,69 +180,60 @@ def _taken(port: int) -> bool:
 
 
 PROBE_BYTES: int = 1 << 20  # read at most this much of a holder's answer
-MAX_REPO_CHARS: int = 4096
+PROBE_SECONDS: float = 2.0  # one deadline over connect and all reads
 
 
-def _first_str(head: str, key: str) -> str | None:
-    """String value of `key` when it is the first key of the JSON object `head`
-    starts with (both of the viewer's answers put it first), else None. Reads
-    the prefix only, so a ledger bigger than PROBE_BYTES still identifies."""
-    m: re.Match[str] | None = re.match(
-        r'\{\s*"' + key + r'"\s*:\s*("(?:[^"\\]|\\.)*")', head
+def _is_viewer_of(port: int, repo: Path) -> bool:
+    """True if 127.0.0.1:port answers GET /api/ledger like a viewer of `repo`.
+
+    The holder is untrusted and nothing it sends is kept: the answer must be a
+    200 whose body starts with the exact bytes our own payload() would start
+    with for this repo (`{"repo": "<str(repo)>"` then `,` or `}`). A raw socket,
+    so no redirect is followed and the one deadline (PROBE_SECONDS, checked
+    between reads, per-operation timeout <= 1 s) also covers a holder that
+    drips header bytes. Any failure is False."""
+    want: bytes = b'{"repo": ' + json.dumps(str(repo)).encode()
+    req: bytes = (
+        f"GET /api/ledger HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode()
     )
-    if m is None:
-        return None
+    deadline: float = time.monotonic() + PROBE_SECONDS
+    buf: bytearray = bytearray()
     try:
-        val: object = json.loads(m.group(1))
-    except ValueError:
-        return None
-    return val if isinstance(val, str) else None
+        with socket.create_connection(("127.0.0.1", port), timeout=1) as s:
+            s.sendall(req)
+            while len(buf) < PROBE_BYTES:
+                left: float = deadline - time.monotonic()
+                if left <= 0:
+                    return False
+                s.settimeout(min(1.0, left))
+                chunk: bytes = s.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+                end: int = buf.find(b"\r\n\r\n")
+                if end >= 0 and len(buf) > end + 4 + len(want):
+                    break
+    except (OSError, OverflowError, ValueError):
+        return False
+    end = buf.find(b"\r\n\r\n")
+    if end < 0 or not bytes(buf[:12]).startswith(b"HTTP/1."):
+        return False
+    if bytes(buf[8:13]) != b" 200 ":
+        return False
+    body: bytes = bytes(buf[end + 4 :])
+    return body.startswith(want) and body[len(want) : len(want) + 1] in (b",", b"}")
 
 
-def _probe(port: int) -> tuple[bool, str | None]:
-    """(is a ledger viewer, its repo path or None) for 127.0.0.1:port.
-
-    One GET /api/ledger, no redirect followed (http.client never does), timeout
-    1 s per socket operation; any failure counts as not a viewer. The holder is
-    untrusted: a repo is taken only if printable and at most MAX_REPO_CHARS."""
-    conn: http.client.HTTPConnection = http.client.HTTPConnection(
-        "127.0.0.1", port, timeout=1
-    )
-    try:
-        conn.request("GET", "/api/ledger", headers={"Host": f"127.0.0.1:{port}"})
-        resp: http.client.HTTPResponse = conn.getresponse()
-        # ponytail: per-operation timeout, not a total deadline; a drip-feeding
-        # holder can hold this open. Add a monotonic deadline if that matters.
-        head: str = resp.read(PROBE_BYTES).decode("ascii")  # viewer sends ASCII
-        status: int = resp.status
-    except (OSError, ValueError, http.client.HTTPException):
-        return False, None
-    finally:
-        conn.close()
-    if status == 200:
-        repo: str | None = _first_str(head, "repo")
-        if repo is not None and repo.isprintable() and len(repo) <= MAX_REPO_CHARS:
-            return True, repo
-    elif status == 500 and _first_str(head, "error") is not None:
-        return True, None  # a viewer whose ledger does not load; text not shown
-    return False, None
-
-
-def _port_taken_message(port: int) -> str:
-    viewer, repo = _probe(port)
-    if viewer and repo is None:
+def _port_taken_message(port: int, repo: Path) -> str:
+    """One of two texts built only from our own values, never the holder's."""
+    if _is_viewer_of(port, repo):
         return (
-            f"error: a ledger viewer already runs at http://127.0.0.1:{port}/ "
-            "(its ledger does not load); pick another --port for a second one"
-        )
-    if viewer:
-        return (
-            f"error: a ledger viewer for {repo} already runs at "
+            "error: a ledger viewer for this repo already runs at "
             f"http://127.0.0.1:{port}/; pick another --port for a second one"
         )
     return (
-        f"error: 127.0.0.1:{port} is taken by something that is not a ledger "
-        "viewer; pick another --port"
+        f"error: 127.0.0.1:{port} is taken by another program or another "
+        "repo's ledger viewer; pick another --port"
     )
 
 
@@ -278,7 +272,7 @@ def main(argv: list[str]) -> int:
         )
     except (OSError, OverflowError) as e:
         if isinstance(e, OSError) and e.errno == errno.EADDRINUSE:
-            print(_port_taken_message(a.port), file=sys.stderr)
+            print(_port_taken_message(a.port, repo), file=sys.stderr)
             return 1
         why: str = (e.strerror if isinstance(e, OSError) else None) or str(e)
         print(
