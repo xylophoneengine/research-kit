@@ -40,6 +40,7 @@ from urllib.parse import unquote
 DIST: Path = Path(__file__).resolve().parent.parent / "ui" / "dist"
 # One <port>.json per running viewer, for --status and --statusline.
 STATE_DIR: Path = Path.home() / ".cache" / "research-kit" / "ui"
+RK_PATH_FILE: str = "rk_path"  # in STATE_DIR: absolute path of rk.py, one line
 MAX_REPO_CHARS: int = 4096  # longest repo path --status will print
 STATE_BYTES: int = 1 << 16  # a state file is a few hundred bytes; read at most this
 DEFAULT_PORT: int = 8765  # first port tried when no --port is given
@@ -276,22 +277,35 @@ def _state_dir_ok() -> bool:
     return st.st_uid == os.getuid() and not st.st_mode & 0o022
 
 
-def _write_state(port: int, repo: Path) -> Path | None:
-    """Write STATE_DIR/<port>.json ({"pid", "port", "repo"}) for --status and
-    --statusline: a temp file in the same dir, then os.replace. None (the caller
-    says so) if the dir is not ours or private, or on any write error."""
+def _write_in_state_dir(name: str, text: str) -> Path | None:
+    """STATE_DIR/<name> = text: a temp file in the same dir, then os.replace.
+    None if the dir is not ours or private, or on any write error."""
     try:
         STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
         if not _state_dir_ok():
             return None
-        tmp: Path = STATE_DIR / f".{port}.{os.getpid()}.tmp"
-        tmp.write_text(
-            json.dumps({"pid": os.getpid(), "port": port, "repo": str(repo)})
-        )
-        final: Path = STATE_DIR / f"{port}.json"
+        tmp: Path = STATE_DIR / f".{name}.{os.getpid()}.tmp"
+        tmp.write_text(text)
+        final: Path = STATE_DIR / name
         os.replace(tmp, final)
     except OSError:
         return None
+    return final
+
+
+def _write_state(port: int, repo: Path) -> Path | None:
+    """Write STATE_DIR/<port>.json ({"pid", "port", "repo"}) for --status and
+    --statusline; None (the caller says so) if that fails. Also STATE_DIR/rk_path,
+    the path of the rk.py beside this file, one line, so a status line command can
+    find rk.py on any install; never removed, the next viewer start rewrites it;
+    a failure there is silent."""
+    final: Path | None = _write_in_state_dir(
+        f"{port}.json",
+        json.dumps({"pid": os.getpid(), "port": port, "repo": str(repo)}),
+    )
+    if final is not None:
+        rk: Path = Path(__file__).resolve().with_name("rk.py")
+        _write_in_state_dir(RK_PATH_FILE, f"{rk}\n")
     return final
 
 

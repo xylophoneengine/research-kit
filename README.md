@@ -362,9 +362,17 @@ viewers, one line `<port>  <repo>` each, or `no viewer runs`; it only reports a
 viewer whose pid is alive and whose port answers as a viewer of that repo, and it
 starts nothing. The browser tab is titled `rk ui · <repo folder> · :<port>`.
 
-To see the viewer in Claude Code, append the output of
-`python3 -I <plugin>/skills/research-kit/scripts/rk.py ui --statusline` to your own
-status line command. It prints `🔍rk:<port>` when a viewer of the repo you are in
+To see the viewer in Claude Code, use this line, the same on every machine, as
+your status line command, or append its output to the one you have:
+
+```
+p=$(cat ~/.cache/research-kit/ui/rk_path 2>/dev/null) && python3 -I "$p" ui --statusline
+```
+
+Each viewer start writes the path of its own `rk.py` into that file (next to the
+state files, in a directory only you can write), so the line follows a plugin
+update; it runs the path stored there. Nothing is printed until a viewer has been
+started once on the machine. The line prints `🔍rk:<port>` when a viewer of the repo you are in
 runs (the repo is taken from the `workspace.current_dir` or `cwd` of the JSON that
 Claude Code pipes to a status line command, else from the current directory), and
 nothing at all otherwise, so it adds no clutter in other sessions. The segment is

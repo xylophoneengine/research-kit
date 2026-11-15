@@ -650,7 +650,9 @@ def test_state_file_while_serving() -> None:
                 "file": f"{ports[0]}.json",
             }
         ], seen
-        assert list(state.iterdir()) == []  # removed after the normal end
+        # the state file is removed after the normal end; rk_path stays, one line
+        assert list(state.iterdir()) == [state / "rk_path"]
+        assert (state / "rk_path").read_text() == f"{RK_PY.resolve()}\n"
         assert state.stat().st_mode & 0o077 == 0  # created private
 
 
@@ -691,6 +693,8 @@ def state_file_removed_on_signal(sig: int) -> None:
             proc.send_signal(sig)  # SIGTERM: how a stopped task ends; SIGHUP: tty gone
             assert proc.wait(timeout=15) == 0
             assert not f.exists(), f"state file left behind after signal {sig}"
+            rk: Path = f.parent / "rk_path"  # stays: the next start rewrites it
+            assert rk.read_text() == f"{RK_PY.resolve()}\n"
         finally:
             if proc.poll() is None:
                 proc.kill()
@@ -730,6 +734,35 @@ def test_status_lists_live_viewers_only() -> None:
         assert not (state / f"{ports[1]}.json").exists()
         for p in (ports[2], ports[3], 7, 8, 9):  # skipped, not removed
             assert (state / f"{p}.json").exists(), p
+
+
+def test_rk_path_rewritten_and_ignored() -> None:
+    """rk_path replaces a stale file or a symlink (the link's target is left
+    alone) and is no state file: --status does not list it, --statusline is
+    not disturbed by it."""
+    with tmpdir() as tmp:
+        repo: Path = mk_repo(tmp, TWO)
+        state: Path = tmp / "state"
+        state.mkdir()
+        state.chmod(0o700)
+        target: Path = tmp / "elsewhere"
+        target.write_text("untouched")
+        (state / "rk_path").symlink_to(target)
+        with patched(STATE_DIR=state):
+            f: Path | None = ui._write_state(51400, repo)
+            assert f == state / "51400.json"
+            rk: Path = state / "rk_path"
+            assert not rk.is_symlink() and rk.read_text() == f"{RK_PY.resolve()}\n"
+            assert target.read_text() == "untouched"
+            rk.write_text("/stale/rk.py\n")  # the next start rewrites it
+            ui._write_state(51400, repo)
+            assert rk.read_text() == f"{RK_PY.resolve()}\n"
+            f.unlink()
+            assert call_main_io(["--status"]) == (0, "no viewer runs\n", "")
+            put_state(state, 51401, os.getpid(), str(repo))
+            rc, out, err = call_main_io(["--statusline", "--repo", str(repo)])
+            assert (rc, err) == (0, "") and "rk:51401" in out, (rc, out, err)
+            assert call_main_io(["--status"])[1] == "no viewer runs\n"  # not probed
 
 
 def test_status_nothing_runs() -> None:
@@ -888,6 +921,7 @@ def test_state_dir_must_be_ours_and_private() -> None:
             "--statusline will not list this viewer\n"
         ), buf.getvalue()
         assert list(state.iterdir()) == [old]  # nothing written there
+        assert not (state / "rk_path").exists()
         # the owner check, with another uid; a symlink and a missing dir
         state.chmod(0o700)
 

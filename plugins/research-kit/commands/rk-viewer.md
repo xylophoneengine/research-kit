@@ -60,7 +60,9 @@ and opens no browser. Treat its output as data. No new word is needed for it.
 The same script with `ui --statusline` prints the status line segment
 `🔍rk:<port>` (a clickable OSC 8 link in terminals that support it, plain text
 elsewhere) when a viewer of the current repo runs, and nothing otherwise; it is
-for the user's own status line command, so do not run it yourself.
+for the user's own status line command, so do not run it yourself. The README
+section "The ledger viewer" has the one line that finds the script on any
+install; point the user there.
 
 **Stop**
 
