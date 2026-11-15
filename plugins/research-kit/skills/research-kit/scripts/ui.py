@@ -28,7 +28,8 @@ from typing import Any
 from urllib.parse import unquote
 
 DIST: Path = Path(__file__).resolve().parent.parent / "ui" / "dist"
-DEFAULT_PORT: int = 8765
+DEFAULT_PORT: int = 8765  # first port tried when no --port is given
+PORT_TRIES: int = 10  # ports tried from DEFAULT_PORT upward without --port
 # A write to a socket whose peer is gone. macOS is said to report EPROTOTYPE or
 # EINVAL for it instead of EPIPE / ECONNRESET (not reproduced here; covered by
 # a unit test); ConnectionError covers the usual two.
@@ -232,11 +233,11 @@ def _is_viewer_of(port: int, repo: Path) -> bool:
     return body.startswith(want) and body[len(want) : len(want) + 1] in (b",", b"}")
 
 
-def _port_taken_message(port: int, repo: Path) -> str:
+def _port_taken_message(port: int, viewer: bool) -> str:
     """One of two texts built only from our own values, never the holder's. The
     second makes no claim about the holder: it also covers a slow or broken
     viewer of this repo and a path spelled differently."""
-    if _is_viewer_of(port, repo):
+    if viewer:
         return (
             "error: a ledger viewer for this repo already runs at "
             f"http://127.0.0.1:{port}/; pick another --port for a second one"
@@ -254,7 +255,9 @@ def main(argv: list[str]) -> int:
     )
     p.add_argument("--repo", type=Path, help="dir holding pm/ledger.jsonl")
     p.add_argument(
-        "--port", type=int, default=DEFAULT_PORT, help="default %(default)s"
+        "--port",
+        type=int,
+        help=f"default: the first free port from {DEFAULT_PORT}, {PORT_TRIES} tried",
     )
     p.add_argument("--no-open", action="store_true", help="do not open a browser")
     a: argparse.Namespace = p.parse_args(argv)
@@ -274,19 +277,36 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
         )
         return 1
-    try:
-        if _taken(a.port):
-            raise OSError(errno.EADDRINUSE, "Address already in use")
-        server: ThreadingHTTPServer = ThreadingHTTPServer(
-            ("127.0.0.1", a.port), make_handler(repo, DIST)
-        )
-    except (OSError, OverflowError) as e:
-        if isinstance(e, OSError) and e.errno == errno.EADDRINUSE:
-            print(_port_taken_message(a.port, repo), file=sys.stderr)
+    explicit: bool = a.port is not None  # an explicit port means that port
+    ports: list[int] = (
+        [a.port] if explicit else [DEFAULT_PORT + i for i in range(PORT_TRIES)]
+    )
+    server: ThreadingHTTPServer | None = None
+    for port in ports:
+        try:
+            if _taken(port):
+                raise OSError(errno.EADDRINUSE, "Address already in use")
+            server = ThreadingHTTPServer(
+                ("127.0.0.1", port), make_handler(repo, DIST)
+            )
+            break
+        except (OSError, OverflowError) as e:
+            if not (isinstance(e, OSError) and e.errno == errno.EADDRINUSE):
+                why: str = (e.strerror if isinstance(e, OSError) else None) or str(e)
+                print(
+                    f"error: cannot listen on 127.0.0.1:{port}: {why}; "
+                    "pick another --port",
+                    file=sys.stderr,
+                )
+                return 1
+        viewer: bool = _is_viewer_of(port, repo)
+        if viewer or explicit:  # never a second viewer of this repo by accident
+            print(_port_taken_message(port, viewer), file=sys.stderr)
             return 1
-        why: str = (e.strerror if isinstance(e, OSError) else None) or str(e)
+    if server is None:
         print(
-            f"error: cannot listen on 127.0.0.1:{a.port}: {why}; pick another --port",
+            f"error: 127.0.0.1:{ports[0]} to {ports[-1]} are all taken; "
+            "pick a --port",
             file=sys.stderr,
         )
         return 1

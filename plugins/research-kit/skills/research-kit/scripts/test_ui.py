@@ -122,9 +122,10 @@ def running(lines: list[str]) -> Iterator[tuple[Path, Path, str]]:
 
 
 def call_main(argv: list[str]) -> tuple[int, str]:
-    """ui.main(argv) with stderr captured."""
+    """ui.main(argv) with stderr captured. Under QuickServer: a main() that gets
+    as far as serving returns at once, so a broken test fails instead of hanging."""
     err: io.StringIO = io.StringIO()
-    with contextlib.redirect_stderr(err):
+    with contextlib.redirect_stderr(err), patched(ThreadingHTTPServer=QuickServer):
         rc: int = ui.main(argv)
     return rc, err.getvalue()
 
@@ -343,6 +344,163 @@ def test_port_taken_by_viewer_big_ledger() -> None:
             server.server_close()  # returns once every handler has finished
     assert rc == 1 and err == same_viewer_msg(port or 0), err
     assert server_err.getvalue() == "", server_err.getvalue()
+
+
+class QuickServer(ThreadingHTTPServer):
+    """Binds like the real one but serve_forever returns at once, so main()
+    prints its first line, closes the socket and returns 0."""
+
+    def serve_forever(self, poll_interval: float = 0.5) -> None:
+        return
+
+
+@contextlib.contextmanager
+def patched(**values: Any) -> Iterator[None]:
+    """Set module values of ui for the block (start port, tries, deadline...)."""
+    old: dict[str, Any] = {k: getattr(ui, k) for k in values}
+    for k, v in values.items():
+        setattr(ui, k, v)
+    try:
+        yield
+    finally:
+        for k, v in old.items():
+            setattr(ui, k, v)
+
+
+@contextlib.contextmanager
+def port_run(n: int) -> Iterator[tuple[list[socket.socket], list[int]]]:
+    """n listening sockets on consecutive free 127.0.0.1 ports, and the ports.
+    A caller closes the socket of every port it wants free again."""
+    socks: list[socket.socket] = []
+    try:
+        for _ in range(100):
+            try:
+                for i in range(n):
+                    s: socket.socket = socket.socket()
+                    socks.append(s)
+                    s.bind(("127.0.0.1", socks[0].getsockname()[1] + i if i else 0))
+            except (OSError, OverflowError):  # a port of the run is in use
+                for s in socks:
+                    s.close()
+                socks.clear()
+                continue
+            break
+        else:
+            raise AssertionError("no run of free ports found")
+        for s in socks:
+            s.listen()
+        yield socks, [s.getsockname()[1] for s in socks]
+    finally:
+        for s in socks:
+            s.close()
+
+
+def serve_on(port: int, repo: Path, dist: Path) -> ThreadingHTTPServer:
+    """A viewer of `repo` on a chosen port (daemon thread); caller shuts it down."""
+    server: ThreadingHTTPServer = ThreadingHTTPServer(
+        ("127.0.0.1", port), ui.make_handler(repo, dist)
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def call_main_io(argv: list[str]) -> tuple[int, str, str]:
+    """ui.main(argv) with stdout and stderr captured: rc, stdout, stderr. Under
+    QuickServer, like call_main."""
+    out: io.StringIO = io.StringIO()
+    err: io.StringIO = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        with patched(ThreadingHTTPServer=QuickServer):
+            rc: int = ui.main(argv)
+    return rc, out.getvalue(), err.getvalue()
+
+
+def test_default_port_walks_past_non_viewer() -> None:
+    with tmpdir() as tmp, port_run(2) as (socks, ports):
+        repo: Path = mk_repo(tmp, TWO)
+        ui.DIST = mk_dist(tmp)
+        socks[1].close()  # the second port is free, the first holds a non-viewer
+        with patched(
+            DEFAULT_PORT=ports[0],
+            PORT_TRIES=2,
+            PROBE_SECONDS=0.3,
+            ThreadingHTTPServer=QuickServer,
+        ):
+            rc, out, err = call_main_io(["--repo", str(repo), "--no-open"])
+    assert rc == 0 and err == "", (rc, err)
+    assert out == f"rk ui: {repo} at http://127.0.0.1:{ports[1]}/\n", out
+
+
+def test_default_port_held_by_viewer_of_same_repo() -> None:
+    with tmpdir() as tmp, port_run(2) as (socks, ports):
+        repo: Path = mk_repo(tmp, TWO)
+        dist: Path = mk_dist(tmp)
+        ui.DIST = dist
+        socks[0].close()
+        socks[1].close()  # free, but must not be used
+        viewer: ThreadingHTTPServer = serve_on(ports[0], repo, dist)
+        try:
+            with patched(DEFAULT_PORT=ports[0], PORT_TRIES=2):
+                rc, out, err = call_main_io(["--repo", str(repo), "--no-open"])
+        finally:
+            viewer.shutdown()
+            viewer.server_close()
+    assert rc == 1 and out == "", (rc, out)  # no second viewer, no walking
+    assert err == same_viewer_msg(ports[0]), repr(err)
+
+
+def test_default_port_walks_past_viewer_of_other_repo() -> None:
+    with tmpdir() as tmp, tmpdir() as tmp2, port_run(2) as (socks, ports):
+        other: Path = mk_repo(tmp2, TWO)
+        dist: Path = mk_dist(tmp)
+        ui.DIST = dist
+        socks[0].close()
+        socks[1].close()
+        viewer: ThreadingHTTPServer = serve_on(ports[0], mk_repo(tmp, TWO), dist)
+        try:
+            with patched(
+                DEFAULT_PORT=ports[0], PORT_TRIES=2, ThreadingHTTPServer=QuickServer
+            ):
+                rc, out, err = call_main_io(["--repo", str(other), "--no-open"])
+        finally:
+            viewer.shutdown()
+            viewer.server_close()
+    assert rc == 0 and err == "", (rc, err)
+    assert out == f"rk ui: {other} at http://127.0.0.1:{ports[1]}/\n", out
+
+
+def test_explicit_port_does_not_walk() -> None:
+    with tmpdir() as tmp, port_run(2) as (socks, ports):
+        repo: Path = mk_repo(tmp, TWO)
+        ui.DIST = mk_dist(tmp)
+        socks[1].close()  # free: an explicit port must not move to it
+        with patched(
+            DEFAULT_PORT=ports[0],
+            PORT_TRIES=2,
+            PROBE_SECONDS=0.3,
+            ThreadingHTTPServer=QuickServer,
+        ):
+            argv: list[str] = ["--repo", str(repo), "--port", str(ports[0])]
+            rc, out, err = call_main_io(argv + ["--no-open"])
+    assert rc == 1 and out == "", (rc, out)
+    assert err == not_viewer_msg(ports[0]), repr(err)
+
+
+def test_all_default_ports_taken() -> None:
+    with tmpdir() as tmp, port_run(3) as (_socks, ports):
+        repo: Path = mk_repo(tmp, TWO)
+        ui.DIST = mk_dist(tmp)
+        with patched(
+            DEFAULT_PORT=ports[0],
+            PORT_TRIES=3,
+            PROBE_SECONDS=0.3,
+            ThreadingHTTPServer=QuickServer,
+        ):
+            rc, out, err = call_main_io(["--repo", str(repo), "--no-open"])
+    assert rc == 1 and out == "", (rc, out)
+    assert err == (
+        f"error: 127.0.0.1:{ports[0]} to {ports[2]} are all taken; pick a --port\n"
+    ), repr(err)
 
 
 def squatter(
