@@ -516,6 +516,46 @@ def test_non_task_open_entry_into_closed_stage() -> None:  # 0.2.2 R1-R5
         assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 1  # done
 
 
+def test_closed_stage_declared_type_and_import_rows() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        (repo / "pm/kinds/k.md").write_text("<!-- rk:type sample SM -->\n")
+        lrun(repo, "add", "stage", "01-paper-x")  # S-1
+        lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1")
+        assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 0
+        lrun(repo, "add", "stage", "02-paper-y")  # S-2
+        # a declared type is a non-task: open entries go into the done stage
+        code, out = lrun(repo, "add", "sample", "a", "--stage", "S-1")
+        assert code == 0 and out == "logged SM-1: a (stage S-1)\n", out
+        lrun(repo, "add", "sample", "b")  # SM-2, default stage S-2
+        code, out = lrun(repo, "set", "SM-2", "--stage", "S-1")
+        assert code == 0 and out == "updated SM-2: stage (stage S-1)\n", out
+        assert lrun(repo, "start", "SM-1")[0] == 0
+        assert lrun(repo, "drop", "SM-2", "--note", "x")[0] == 0
+        code, out = lrun(repo, "reopen", "SM-2", "--note", "back")  # from dropped
+        assert code == 0 and out == "reopened SM-2: back (stage S-1)\n", out
+        # import rows: a running non-task passes, an open or running task does not
+        rows: Path = write_rows(root, [
+            {"type": "debt", "title": "d", "source": "A:1", "stage": "S-1",
+             "status": "running"},
+            {"type": "sample", "title": "s", "source": "A:2", "stage": "S-1"},
+            {"type": "task", "title": "t", "source": "A:3", "stage": "S-1",
+             "status": "running"},
+            {"type": "task", "title": "u", "source": "A:4", "stage": "S-1"},
+        ])
+        code, out = lrun(repo, "import", str(rows), "--dry-run")
+        out = out.replace(f"{root}/", "")  # the errors start with the file path
+        assert code == 1 and out == (
+            "rows.jsonl:3: S-1 is closed (done); a running task cannot go into it: "
+            "pass --stage with an open stage\n"
+            "rows.jsonl:4: S-1 is closed (done); an open task cannot go into it: "
+            "pass --stage with an open stage\n"
+        ), out
+        out = lrun(repo, "list", "--stage", "S-1", "--all")[1]
+        assert len(out.splitlines()) == 4, out  # head, D-1, SM-1, SM-2: no import
+
+
 def test_supersede() -> None:
     with tempfile.TemporaryDirectory() as d:
         repo: Path = new_repo(Path(d))
@@ -1221,6 +1261,9 @@ def test_import_help_documents_rows() -> None:
         assert key in text, key
     assert "required: type, title, source" in text and "order given" in text, text
     assert "never @KEY" in text and "must come\nbefore" in text, text
+    flat: str = " ".join(text.split())  # closed stages: what the rows may do
+    assert "A done (closed) stage takes a row of any type but task and stage" in flat
+    assert "an open or running task row, or an open stage row, naming it fails" in flat
     with tempfile.TemporaryDirectory() as d:  # the example rows import as shown
         root: Path = Path(d)
         repo: Path = new_repo(root)
@@ -1919,8 +1962,9 @@ def test_doctor_heading_names_fix() -> None:
 
 
 def test_doctor_kit_ignored_places_not_flagged() -> None:
-    """Refs the kit prescribes into folders its own .gitignore ignores (stage
-    chat/ archive, light-mode pm/reviews/) are no finding; other ignored are."""
+    """A ref the kit prescribes into a folder its own .gitignore ignores (the
+    stage chat/ archive) is no finding; other ignored places are, pm/reviews/
+    of older repos among them (new team reviews go to a tracked folder)."""
     with tempfile.TemporaryDirectory() as d:
         repo: Path = staged_repo(Path(d))
         rels: tuple[str, ...] = (
@@ -1935,7 +1979,7 @@ def test_doctor_kit_ignored_places_not_flagged() -> None:
         )
         commit_all(repo)
         lrun(repo, "set", "T-1", *(x for rel in rels for x in ("--ref", rel)))
-        assert group(doctor(repo)[1], L.G_IGNORED) == [  # reviews: owner decides
+        assert group(doctor(repo)[1], L.G_IGNORED) == [  # reviews: a finding
             "T-1 pm/reviews/critic_x.md (ignored)", "T-1 pm/scratch/x.md (ignored)"
         ]
 
@@ -1956,6 +2000,57 @@ def test_doctor_done_stage_not_in_head() -> None:
         ], out
         commit_all(repo)
         assert group(doctor(repo)[1], L.G_UNCOMMITTED) == []
+
+
+def test_reopen_stage() -> None:  # a stage closed too early
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))  # S-1 01-paper-x, T-1, D-1
+        rec: Path = repo / "pm/stages/01-paper-x/LEDGER.md"
+        code, out = lrun(repo, "reopen", "S-1", "--note", "x")
+        assert code == 1 and "cannot reopen S-1: it is open" in out, out
+        lrun(repo, "close", "T-1", "--note", "ok")
+        assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 0
+        first: str = rec.read_text()
+        lrun(repo, "add", "stage", "02-paper-y")  # S-2, same kind
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "reopen", "S-1", "--note", "x")
+        assert code == 1 and "cannot reopen S-1: S-2 (02-paper-y) is open" in out, out
+        assert "stage-close S-2 first" in out and len(jl(repo)) == n, out
+        lrun(repo, "add", "decision", "ok2", "--owner", "user", "--link", "S-2")
+        assert lrun(repo, "stage-close", "S-2", "--sign-off", "D-2")[0] == 0
+        lrun(repo, "add", "stage", "03-software-z")  # S-3, another kind: no block
+        commit_all(repo)
+        code, out = lrun(repo, "reopen", "S-1", "--note", "closed too early")
+        assert code == 0 and out == "reopened S-1: closed too early\n", out
+        ev: dict[str, Any] = jl(repo)[-1]
+        assert ev["who"] == "lead" and ev["f"]["reason"] == "closed too early", ev
+        assert L.load(repo)["S-1"].status == "open"
+        assert rec.read_text() == first  # left as it is until the next close
+        assert lrun(repo, "reopen", "T-1", "--note", "more")[0] == 0  # check passes
+        assert lrun(repo, "start", "T-1")[0] == 0
+        assert lrun(repo, "add", "task", "u", "--note", "n", "--stage", "S-1")[0] == 0
+        assert doctor(repo) == (0, "doctor: no findings\n")
+        assert doctor(repo, "--stage", "S-1") == (0, "doctor S-1: no findings\n")
+        lrun(repo, "close", "T-1", "--note", "ok")
+        lrun(repo, "close", "T-2", "--note", "ok")
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 1 and "D-1 was logged before S-1 was reopened" in out, out
+        lrun(repo, "add", "decision", "ok3", "--owner", "user", "--link", "S-1",
+             "--stage", "S-1")  # D-3
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-3")
+        assert code == 0 and out == (
+            "closed S-1: sign-off D-3\nwrote pm/stages/01-paper-x/LEDGER.md\n"
+        ), out
+        text: str = rec.read_text()
+        assert text != first, text
+        assert text == L.render_stage_record(L.read_events(repo), "S-1")
+        assert "- T-2 task done (lead) u\n" in text and "- D-3 ok3" in text, text
+        st: Any = L.load(repo)["S-1"]
+        assert st.status == "done" and st.extra["reason"] == "closed; sign-off D-3"
+        assert st.links == ["D-1", "D-3"], st.links
+        commit_all(repo)
+        assert doctor(repo) == (0, "doctor: no findings\n")
+        assert doctor(repo, "--stage", "S-1") == (0, "doctor S-1: no findings\n")
 
 
 def test_doctor_no_git() -> None:
@@ -3041,6 +3136,26 @@ def test_stage_record_write_failure_and_regenerate() -> None:
         code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
         assert code == 1 and "S-1 is done, not open" in out, out  # as before
         assert len(jl(repo)) == n and (folder / "LEDGER.md").read_text() == text
+
+
+def test_stage_record_of_retitled_imported_stage() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        (repo / "pm/stages/01-pilot").mkdir(parents=True)
+        lrun(repo, "add", "stage", "01-pilot", "--imported", "--source", "A.md:1")
+        lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1")
+        assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 0
+        head: str = "# Ledger of stage S-1 01-pilot (generated)"  # the title at close
+        assert (repo / "pm/stages/01-pilot/LEDGER.md").read_text().startswith(head)
+        assert lrun(repo, "set", "S-1", "--title", "02-renamed")[0] == 0
+        (repo / "pm/stages/02-renamed").mkdir()
+        code, out = lrun(repo, "stage-close", "S-1")  # the new folder has no record
+        assert code == 0 and "wrote pm/stages/02-renamed/LEDGER.md" in out, out
+        new: Path = repo / "pm/stages/02-renamed/LEDGER.md"
+        assert new.read_text().startswith(head)  # as of the close, not the new title
+        code, out = lrun(repo, "stage-close", "S-1")  # now it has one: plain refusal
+        assert code == 1 and "S-1 is done, not open" in out, out
+        assert "not a generated record" not in out, out
 
 
 def test_stage_record_not_over_a_hand_made_file() -> None:

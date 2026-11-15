@@ -95,7 +95,7 @@ GIT_READ: frozenset[str] = frozenset(  # the only git subcommands the tool runs
 WASTE_DIRS: tuple[str, ...] = ("pm/waste/", "WASTE/")
 # refs the kit prescribes into a folder its .gitignore block ignores on purpose
 # (stage chat archive, AGENTS 3.4 step 6: transcripts stay local): no finding.
-# pm/reviews/ (light mode) stays a finding until the owner decides (crit7 m2).
+# pm/reviews/ (older repos; team reviews now go to pm/logs/team/) stays a finding.
 KIT_IGNORED_RE: re.Pattern[str] = re.compile(r"^pm/stages/[^/]+/chat(/|$)")
 # git environment that would point git at another repo or index (crit6 m1);
 # the list of `git rev-parse --local-env-vars`
@@ -648,6 +648,29 @@ def _check_stage_open(
         )
 
 
+def _stage_kind(title: str) -> str | None:
+    """The <kind> of a stage title NN[letter]-<kind>-<topic>; None for another
+    title (an imported stage may have any)."""
+    return title.split("-")[1] if STAGE_RE.match(title) else None
+
+
+def _check_one_per_kind(state: dict[str, Entry], st: Entry) -> None:
+    """Refuse reopening stage `st` while another stage of its kind is open (at
+    most one open stage per kind, template AGENTS.md 3.1)."""
+    kind: str | None = _stage_kind(st.title)
+    for x in state.values():
+        if (
+            kind is not None
+            and x.type == "stage"
+            and x.status == "open"
+            and _stage_kind(x.title) == kind
+        ):
+            raise LedgerError(
+                f"cannot reopen {st.id}: {x.id} ({x.title}) is open, and at most "
+                f"one {kind} stage may be open: stage-close {x.id} first"
+            )
+
+
 def _repo(a: argparse.Namespace) -> Path:
     return find_repo(a.repo, explicit=True) if a.repo else find_repo(Path.cwd())
 
@@ -1011,7 +1034,10 @@ list of strings):
              superseded or shelved (known, not planned now)
   owner      name, default lead; a decision needs it (who decided)
   stage      a stage id, the exact title of one stage, its code (03b) or
-             its label; default: no stage
+             its label; default: no stage. A done (closed) stage takes a
+             row of any type but task and stage, done or open (backfill);
+             an open or running task row, or an open stage row, naming it
+             fails the whole batch
   note       free text
   legacy_id  the row's id in the old system; it is the entry's label
   label      same as legacy_id (give one of them): letters, digits, _ . - /,
@@ -1260,7 +1286,7 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
     def build(state: dict[str, Entry]) -> list[dict[str, object]]:
         e: Entry = _entry(state, a.id)
         ids.append(e.id)
-        if e.type == "stage":
+        if e.type == "stage" and cmd != "reopen":
             raise LedgerError(f"{e.id} is a stage: use stage-close")
         if e.type == "decision" and cmd != "drop":  # shelve: Q1, every type but this
             raise LedgerError(
@@ -1272,7 +1298,9 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
             "drop": OPEN_STATUSES + ("shelved",)
             + (("done",) if e.type == "decision" else ()),
             "shelve": OPEN_STATUSES,
-            "reopen": ("done", "dropped", "shelved"),
+            "reopen": (
+                ("done",) if e.type == "stage" else ("done", "dropped", "shelved")
+            ),
         }[cmd]
         if e.status not in allowed:
             raise LedgerError(f"cannot {cmd} {e.id}: it is {e.status}")
@@ -1281,6 +1309,8 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
                 state, e.stage, e.type, "open",
                 f"re-stage it first: set {e.id} --stage S-<x>",
             )
+        if cmd == "reopen" and e.type == "stage":
+            _check_one_per_kind(state, e)
         f: dict[str, object] = {
             "status": new,
             "note": _note_plus(e.note, note),
@@ -1652,9 +1682,11 @@ def _cmd_render(a: argparse.Namespace) -> int:
 
 
 def _sign_off_problems(
-    state: dict[str, Entry], sid: str, sign: str | None
+    state: dict[str, Entry], sid: str, sign: str | None, reopened: int = 0
 ) -> list[str]:
-    """Why `sign` is not a valid sign-off for stage `sid` (empty = valid)."""
+    """Why `sign` is not a valid sign-off for stage `sid` (empty = valid).
+    `reopened`: ledger line of the stage's last reopen (0: never reopened); a
+    sign-off logged before it signed off the earlier close, not this one."""
     fix: str = (
         f"ask the user to sign off {sid}; only after the user has given it, log "
         f'it (add decision "sign-off: {state[sid].title}" --owner user --link '
@@ -1673,7 +1705,27 @@ def _sign_off_problems(
     if sid not in d.links:  # its stage field alone is not enough: decisions
         # default to the single open stage, so any user decision would pass
         out.append(f"{sign} does not link {sid} (--link {sid}); {fix}")
+    if d.lines[0] < reopened:
+        out.append(
+            f"{sign} was logged before {sid} was reopened (line {reopened}); a "
+            f"reopened stage needs a new sign-off; {fix}"
+        )
     return out
+
+
+def _reopen_line(events: list[tuple[int, dict[str, object]]], sid: str) -> int:
+    """Line of the last reopen of stage `sid` (a set to open); 0 if none."""
+    line: int = 0
+    for n, ev in events:
+        f: object = ev.get("f")
+        if (
+            ev.get("id") == sid
+            and ev.get("ev") == "set"
+            and isinstance(f, dict)
+            and f.get("status") == "open"
+        ):
+            line = n
+    return line
 
 
 def _stage_checks(repo: Path, ref: str) -> None:
@@ -1782,6 +1834,12 @@ def _record_head(st: Entry) -> str:
     return f"# Ledger of stage {st.id} {st.title} (generated)"
 
 
+def _head_at_close(repo: Path, st: Entry) -> str:
+    """First line of the record as written at the close: it names the title the
+    stage had then, which an imported stage may have lost since (`set --title`)."""
+    return render_stage_record(read_events(repo), st.id).split("\n", 1)[0]
+
+
 def _record_folder(repo: Path, st: Entry) -> Path | None:
     """The folder for the record of stage `st`; None when its title is no folder
     name (`.`, `..`, odd characters) or an imported stage has no folder."""
@@ -1813,7 +1871,7 @@ def _write_stage_record(repo: Path, st: Entry) -> str:
     try:
         text: str = render_stage_record(read_events(repo), st.id)
         have: str | None = _first_line(folder / STAGE_RECORD)
-        if have is not None and have != _record_head(st):
+        if have is not None and have != text.split("\n", 1)[0]:
             raise LedgerError(
                 f"{st.id} is closed, but {rel} is there and is not a generated "
                 f"record: not overwritten; move it away{again}"
@@ -1843,7 +1901,7 @@ def _cmd_stage_close(a: argparse.Namespace) -> int:
     if (  # a closed stage with no generated record: write the record only
         st.status == "done"
         and folder is not None
-        and _first_line(folder / STAGE_RECORD) != _record_head(st)
+        and _first_line(folder / STAGE_RECORD) != _head_at_close(repo, st)
     ):
         print(f"{st.id} is already closed; no ledger line written")
         print(_write_stage_record(repo, st))
@@ -1877,7 +1935,8 @@ def _cmd_stage_close(a: argparse.Namespace) -> int:
                 f"defer them (add deferred ... --link {t}, then drop {t} --note"
                 ' "deferred as DF-<k>")'
             )
-        problems += _sign_off_problems(state, sid, sign)
+        reopened: int = _reopen_line(read_events(repo), sid)  # under append's lock
+        problems += _sign_off_problems(state, sid, sign, reopened)
         if problems:
             raise LedgerError(f"stage-close {sid} refused: " + "; ".join(problems))
         f: dict[str, object] = {
@@ -1885,6 +1944,8 @@ def _cmd_stage_close(a: argparse.Namespace) -> int:
             "note": _note_plus(stage.note, f"closed; sign-off {sign}"),
             "links": _union(stage.links, [sign]),
         }
+        if "reason" in stage.extra:  # a reopen's why must not stand beside done
+            f["reason"] = f"closed; sign-off {sign}"
         if a.ref:
             f["refs"] = _union(stage.refs, a.ref)
         out.append(f"closed {sid}: sign-off {sign}")

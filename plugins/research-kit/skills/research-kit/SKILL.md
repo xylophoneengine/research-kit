@@ -226,7 +226,9 @@ Full mode only (light has no stage entries: say so and stop).
 5. Confirm each step's output exists before the next step. The archive and its
    README file index come before the sign-off question, so the user sees the
    finished record; the sign-off and `stage-close` events are not in the
-   archive. After closing, the stage folder is frozen.
+   archive. After closing, the stage folder is frozen; a stage closed too
+   early: `rk reopen S-<n> --note "<why>"`, then the checklist again with a
+   new sign-off.
 6. End by telling the user what is left for them: optional `/export` into
    the stage's chat folder (it holds the tail the archive lacks), and committing.
 
