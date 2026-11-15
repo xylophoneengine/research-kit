@@ -11,7 +11,9 @@ import { Split } from "@/components/Split";
 import { Stages } from "@/components/Stages";
 import { Timeline } from "@/components/Timeline";
 import { byId, exactHit, labelIndex, stageCodes, visible, type Tab } from "@/lib/ledger";
-import { useEffect, useMemo } from "react";
+import { MoonIcon, SunIcon } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { applyTheme, initialTheme, storeTheme, type Theme } from "@/theme";
 import { useLedger } from "@/useLedger";
 import { useRoute } from "@/useRoute";
 
@@ -20,6 +22,13 @@ const TAB_NAMES: Tab[] = ["list", "board", "stages", "timeline"];
 export default function App() {
   const { ledger, error, reload } = useLedger();
   const { route, open, patch } = useRoute();
+  const [theme, setTheme] = useState<Theme>(initialTheme);
+  const flip = (): void => {
+    const next: Theme = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    applyTheme(next);
+    storeTheme(next);
+  };
 
   const onEnter = (): void => {
     const hit = ledger && exactHit(ledger.entries, route.q);
@@ -82,6 +91,16 @@ export default function App() {
             ))}
           </TabsList>
         </Tabs>
+        <Button
+          className="ml-auto"
+          variant="outline"
+          size="sm"
+          aria-label={theme === "dark" ? "switch to light mode" : "switch to dark mode"}
+          title={theme === "dark" ? "light mode" : "dark mode"}
+          onClick={flip}
+        >
+          {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+        </Button>
       </header>
       {ledger && <Palette entries={ledger.entries} onOpen={open} />}
       {error && (
@@ -128,7 +147,14 @@ export default function App() {
                   />
                 )}
                 {route.tab === "timeline" && (
-                  <Timeline entries={rows} events={ledger.events} ledgerIds={ids} onSelect={open} />
+                  <Timeline
+                    all={ledger.entries}
+                    entries={rows}
+                    events={ledger.events}
+                    ledgerIds={ids}
+                    selected={route.e}
+                    onSelect={open}
+                  />
                 )}
               </>
             }

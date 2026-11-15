@@ -35,12 +35,14 @@ export function Split({ left, right }: { left: React.ReactNode; right: React.Rea
     setPct(Math.min(MAX, Math.max(MIN, ((x - r.left) / r.width) * 100)));
   };
 
-  if (right == null) return <div className="min-h-0 flex-1 overflow-auto">{left}</div>;
+  // same tree with and without `right`: the left side must not remount (it holds view state)
+  const solo: boolean = right == null;
   return (
     <div ref={box} className={"flex min-h-0 flex-1 " + (drag ? "select-none" : "")}>
-      <div className="min-h-0 min-w-0 overflow-auto" style={{ width: `${pct}%` }}>
+      <div className="min-h-0 min-w-0 overflow-auto" style={{ width: solo ? "100%" : `${pct}%` }}>
         {left}
       </div>
+      {!solo && (
       <div
         role="separator"
         aria-orientation="vertical"
@@ -64,7 +66,8 @@ export function Split({ left, right }: { left: React.ReactNode; right: React.Rea
           save(DEFAULT);
         }}
       />
-      <div className="min-h-0 min-w-0 flex-1 overflow-auto">{right}</div>
+      )}
+      {!solo && <div className="min-h-0 min-w-0 flex-1 overflow-auto">{right}</div>}
     </div>
   );
 }

@@ -4,14 +4,11 @@ import {
   NONE,
   age,
   backlinks,
-  box,
-  buildLanes,
   byId,
-  pct,
-  rangeOf,
-  spanOf,
-  ticks,
-  zoomRange,
+  byType,
+  entryDay,
+  shortDay,
+  stageGroups,
   eventDay,
   evMeta,
   exactHit,
@@ -227,81 +224,39 @@ test("exactHit: id first, else a unique exact label, case-insensitive", () => {
 });
 
 // ---- timeline layout ----
-const DAYMS = 86_400_000;
-const NOW = Date.parse("2026-11-20T00:00:00+01:00");
-const at = (s: string): number => Date.parse(s);
-
-test("spanOf: closed ends at updated, open at now", () => {
-  const done: Entry = { ...t2, status: "done", updated: "2026-11-14T09:00:00+01:00" };
-  expect(spanOf(done, NOW)).toEqual({
-    start: at("2026-11-13T09:00:00+01:00"),
-    end: at("2026-11-14T09:00:00+01:00"),
-  });
-  expect(spanOf(t1, NOW)?.end).toBe(NOW);
-  expect(spanOf({ ...t2, status: "shelved" }, NOW)?.end).toBe(at(t2.updated));
+test("entryDay: extra.date of an imported entry, else created, else empty", () => {
+  expect(entryDay(d1)).toBe("2026-10-01");
+  expect(entryDay(t2)).toBe("2026-11-13");
+  expect(entryDay({ ...d1, extra: { date: "Oct 2026" } })).toBe("2026-11-13"); // bad date: created
+  expect(entryDay({ ...t1, created: "garbage" })).toBe("");
+  expect(shortDay("2026-11-03")).toBe("Nov 03");
+  expect(shortDay("")).toBe("?");
 });
 
-test("spanOf: an imported entry sits on extra.date, a stage does not", () => {
-  expect(spanOf(d1, NOW)?.start).toBe(new Date(2026, 9, 1).getTime());
-  expect(spanOf(d1, NOW, false)?.start).toBe(at(d1.created));
+test("stageGroups: stages by id number, unstaged last, items by day", () => {
+  const s2: Entry = { ...s1, id: "S-2", title: "03b-software-parser", status: "done",
+    created: "2026-11-02T09:00:00+01:00", updated: "2026-11-09T09:00:00+01:00" };
+  const s10: Entry = { ...s1, id: "S-10", created: "2026-11-20T09:00:00+01:00" };
+  const late: Entry = { ...t2, id: "T-5", created: "2026-11-15T09:00:00+01:00" };
+  const early: Entry = { ...t2, id: "T-3", created: "2026-11-14T09:00:00+01:00" };
+  const inS2: Entry = { ...t2, id: "T-6", stage: "S-2", created: "2026-11-04T09:00:00+01:00" };
+  const all = [s10, s1, s2, late, early, inS2, d1];
+  const g = stageGroups(all, all);
+  expect(g.map((x) => x.key)).toEqual(["S-1", "S-2", "S-10", ""]); // 2 before 10
+  expect(g[0].items.map((e) => e.id)).toEqual(["T-3", "T-5"]);
+  expect(g[0].live).toBe(true);
+  expect([g[1].first, g[1].last, g[1].live]).toEqual(["2026-11-02", "2026-11-09", false]);
+  expect(g[3].items.map((e) => e.id)).toEqual(["D-1"]);
+  expect(g[3].stage).toBeNull();
+  expect(stageGroups(all, [s1]).map((x) => x.key)).toEqual(["S-1"]); // no unstaged group
+  // a filter that hides the stage entries keeps the stages that hold visible items
+  expect(stageGroups(all, [inS2]).map((x) => x.key)).toEqual(["S-2"]);
 });
 
-test("spanOf: invalid dates", () => {
-  expect(spanOf({ ...t1, created: "garbage" }, NOW)).toBeNull();
-  const s = spanOf({ ...t2, status: "done", updated: "garbage" }, NOW);
-  expect(s?.end).toBe(s?.start);
-  // an open entry that starts after now has no negative length
-  const fut = spanOf({ ...t1, created: "2027-01-01T00:00:00+01:00" }, NOW);
-  expect(fut?.end).toBe(fut?.start);
+test("byType: builtin order first, declared types after by name", () => {
+  const mk = (id: string, type: string): Entry => ({ ...t1, id, type });
+  const g = byType([mk("X-1", "zeta"), mk("D-1", "decision"), mk("T-1", "task"), mk("T-2", "task"), mk("A-1", "alpha")]);
+  expect(g.map((x) => x.type)).toEqual(["task", "decision", "alpha", "zeta"]);
+  expect(g[0].items).toHaveLength(2);
 });
 
-test("rangeOf, pct and box; a zero-length range is widened", () => {
-  expect(rangeOf([])).toBeNull();
-  expect(rangeOf([null])).toBeNull();
-  const a = { start: at("2026-11-01T00:00:00Z"), end: at("2026-11-03T00:00:00Z") };
-  const b = { start: at("2026-11-05T00:00:00Z"), end: at("2026-11-11T00:00:00Z") };
-  const r = rangeOf([b, null, a]);
-  expect(r).toEqual({ start: a.start, end: b.end });
-  expect(pct(r!, a.start)).toBe(0);
-  expect(pct(r!, b.end)).toBe(100);
-  expect(pct(r!, b.end + 99 * DAYMS)).toBe(100); // clipped
-  expect(box(r!, a)).toEqual({ left: 0, width: 20 });
-  const z = rangeOf([{ start: a.start, end: a.start }])!;
-  expect(z.end - z.start).toBe(DAYMS);
-  expect(pct(z, a.start)).toBe(50);
-  expect(box(z, { start: a.start, end: a.start }).width).toBe(0);
-});
-
-test("zoomRange pads the window by 5 percent on each side", () => {
-  const s = { start: at("2026-11-01T00:00:00Z"), end: at("2026-11-11T00:00:00Z") };
-  const z = zoomRange(s);
-  expect(z.start).toBe(s.start - 0.5 * DAYMS);
-  expect(z.end).toBe(s.end + 0.5 * DAYMS);
-  expect(pct(z, s.start)).toBeCloseTo(100 / 22, 6); // 0.5 of 11 days
-  const dot = zoomRange({ start: s.start, end: s.start });
-  expect(dot.end - dot.start).toBe(DAYMS);
-});
-
-test("ticks: month starts for a long range, six even ticks for a short one", () => {
-  const long = ticks({ start: new Date(2026, 0, 15).getTime(), end: new Date(2026, 8, 15).getTime() });
-  expect(long.length).toBeLessThanOrEqual(8);
-  expect(long[0].label).toBe("2026-02");
-  const week = ticks({ start: new Date(2026, 10, 1).getTime(), end: new Date(2026, 10, 8).getTime() });
-  expect(week).toHaveLength(6);
-  expect(week[0].label).toBe("11-01");
-  const hours = ticks({ start: new Date(2026, 10, 1).getTime(), end: new Date(2026, 10, 2).getTime() });
-  expect(hours[0].label).toBe("11-01 00:00");
-});
-
-test("buildLanes: stages oldest first, then unstaged; items by start", () => {
-  const old: Entry = { ...s1, id: "S-0", created: "2026-11-01T09:00:00+01:00" };
-  const inS1: Entry = { ...t2, created: "2026-11-15T09:00:00+01:00" };
-  const earlier: Entry = { ...t2, id: "T-3", created: "2026-11-14T09:00:00+01:00" };
-  const gone: Entry = { ...t2, id: "T-4", stage: "S-99" }; // its stage is not shown
-  const lanes = buildLanes([s1, inS1, d1, earlier, old, gone], NOW);
-  expect(lanes.map((l) => l.key)).toEqual(["S-0", "S-1", ""]);
-  expect(lanes[1].items.map((i) => i.e.id)).toEqual(["T-3", "T-2"]);
-  expect(lanes[2].items.map((i) => i.e.id)).toEqual(["D-1"]);
-  expect(lanes[2].span).not.toBeNull();
-  expect(buildLanes([s1], NOW).map((l) => l.key)).toEqual(["S-1"]); // no unstaged lane
-});

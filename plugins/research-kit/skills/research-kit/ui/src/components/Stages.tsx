@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -42,7 +43,10 @@ export function Stages({
   status: string[] | null;
   patch: (p: Partial<Route>) => void;
 }) {
-  const stages = all.filter((e) => e.type === "stage").sort((a, b) => num(b.id) - num(a.id));
+  const [dir, setDir] = useState<1 | -1>(-1); // newest stage first by default
+  const stages = all
+    .filter((e) => e.type === "stage")
+    .sort((a, b) => (num(a.id) - num(b.id)) * dir);
   // keep every active filter so the row's counts and the List agree; null
   // status means "no status filter" here, but on the List it would mean the
   // open + running default, so pin it to "all"
@@ -52,7 +56,13 @@ export function Stages({
     <Table className="text-xs">
       <TableHeader>
         <TableRow>
-          <TableHead>id</TableHead>
+          <TableHead
+            className="cursor-pointer select-none"
+            title="click to reverse the order"
+            onClick={() => setDir(dir === 1 ? -1 : 1)}
+          >
+            id{dir === 1 ? " \u25B2" : " \u25BC"}
+          </TableHead>
           <TableHead>title</TableHead>
           <TableHead>status</TableHead>
           <TableHead>entries</TableHead>

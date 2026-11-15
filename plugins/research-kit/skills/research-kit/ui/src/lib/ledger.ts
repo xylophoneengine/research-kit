@@ -341,105 +341,79 @@ export function evMeta(ev: Ev): string {
 
 // ---- timeline layout (pure; times are epoch ms) ----
 
-const DAY = 86_400_000;
-export const CLOSED = new Set(["done", "dropped", "superseded", "shelved"]);
-const p2 = (n: number): string => String(n).padStart(2, "0");
+const CLOSED = new Set(["done", "dropped", "superseded", "shelved"]);
 
-export type Span = { start: number; end: number }; // end >= start
-
-// Bar of an entry: start = created (an imported entry: extra.date when
-// `dated`), end = updated for a closed status, else `now`. null when the start
-// is no valid date; a closed entry with a bad `updated` gets a zero-length bar.
-export function spanOf(e: Entry, now: number, dated = true): Span | null {
-  const d = dated ? e.extra.date : undefined;
-  const start = parseTs(typeof d === "string" ? d : e.created).getTime();
-  if (Number.isNaN(start)) return null;
-  const upd = CLOSED.has(e.status) ? parseTs(e.updated).getTime() : now;
-  return { start, end: Number.isNaN(upd) ? start : Math.max(upd, start) };
+function push<T>(m: Map<string, T[]>, k: string, v: T): void {
+  const l = m.get(k);
+  if (l) l.push(v);
+  else m.set(k, [v]);
 }
 
-// a range is never narrower than a day, so percent maths never divides by 0
-function widen(s: Span): Span {
-  const pad = Math.max(DAY - (s.end - s.start), 0) / 2;
-  return { start: s.start - pad, end: s.end + pad };
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// "Nov 13" for "2026-11-13"; "?" for anything else
+export function shortDay(day: string): string {
+  return DAY_RE.test(day) ? `${MONTHS[+day.slice(5, 7) - 1] ?? "?"} ${day.slice(8, 10)}` : "?";
 }
 
-// earliest start to latest end; null when there is no valid span
-export function rangeOf(spans: (Span | null)[]): Span | null {
-  let r: Span | null = null;
-  for (const s of spans) {
-    if (s) r = r ? { start: Math.min(r.start, s.start), end: Math.max(r.end, s.end) } : s;
+// The day an entry sits on: extra.date of an imported entry, else the day it
+// was created; "" when neither is a YYYY-MM-DD day.
+export function entryDay(e: Entry): string {
+  const d = e.extra.date;
+  for (const s of [typeof d === "string" ? d : "", e.created.slice(0, 10)]) {
+    if (DAY_RE.test(s)) return s;
   }
-  return r && widen(r);
+  return "";
 }
 
-// the window of one span with a little air on both sides
-export function zoomRange(s: Span, pad = 0.05): Span {
-  const p = (s.end - s.start) * pad;
-  return widen({ start: s.start - p, end: s.end + p });
-}
-
-export function pct(r: Span, t: number): number {
-  return Math.min(100, Math.max(0, ((t - r.start) / (r.end - r.start)) * 100));
-}
-
-// css left / width in percent of `r`; clipped to it
-export function box(r: Span, s: Span): { left: number; width: number } {
-  const left = pct(r, s.start);
-  return { left, width: pct(r, s.end) - left };
-}
-
-export function dayOf(t: number): string {
-  const d = new Date(t);
-  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
-}
-
-// axis labels: month starts for a long range, else six even ticks (with the
-// time of day when the range is under three days)
-export function ticks(r: Span): { t: number; label: string }[] {
-  const len = r.end - r.start;
-  if (len > 90 * DAY) {
-    const out: { t: number; label: string }[] = [];
-    let d = new Date(r.start);
-    d = new Date(d.getFullYear(), d.getMonth() + 1, 1);
-    while (d.getTime() < r.end) {
-      out.push({ t: d.getTime(), label: `${d.getFullYear()}-${p2(d.getMonth() + 1)}` });
-      d = new Date(d.getFullYear(), d.getMonth() + 1, 1);
-    }
-    const stride = Math.ceil(out.length / 8);
-    return out.filter((_, i) => i % stride === 0);
-  }
-  return Array.from({ length: 6 }, (_, i) => {
-    const t = r.start + (len * i) / 5;
-    const d = new Date(t);
-    const hm = len < 3 * DAY ? ` ${p2(d.getHours())}:${p2(d.getMinutes())}` : "";
-    return { t, label: dayOf(t).slice(5) + hm };
-  });
-}
-
-export type Lane = {
-  key: string; // stage id, "" for the unstaged lane
+export type Group = {
+  key: string; // stage id, "" for the unstaged group
   stage: Entry | null;
-  items: { e: Entry; span: Span | null }[]; // by start
-  span: Span | null;
+  items: Entry[]; // by entryDay, then id number
+  first: string; // earliest day of the stage and its items, "" when none
+  last: string; // latest day; a closed stage counts its own update day too
+  live: boolean; // the stage is not closed
 };
 
-// One lane per stage entry (oldest first), then "unstaged" when it has entries.
-// An entry of a stage that is not in `entries` (filtered out) is left out.
-export function buildLanes(entries: Entry[], now: number): Lane[] {
-  const at = (s: Span | null): number => (s ? s.start : Number.MAX_SAFE_INTEGER);
-  const lanes: Lane[] = entries
-    .filter((e) => e.type === "stage")
-    .map((e) => ({ key: e.id, stage: e, items: [], span: spanOf(e, now, false) }))
-    .sort((a, b) => at(a.span) - at(b.span));
-  const un: Lane = { key: "", stage: null, items: [], span: null };
-  const by = new Map(lanes.map((l) => [l.key, l]));
+// One group per stage by id number, then "unstaged" (stage "" and not a stage)
+// when it has entries. `all` supplies the stages, `entries` (filtered) the
+// items; a stage is listed when it is in `entries` or has an item there.
+export function stageGroups(all: Entry[], entries: Entry[]): Group[] {
+  const items = new Map<string, Entry[]>();
   for (const e of entries) {
-    if (e.type === "stage") continue;
-    const lane = e.stage === "" ? un : by.get(e.stage);
-    lane?.items.push({ e, span: spanOf(e, now) });
+    if (e.type !== "stage") push(items, e.stage, e);
   }
-  for (const l of [...lanes, un]) l.items.sort((a, b) => at(a.span) - at(b.span));
-  un.span = rangeOf(un.items.map((i) => i.span));
-  return un.items.length ? [...lanes, un] : lanes;
+  const shown = new Set(entries.filter((e) => e.type === "stage").map((e) => e.id));
+  const make = (key: string, stage: Entry | null): Group => {
+    const its = [...(items.get(key) ?? [])].sort(
+      (a, b) =>
+        (entryDay(a) || "~").localeCompare(entryDay(b) || "~") || num(a.id) - num(b.id),
+    );
+    const live = stage !== null && !CLOSED.has(stage.status);
+    const days = [...its, ...(stage ? [stage] : [])].map(entryDay);
+    if (stage && !live && DAY_RE.test(stage.updated.slice(0, 10))) days.push(stage.updated.slice(0, 10));
+    const real = days.filter(Boolean).sort();
+    return { key, stage, items: its, first: real[0] ?? "", last: real[real.length - 1] ?? "", live };
+  };
+  const stages = all
+    .filter((e) => e.type === "stage" && (shown.has(e.id) || items.has(e.id)))
+    .sort((a, b) => num(a.id) - num(b.id))
+    .map((s) => make(s.id, s));
+  return items.has("") ? [...stages, make("", null)] : stages;
+}
+
+export const TYPE_ORDER = ["task", "decision", "deferred", "debt", "fetch", "handoff"];
+
+// entries split by type: builtin types in TYPE_ORDER, declared ones after by name
+export function byType(items: Entry[]): { type: string; items: Entry[] }[] {
+  const m = new Map<string, Entry[]>();
+  for (const e of items) push(m, e.type, e);
+  const rank = (t: string): number => {
+    const i = TYPE_ORDER.indexOf(t);
+    return i < 0 ? TYPE_ORDER.length : i;
+  };
+  return [...m]
+    .map(([type, its]) => ({ type, items: its }))
+    .sort((a, b) => rank(a.type) - rank(b.type) || a.type.localeCompare(b.type));
 }
