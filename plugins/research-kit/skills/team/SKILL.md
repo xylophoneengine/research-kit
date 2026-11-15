@@ -238,6 +238,13 @@ stays stale elsewhere; an architect that routes or builds is a second lead.
 - While teammates run, open with **Done** / **Running** (names) / **Needs
   you**. Keep user messages to ~10 lines unless asked.
 - When a teammate finishes, route its next item or ask the user at once.
+- Never wait on a teammate's message alone: a teammate can go idle with its
+  report written and no message sent, and then nothing wakes you. After each
+  spawn or `SendMessage`, start one background command that ends when the
+  expected report files exist or after a cap of about 25 minutes. An idle
+  notice without DONE / BLOCKED: look for the report file and run
+  `ListAgents` at once. Cap reached without a report: ask the teammate for
+  its state and tell the user in one line.
 - The always-on rules for talking to the user are in core AGENTS.md section 8
   (read at every session start; this skill does not replace them): a decision
   is its own `AskUserQuestion` call, never a line in a status message; idle
