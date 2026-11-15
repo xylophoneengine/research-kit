@@ -306,8 +306,9 @@ current status; `rk show` prints it). `rk stage-close` writes the stage's
 `pm/stages/<stage>/LEDGER.md`: generated, frozen with the stage, never edited by
 hand; it shows what was known at close and a later `rk set` does not rewrite it.
 A stage closed too early comes back with `rk reopen S-n --note "<why>"`
-(refused while another stage of its kind is open); its next `stage-close` needs
-a new sign-off and writes the record again.
+(refused while another stage of its kind is open, and for a stage without a
+folder); its next `stage-close` needs a new sign-off and writes the record
+again, with each open span and each reopen.
 
 ```
 rk add <type> <title>       log a task, decision, deferred item, ...

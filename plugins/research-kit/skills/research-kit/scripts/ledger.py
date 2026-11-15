@@ -29,6 +29,11 @@ from pathlib import Path
 LEDGER_REL: str = "pm/ledger.jsonl"
 STATUS_REL: str = "pm/STATUS.md"
 STAGE_RECORD: str = "LEDGER.md"  # in the stage folder, written by stage-close
+# line 2 of the record of a reopened stage: which close the record is of
+RECORD_MARK: str = "<!-- rk:stage-record {sid} close {end} -->"
+RECORD_MARK_RE: re.Pattern[str] = re.compile(
+    r"^<!-- rk:stage-record \S+ close [0-9]+ -->$", re.M
+)
 STATUSES: tuple[str, ...] = (
     "open", "running", "done", "dropped", "superseded", "shelved"
 )
@@ -654,10 +659,11 @@ def _stage_kind(title: str) -> str | None:
     return title.split("-")[1] if STAGE_RE.match(title) else None
 
 
-def _check_one_per_kind(state: dict[str, Entry], st: Entry) -> None:
-    """Refuse reopening stage `st` while another stage of its kind is open (at
-    most one open stage per kind, template AGENTS.md 3.1)."""
-    kind: str | None = _stage_kind(st.title)
+def _check_one_per_kind(state: dict[str, Entry], title: str, what: str) -> None:
+    """Refuse `what` ("reopen S-n", "add stage T") for a stage titled `title`
+    while another stage of its kind is open (at most one open stage per kind,
+    template AGENTS.md 3.1)."""
+    kind: str | None = _stage_kind(title)
     for x in state.values():
         if (
             kind is not None
@@ -666,7 +672,7 @@ def _check_one_per_kind(state: dict[str, Entry], st: Entry) -> None:
             and _stage_kind(x.title) == kind
         ):
             raise LedgerError(
-                f"cannot reopen {st.id}: {x.id} ({x.title}) is open, and at most "
+                f"cannot {what}: {x.id} ({x.title}) is open, and at most "
                 f"one {kind} stage may be open: stage-close {x.id} first"
             )
 
@@ -948,6 +954,8 @@ def _add_step(
         if label is not None:
             _check_label(state, label, eid)
         _check_names(state, typ, title, a)
+        if typ == "stage" and not a.imported:  # imported history: as it was
+            _check_one_per_kind(state, title, f"add stage {title}")
         f: dict[str, object] = {
             "type": typ,
             "title": title,
@@ -1310,7 +1318,13 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
                 f"re-stage it first: set {e.id} --stage S-<x>",
             )
         if cmd == "reopen" and e.type == "stage":
-            _check_one_per_kind(state, e)
+            folder: Path | None = _record_folder(repo, e)
+            if folder is None or not folder.is_dir():
+                raise LedgerError(
+                    f"cannot reopen {e.id}: no folder pm/stages/{e.title}/ (an "
+                    "imported or folderless stage); restore it or add a new stage"
+                )
+            _check_one_per_kind(state, e.title, f"reopen {e.id}")
         f: dict[str, object] = {
             "status": new,
             "note": _note_plus(e.note, note),
@@ -1761,15 +1775,31 @@ def render_stage_record(
 ) -> str:
     """The record of closed stage `sid` as of its close: a function of the ledger
     lines up to the close alone (no clock), so it is the same when made again.
-    Stage entries, entries touched in the window (stage add to close), decisions
-    by owner, what is left open, the kit, session and rule values seen."""
+    Stage entries, entries touched in the window (the stage's open spans: add or
+    reopen to close), decisions by owner, what is left open, the kit, session
+    and rule values seen. A reopened stage's record also carries RECORD_MARK and
+    a `Reopened` part; a stage never reopened gets no such line."""
     end: int = _close_line(events, sid) or 0
     upto: list[tuple[int, dict[str, object]]] = [(n, v) for n, v in events if n <= end]
     state: dict[str, Entry] = fold(upto)
     st: Entry = state[sid]
+    spans: list[tuple[int, int]] = [  # an imported stage added done has none
+        (lo, end if hi is None else hi) for lo, hi in _stage_spans(upto, {sid})[sid]
+    ] or [(st.lines[0], end)]
     window: list[tuple[int, dict[str, object]]] = [
-        (n, v) for n, v in upto if n >= st.lines[0]
+        (n, v) for n, v in upto if any(lo <= n <= hi for lo, hi in spans)
     ]
+    by_line: dict[int, dict[str, object]] = dict(upto)
+    reopens: list[str] = []
+    for (lo, _), (_, closed) in zip(spans[1:], spans):
+        ev: dict[str, object] = by_line[lo]
+        f: object = ev.get("f")
+        why: object = f.get("reason") if isinstance(f, dict) else None
+        tail: str = f": {_cut(why)}" if isinstance(why, str) and why.strip() else ""
+        reopens.append(
+            f"- line {lo}, {str(ev.get('ts'))[:10]}, {ev.get('who')}, after the "
+            f"close at line {closed}{tail}"
+        )
     touched: set[object] = {v.get("id") for _, v in window} - {sid}
     mine: list[Entry] = [e for e in state.values() if e.stage == sid and e.id != sid]
     other: list[Entry] = [
@@ -1803,13 +1833,15 @@ def render_stage_record(
         vals: list[str] = [str(v[key]) for _, v in window if v.get(key)]
         return ", ".join(dict.fromkeys(vals)) or "none"
 
-    close_ev: dict[str, object] = dict(upto)[end]
+    close_ev: dict[str, object] = by_line[end]
     out: list[str] = [
         _record_head(st),
+        *([RECORD_MARK.format(sid=sid, end=end)] if reopens else []),
         "",
         f"Generated from {LEDGER_REL} by rk.py when the stage was closed; frozen",
         "with the stage. Do not edit: hand edits are blocked.",
-        f"Window: ledger lines {st.lines[0]} to {end}, {st.created} to {st.updated}.",
+        _window_line(st, spans),
+        *(part(f"Reopened ({len(reopens)})", reopens) if reopens else []),
         *part(f"Entries of the stage ({len(mine)})", [line(e) for e in mine]),
         *part(
             f"Entries touched in the window, not of the stage ({len(other)})",
@@ -1824,7 +1856,7 @@ def render_stage_record(
         "## Seen in the window",
         f"kit: {seen('kit')}",
         f"sid: {seen('sid')}",
-        f"rules at open: {_stamps(dict(upto)[st.lines[0]])}",
+        f"rules at open: {_stamps(by_line[st.lines[0]])}",
         f"rules at close: {_stamps(close_ev)}",
     ]
     return "\n".join(out) + "\n"
@@ -1834,14 +1866,31 @@ def _record_head(st: Entry) -> str:
     return f"# Ledger of stage {st.id} {st.title} (generated)"
 
 
-def _record_key(text: str | None) -> tuple[str, str] | None:
-    """(first line, `Window:` line) of a record: the stage with its title at the
-    close, and which close (a reopened stage is closed again: same first line,
-    later window). None for no record."""
+def _window_line(st: Entry, spans: list[tuple[int, int]]) -> str:
+    rng: str = ", ".join(f"{lo} to {hi}" for lo, hi in spans)
+    return f"Window: ledger lines {rng}, {st.created} to {st.updated}."
+
+
+def _record_current(
+    text: str | None, events: list[tuple[int, dict[str, object]]], sid: str
+) -> bool:
+    """Whether `text` is the record of the last close of stage `sid`: its first
+    line (the title at the close) and its RECORD_MARK match the record made now.
+    A record without the mark (a stage never reopened, or written by 0.2.3 and
+    earlier) matches by its `Window:` line, in the form those records have."""
     if text is None:
-        return None
-    lines: list[str] = text.split("\n")
-    return lines[0], next((x for x in lines if x.startswith("Window: ")), "")
+        return False
+    want: str = render_stage_record(events, sid)
+    if text.split("\n", 1)[0] != want.split("\n", 1)[0]:
+        return False
+    mark: re.Match[str] | None = RECORD_MARK_RE.search(text)
+    if mark is not None:
+        now: re.Match[str] | None = RECORD_MARK_RE.search(want)
+        return now is not None and now.group(0) == mark.group(0)
+    end: int = _close_line(events, sid) or 0
+    st: Entry = fold([(n, v) for n, v in events if n <= end])[sid]
+    old: str = _window_line(st, [(st.lines[0], end)])  # one span: add to close
+    return old in text.split("\n")
 
 
 def _file_text(path: Path) -> str | None:
@@ -1913,8 +1962,9 @@ def _cmd_stage_close(a: argparse.Namespace) -> int:
     if (  # a closed stage without the record of its last close: write it only
         st.status == "done"
         and folder is not None
-        and _record_key(_file_text(folder / STAGE_RECORD))
-        != _record_key(render_stage_record(read_events(repo), st.id))
+        and not _record_current(
+            _file_text(folder / STAGE_RECORD), read_events(repo), st.id
+        )
     ):
         print(f"{st.id} is already closed; no ledger line written")
         print(_write_stage_record(repo, st))

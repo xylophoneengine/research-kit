@@ -684,9 +684,10 @@ def test_status_declared_type_and_recent_decisions() -> None:
         lrun(repo, "add", "stage", "03-paper-x")
         for i in range(7):
             lrun(repo, "add", "decision", f"dec {i}", "--owner", "user")
-        lrun(repo, "add", "stage", "04-paper-y")
+        lrun(repo, "add", "stage", "04-software-y")  # another kind: both open
         lrun(
-            repo, "add", "decision", "last", "--owner", "user", "--stage", "04-paper-y"
+            repo, "add", "decision", "last", "--owner", "user", "--stage",
+            "04-software-y",
         )
         sec = sections((repo / L.STATUS_REL).read_text())
         rec: str = sec["## Recent decisions"]
@@ -2091,7 +2092,7 @@ def test_reopened_stage_record_write_failure() -> None:  # blind11 F1
         assert code == 0 and out.startswith("S-1 is already closed"), out
         text: str = rec.read_text()
         assert text == L.render_stage_record(L.read_events(repo), "S-1"), text
-        assert f"Window: ledger lines 1 to {len(jl(repo))}," in text, text
+        assert f"Window: ledger lines 1 to 5, 7 to {len(jl(repo))}," in text, text
         code, out = lrun(repo, "stage-close", "S-1")  # current now: plain refusal
         assert code == 1 and "S-1 is done, not open" in out, out
 
@@ -2108,6 +2109,85 @@ def test_doctor_gap_of_reopened_stage() -> None:  # blind11 F2, crit8 m1
         lrun(repo, "add", "debt", "after")  # DB-2, after the second close
         out = doctor(repo)[1]
         assert group(out, L.G_LATE) == ["DB-2 (after S-1) after", *late], out
+
+
+def test_record_of_reopened_stage() -> None:  # brief 025 fixes 1, 2
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = reopened_repo(Path(d))  # closed at 5, DB-1 at 6, reopened at 7
+        lrun(repo, "stage-close", "S-1", "--sign-off", "D-2")  # line 9
+        lines: list[str] = (repo / "pm/stages/01-paper-x/LEDGER.md").read_text(
+        ).splitlines()
+        assert lines[1] == "<!-- rk:stage-record S-1 close 9 -->", lines
+        day: str = jl(repo)[6]["ts"][:10]
+        i: int = lines.index("## Reopened (1)")
+        assert lines[i + 1] == (
+            f"- line 7, {day}, lead, after the close at line 5: closed too early"
+        ), lines
+        assert lines[i - 2].startswith("Window: ledger lines 1 to 5, 7 to 9, "), lines
+        # fix 2: DB-1, written while S-1 was closed, is not claimed by the record
+        assert not [x for x in lines if "DB-1" in x], lines
+        assert "## Entries touched in the window, not of the stage (0)" in lines
+
+
+def test_add_stage_one_per_kind() -> None:  # brief 025 fix 3
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "01-paper-x")
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "add", "stage", "02-paper-y")
+        assert code == 1 and out == (
+            "error: cannot add stage 02-paper-y: S-1 (01-paper-x) is open, and at "
+            "most one paper stage may be open: stage-close S-1 first\n"
+        ), out
+        assert len(jl(repo)) == n and not (repo / "pm/stages/02-paper-y").exists()
+        assert lrun(repo, "add", "stage", "02-software-y")[0] == 0  # another kind
+        assert lrun(repo, "add", "stage", "03-paper-z", "--imported",
+                    "--source", "a:1")[0] == 0  # imported history: not checked
+
+
+def test_reopen_stage_without_folder() -> None:  # brief 025 fix 4
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "01-pilot", "--imported", "--source", "A.md:1")
+        lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1")
+        assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 0
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "reopen", "S-1", "--note", "x")
+        assert code == 1 and out == (
+            "error: cannot reopen S-1: no folder pm/stages/01-pilot/ (an imported "
+            "or folderless stage); restore it or add a new stage\n"
+        ), out
+        assert len(jl(repo)) == n and L.load(repo)["S-1"].status == "done"
+        (repo / "pm/stages/01-pilot").mkdir(parents=True)  # restored: reopens
+        assert lrun(repo, "reopen", "S-1", "--note", "x")[0] == 0
+
+
+def test_record_recognised_by_mark() -> None:  # brief 025 fix 5
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = reopened_repo(Path(d))
+        lrun(repo, "stage-close", "S-1", "--sign-off", "D-2")
+        rec: Path = repo / "pm/stages/01-paper-x/LEDGER.md"
+        text: str = rec.read_text()
+        # a later kit may word the Window line otherwise: the mark still holds
+        other: str = text.replace("Window: ledger lines", "Window (lines)")
+        rec.write_text(other)
+        code, out = lrun(repo, "stage-close", "S-1")
+        assert code == 1 and "S-1 is done, not open" in out, out
+        assert rec.read_text() == other  # recognised: not rewritten
+        # a 0.2.3 record of the last close: no mark, Window from add to close
+        events: list[tuple[int, dict[str, object]]] = L.read_events(repo)
+        st: Any = L.fold(events)["S-1"]
+        old: str = "\n".join([
+            text.split("\n", 1)[0], "",
+            f"Window: ledger lines 1 to 9, {st.created} to {st.updated}.", "",
+        ])
+        rec.write_text(old)
+        code, out = lrun(repo, "stage-close", "S-1")
+        assert code == 1 and "S-1 is done, not open" in out, out
+        assert rec.read_text() == old  # recognised by the old match
+        rec.write_text(old.replace("1 to 9", "1 to 5"))  # of the first close
+        code, out = lrun(repo, "stage-close", "S-1")
+        assert code == 0 and rec.read_text() == text, out  # stale: rewritten
 
 
 def test_doctor_no_git() -> None:
@@ -2731,7 +2811,7 @@ def test_set_same_stage_is_unchanged() -> None:
         assert code == 0 and out == "updated T-1: note (stage S-1)\n", out
         ev: dict[str, Any] = jl(repo)[-1]
         assert ev["f"] == {"note": "n\nmore"}, ev  # the stage is not rewritten
-        lrun(repo, "add", "stage", "02-paper-y")
+        lrun(repo, "add", "stage", "02-software-y")  # another kind: both open
         out = lrun(repo, "set", "T-1", "--stage", "S-2")[1]
         assert out == "updated T-1: stage (stage S-2)\n", out
 
