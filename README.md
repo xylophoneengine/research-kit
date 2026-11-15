@@ -7,8 +7,8 @@ teams: papers, research software, driver reverse engineering, experiments and
 theses, alone or mixed in one repo. It ships a generic process file
 (`AGENTS.md`), one short rule file per project kind, a `pm/` process folder,
 a `/team` skill (named workers, an optional architect and two opus critics with different lenses),
-worker agents pinned to an effort level, a "waste, don't delete" helper and
-compaction handoff hooks.
+worker agents pinned to an effort level, a "waste, don't delete" helper,
+compaction handoff hooks and a read-only ledger viewer.
 
 License: MIT (see `LICENSE`).
 
@@ -40,7 +40,7 @@ License: MIT (see `LICENSE`).
 
 | Plugin | Contents |
 |---|---|
-| `research-kit` (core) | skills `research-kit`, `team`, `waste`, `surviving-compaction`; commands `rk-*`, `s-comp`; agents `worker-{low,medium,high,xhigh}`, `fetcher` (lean lookups); hooks; all kind files |
+| `research-kit` (core) | skills `research-kit`, `team`, `waste`, `surviving-compaction`; commands `rk-*`, `s-comp`; agents `worker-{low,medium,high,xhigh}`, `fetcher` (lean lookups); hooks; all kind files; the ledger viewer (`rk ui`, its built bundle in `skills/research-kit/ui/dist/`) |
 | `research-kit-lit` (optional) | skill `zotero` (tested Zotero MCP procedure, preflight, stop conditions), agent `zotero-worker`; for the `paper` and `thesis` kinds |
 
 Skills also answer to their bare name (`/team`) unless another skill already
@@ -275,7 +275,7 @@ pm/
   living/           GOALS, edited in place                                        committed
   kinds/            active kind files (replaced on sync)                          committed
   stages/NN-<kind>-<topic>/                                                       committed, except chat/
-    README.md BRIEF.md deliverables/ notes/ code/ chat/                           chat/ gitignored
+    README.md BRIEF.md LEDGER.md deliverables/ notes/ code/ chat/                 chat/ gitignored
   handoffs/open/    work packages for later sessions                              committed
   handoffs/done/    executed work packages                                        committed
   handoffs/compact/ compaction handoffs + hook-made auto-<stamp>.md state files   gitignored
@@ -298,7 +298,11 @@ carries the kit version and the session id (`rk show` prints them), the way
 from an entry to the archived transcript. A `--ref` must name an existing file
 in the repo (a `://` URL, `doi:` or `arXiv:` passes; a path outside the repo is
 refused; an absolute path inside it is stored repo-relative; checked against
-the main checkout, so in a worktree merge first).
+the main checkout, so in a worktree merge first). `close`, `drop`, `shelve` and
+`reopen` also store their `--note` whole as the entry's `reason` (why it has its
+current status; `rk show` prints it). `rk stage-close` writes the stage's
+`pm/stages/<stage>/LEDGER.md`: generated, frozen with the stage, never edited by
+hand; it shows what was known at close and a later `rk set` does not rewrite it.
 
 ```
 rk add <type> <title>       log a task, decision, deferred item, ...
@@ -308,8 +312,10 @@ rk set | rk supersede       edit fields (--ref-drop PATH removes a wrong ref); r
                             --stage of every type but task and stage (e.g. debt, deferred, fetch,
                             handoff) = raised in: it may be set into a closed stage while
                             open (an open task cannot)
-rk list | show | search     open items (--all: closed and shelved), one entry, text search
+rk list | show | search     open items (--all: closed and shelved), one or more entries, text search
 rk recent                   newest events
+rk import FILE.jsonl        legacy history into the ledger, marked imported (--dry-run first)
+rk ui [--port N]            read-only browser view of the ledger (see below)
 rk doctor [--stage S-n]     read-only check of ledger, folders, git: exit 1 on hard findings
 rk reref OLD NEW [--dry-run]   point refs at OLD to NEW, after a file was moved by hand
 rk stage-close S-n --sign-off D-m   close a stage, last; runs the doctor --stage checks first
@@ -323,6 +329,20 @@ rk brief-check              the brief gate the hook calls
 It also writes a marked block into `.gitattributes` with `pm/ledger.jsonl merge=union`,
 so branch merges of the append-only ledger do not conflict.
 
+### The ledger viewer
+
+`/rk-viewer` (or `rk ui` in a terminal) serves a read-only web page for
+`pm/ledger.jsonl` and opens it in your browser. Tabs: list, board, stages and
+timeline; a search box (also Ctrl/Cmd-K) finds an entry by id, title or note, and
+a detail pane shows one entry with its history. It reads the ledger fresh on
+every request and reloads when the tab regains focus; it never writes the ledger
+or `pm/STATUS.md`. It listens on 127.0.0.1 only, on port 8765 by default
+(`--port N` picks another, which a second session needs; `--no-open` skips the
+browser; `--repo DIR` names the repo). `/rk-viewer stop` ends the viewer this
+session started; it also ends with the session. It needs Python only: the built
+frontend is committed under `skills/research-kit/ui/dist/`, and npm is needed
+only to rebuild it from `skills/research-kit/ui/`.
+
 ## Commands
 
 | Command | Does |
@@ -334,7 +354,7 @@ so branch merges of the append-only ledger do not conflict.
 | `/rk-sync` | updates `AGENTS.md` and the kind files from the plugin templates (see below) |
 | `/rk-close` | closes a named stage with the close checklist |
 | `/rk-doctor` | checks the ledger and its refs (`rk doctor`), read-only; `--stage S-n`, `--limit 0` |
-| `/rk-viewer` / `/rk-viewer stop` | starts or stops the ledger viewer (`rk ui`): a local, read-only web page for `pm/ledger.jsonl` (list, board, stages, timeline, search); 127.0.0.1 only; `--port N`, `--repo DIR` |
+| `/rk-viewer` / `/rk-viewer stop` | starts or stops the ledger viewer (see [The ledger viewer](#the-ledger-viewer)); `--port N`, `--repo DIR` |
 | `/s-comp prepare` / `resume` | compaction handoff before and after `/compact` |
 
 ## Stage lifecycle
@@ -355,7 +375,7 @@ flowchart TD
   S1 --> S2["Kind freeze steps"]
   S2 --> S3["Chat archive, main transcript copied last"]
   S3 --> S4["Sign-off with rk doctor --stage output"]
-  S4 --> S5["rk stage-close LAST"]
+  S4 --> S5["rk stage-close LAST (writes the stage's LEDGER.md)"]
   S5 --> N["Next stage"]
   N --> O
 ```
@@ -438,6 +458,7 @@ flowchart TD
 - Pick the model by how defined the task is (haiku / sonnet / opus); between two tiers, take the higher.
 - The lead orchestrates and never does the legwork.
 - Briefs open with `DELIVERABLE:` (artifact + exact path) and `NOT IN SCOPE:`.
+- Teammates run only one-line read commands, the named check, one-line `rk` commands and one-line writes in their own scratch folder; anything else goes to the lead as plain lines in a file, which the lead runs inline, never as a script (a teammate's permission prompt may never reach you).
 - Full reports go to `<REPORTS>/<name>-r<round>.md`: the open stage's `notes/team/` in full mode, `pm/logs/team/<run>/` in light mode or with no open stage (`<run>` = start time `YYYY-MM-DD-HHMM`), outside a `pm/` repo the session scratchpad. `<round>` is the next free number for that name, so a report is never overwritten. Reports are committed, never in `pm/waste/`: a ledger ref to a report must outlive the waste folder. The lead gets a message of 500 chars or fewer, and the teammate's final text is one line with the report path. Each report reaches the lead twice: once as the message and once as the idle notification.
 - Critics write their review to the open stage's `notes/` (committed) or, with no open stage, `pm/reviews/`.
 - Files to discard: teammates list `TO-WASTE:` lines in their report; the lead collects them with one grep (see Deleting is off).
@@ -496,6 +517,7 @@ sequenceDiagram
   L->>U: what matched, what differed, then Next step
 ```
 
+- In a repo with `pm/ledger.jsonl` the PreCompact hook itself also writes `pm/handoffs/compact/auto-<stamp>.md` (`rk list`, `rk recent -n 30`, `git status --short`), so a compact nobody announced still leaves a state file; the resume line names the newest one next to your handoff. A failed write is silent.
 - rk-init/rk-sync keep a marked `## Compact Instructions` block in CLAUDE.md; Claude Code reads it on every compact, including auto-compact.
 - Trigger phrases: "get ready for compact", "ready for compaction",
   "prepare for compact", "I'm stopping here" (short messages only, so a pasted
@@ -550,7 +572,7 @@ Not bundled; install what your kinds use.
 
 ```
 git config core.hooksPath scripts/githooks   # once per clone: every push runs the gate
-bash scripts/release_check.sh                # the gate by hand (default: commits on no origin/* ref)
+bash scripts/release_check.sh                # the gate by hand (default: what a push of this branch would send)
 bash scripts/test-release-check.sh           # tests for the gate
 claude --plugin-dir plugins/research-kit     # try it without installing
 ```
@@ -558,7 +580,9 @@ claude --plugin-dir plugins/research-kit     # try it without installing
 `scripts/release_check.sh` stops at the first failure: plugin `version` not
 bumped against `origin/main` when `plugins/<name>/` changed; a changed template
 without a new stamp; the anon check; every `test-*.sh` / `test_*.py` under
-`plugins/` and `scripts/`, run on the pushed commit; `claude plugin validate`
+`plugins/` and `scripts/`, run on the pushed commit, and again with `/bin/bash` and
+`/usr/bin/python3` in a bare environment when those differ from the ones on PATH;
+`claude plugin validate`
 for the marketplace and each plugin.
 
 `scripts/anon_check.sh` scans what a push publishes (added lines of every file,
