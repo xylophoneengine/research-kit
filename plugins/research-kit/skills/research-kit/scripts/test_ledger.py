@@ -436,7 +436,6 @@ def test_closed_stage_takes_no_open_entry() -> None:
         assert lrun(repo, "set", "T-2", "--stage", "S-1")[0] == 1
         code, out = lrun(repo, "reopen", "T-1", "--note", "again")
         assert code == 1 and "set T-1 --stage" in out, out
-        assert lrun(repo, "start", "DF-1")[0] == 1
         assert len(jl(repo)) == n
         code, out = lrun(
             repo, "add", "task", "x", "--note", "n", "--stage", "S-1",
@@ -446,6 +445,71 @@ def test_closed_stage_takes_no_open_entry() -> None:
         assert lrun(repo, "set", "T-1", "--stage", "S-2")[0] == 0  # T-1 is done
         assert lrun(repo, "reopen", "T-1", "--note", "again")[0] == 0
         assert lrun(repo, "list", "--stage", "S-1")[1].startswith("open 1 ")
+
+
+def test_non_task_open_entry_into_closed_stage() -> None:  # 0.2.2 R1-R5
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "01-paper-x")  # S-1
+        lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1")
+        assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 0
+        rec: Path = repo / "pm/stages/01-paper-x/LEDGER.md"
+        frozen: str = rec.read_text()
+        lrun(repo, "add", "stage", "02-paper-y")  # S-2, the default stage now
+        for typ in ("debt", "deferred", "fetch", "handoff"):
+            lrun(repo, "add", typ, f"a {typ}")  # DB-1, DF-1, F-1, H-1 in S-2
+        # R1: open non-task entries can be set into the done stage; the receipt names it
+        for eid in ("DB-1", "DF-1", "F-1", "H-1"):
+            code, out = lrun(repo, "set", eid, "--stage", "S-1")
+            assert code == 0 and out == f"updated {eid}: stage (stage S-1)\n", out
+            e: Any = L.load(repo)[eid]
+            assert e.stage == "S-1" and e.status == "open", e
+        code, out = lrun(repo, "add", "debt", "found later", "--stage", "S-1")
+        assert code == 0 and out == "logged DB-2: found later (stage S-1)\n", out
+        rows: Path = write_rows(
+            Path(d),
+            [{"type": "fetch", "title": "old", "source": "B:1", "stage": "S-1"}],
+        )
+        assert lrun(repo, "import", str(rows))[0] == 0  # the backfill case
+        assert L.load(repo)["F-2"].stage == "S-1"
+        # R2: an open or running task still cannot, same text
+        lrun(repo, "add", "task", "t", "--note", "n")  # T-1 in S-2
+        want: str = (
+            "error: S-1 is closed (done); an open entry cannot go into it: "
+        )
+        code, out = lrun(repo, "set", "T-1", "--stage", "S-1")
+        assert code == 1 and out == want + "pick an open stage\n", out
+        code, out = lrun(repo, "add", "task", "u", "--note", "n", "--stage", "S-1")
+        assert code == 1 and out == want + "pass --stage with an open stage\n", out
+        lrun(repo, "start", "T-1")
+        code, out = lrun(repo, "set", "T-1", "--stage", "S-1")
+        assert code == 1 and "cannot go into it: pick an open stage" in out, out
+        assert L.load(repo)["T-1"].stage == "S-2"
+        # R3: a done or shelved non-task reopens in the done stage; a task does not
+        lrun(repo, "close", "DB-1", "--note", "fixed")
+        code, out = lrun(repo, "reopen", "DB-1", "--note", "back")
+        assert code == 0 and out == "reopened DB-1: back (stage S-1)\n", out
+        lrun(repo, "shelve", "F-1", "--note", "later")
+        code, out = lrun(repo, "reopen", "F-1", "--note", "now")
+        assert code == 0 and out == "reopened F-1: now (stage S-1)\n", out
+        lrun(repo, "close", "T-1", "--note", "ok")
+        assert lrun(repo, "set", "T-1", "--stage", "S-1")[0] == 0  # done: allowed
+        code, out = lrun(repo, "reopen", "T-1", "--note", "again")
+        assert code == 1 and "re-stage it first: set T-1 --stage S-<x>" in out, out
+        lrun(repo, "add", "task", "v", "--note", "n")  # T-2 in S-2
+        lrun(repo, "shelve", "T-2", "--note", "later")
+        assert lrun(repo, "set", "T-2", "--stage", "S-1")[0] == 0  # shelved: allowed
+        assert lrun(repo, "reopen", "T-2", "--note", "again")[0] == 1
+        # start: the same check, so an open non-task in the done stage can start
+        assert lrun(repo, "start", "DF-1")[1] == "started DF-1: a deferred\n"
+        # R4, R5: the views; the frozen record is not rewritten
+        out = lrun(repo, "list", "--stage", "S-1")[1]
+        for eid in ("DB-1", "DB-2", "DF-1", "F-1", "F-2", "H-1"):
+            assert eid in out, out
+        assert "DB-1" in lrun(repo, "list", "--stage", "S-1", "--all")[1]
+        assert "DB-1" in sections((repo / L.STATUS_REL).read_text())["## Open debt"]
+        assert rec.read_text() == frozen and "DB-1" not in frozen
+        assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 1  # done
 
 
 def test_supersede() -> None:

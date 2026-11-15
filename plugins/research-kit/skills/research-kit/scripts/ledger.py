@@ -629,11 +629,18 @@ def _note_plus(old: str, text: str) -> str:
 
 
 def _check_stage_open(
-    state: dict[str, Entry], sid: str, status: str, fix: str
+    state: dict[str, Entry], sid: str, typ: str, status: str, fix: str
 ) -> None:
-    """Refuse putting an open or running entry into a stage that is done."""
+    """Refuse putting an open or running task into a stage that is done. Only
+    tasks block a stage close; for any other type `stage` means "raised in", and
+    an open one may sit in (or be set into) a closed stage."""
     st: Entry | None = state.get(sid) if sid else None
-    if st is not None and status in OPEN_STATUSES and st.status == "done":
+    if (
+        typ == "task"
+        and st is not None
+        and status in OPEN_STATUSES
+        and st.status == "done"
+    ):
         raise LedgerError(
             f"{sid} is closed (done); an {status} entry cannot go into it: {fix}"
         )
@@ -909,7 +916,9 @@ def _add_step(
             if a.stage
             else _default_stage(state, typ, a.imported)
         )
-        _check_stage_open(state, stage, status, "pass --stage with an open stage")
+        _check_stage_open(
+            state, stage, typ, status, "pass --stage with an open stage"
+        )
         eid: str = next_id(state, types[typ])
         if label is not None:
             _check_label(state, label, eid)
@@ -1220,7 +1229,8 @@ def _cmd_start(a: argparse.Namespace) -> int:
         if e.status != "open":
             raise LedgerError(f"{e.id} is {e.status}: use reopen first")
         _check_stage_open(
-            state, e.stage, "running", f"re-stage it first: set {e.id} --stage S-<x>"
+            state, e.stage, e.type, "running",
+            f"re-stage it first: set {e.id} --stage S-<x>",
         )
         f: dict[str, object] = {"status": "running"}
         if owner is not None:
@@ -1265,7 +1275,8 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
             raise LedgerError(f"cannot {cmd} {e.id}: it is {e.status}")
         if cmd == "reopen":
             _check_stage_open(
-                state, e.stage, "open", f"re-stage it first: set {e.id} --stage S-<x>"
+                state, e.stage, e.type, "open",
+                f"re-stage it first: set {e.id} --stage S-<x>",
             )
         f: dict[str, object] = {
             "status": new,
@@ -1343,7 +1354,7 @@ def _cmd_set(a: argparse.Namespace) -> int:
         if a.stage is not None:
             sid: str = resolve(state, a.stage, stage=True)
             if sid != e.stage:  # the same stage again: no event
-                _check_stage_open(state, sid, e.status, "pick an open stage")
+                _check_stage_open(state, sid, e.type, e.status, "pick an open stage")
                 f["stage"] = sid
         if a.note is not None:
             f["note"] = _note_plus(e.note, a.note)
@@ -1902,7 +1913,7 @@ G_NOSTAGE: str = (
 )
 G_LATE: str = (
     "entry without stage, made after a stage closed, before the next opened "
-    "(set ID --stage S-n; an open entry only into an open stage)"
+    "(set ID --stage S-n; an open task only into an open stage)"
 )
 G_RUNNING: str = (
     f"task running over {RUNNING_MAX_H} h (close, drop or shelve it, or set ID "

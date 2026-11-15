@@ -24,9 +24,14 @@ title is its folder name and is never renamed; every ID argument also takes a
 label or a stage code (`03b`); receipts print the real ID and the entry's stage
 (or `(no stage)`); `set --stage` with the stage the entry already has writes
 nothing (`unchanged`); an `add` that links a closed stage gets no stage, and its
-receipt says `(no stage: S-n is closed)` (a closed stage's record is frozen: a
-correction is an entry of the stage now open; an open entry gets the plain
-`(no stage)`); a `TASK:` line in a
+receipt says `(no stage: S-n is closed)` (an open entry gets the plain
+`(no stage)`). Only open tasks block a stage close, so for every other type
+(debt, deferred, fetch, handoff, declared types) `stage` means "raised in": an
+open one may be put into a closed stage (`add --stage`, `set --stage`, import,
+reopen, start), which backfills imported entries; an open or running task is
+refused (`re-stage it first`). Why: a closed stage's record is frozen and shows
+what was known at close; such a `set` does not rewrite it, `rk list --stage S-n
+--all` shows the entry. A `TASK:` line in a
 brief names its tasks by id or by label, listed first (a label after other words
 does not count); titles are one line, 160 characters at most. `add task` without
 `--note` is refused (imports exempt); `add stage "<NN-kind-topic>"` creates the
@@ -184,6 +189,11 @@ same batch is refused too). Look an imported row up afterwards
 with `rk.py search --source S` or `--legacy-id L` (exact match on the stored
 value). Later notes on an entry append (`set|close|drop|shelve|reopen --note`);
 `set --note-replace TEXT` replaces.
+After an import, entries from repo-wide lists (debt, deferred, fetch) get their
+origin stage with `rk.py set ID --stage S-n` when it can be traced (the source
+line, the git blame date, the stage dates); `stage` of such an entry means
+"raised in" and may point at a closed stage while the entry is open. Why: only
+open tasks block a stage close, and a debt keeps the stage it was raised in.
 `rk.py import --help` has the full key list and example rows.
 
 ## close (user says "close stage", or `/rk-close`)
