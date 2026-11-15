@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import http.client
 import importlib.util
 import io
 import json
+import os
 import socket
-import struct
 import subprocess
 import sys
 import tempfile
@@ -259,8 +260,8 @@ def test_missing_bundle_exit_1() -> None:
 
 def not_viewer_msg(port: int) -> str:
     return (
-        f"error: 127.0.0.1:{port} is taken by another program or another "
-        "repo's ledger viewer; pick another --port\n"
+        f"error: 127.0.0.1:{port} is taken, and what holds it was not confirmed "
+        "as this repo's ledger viewer; pick another --port\n"
     )
 
 
@@ -326,12 +327,20 @@ def test_port_taken_by_viewer_big_ledger() -> None:
         for i in range(1, 4001)
     ]
     server_err: io.StringIO = io.StringIO()  # the viewer must not log the cut-off
-    with contextlib.redirect_stderr(server_err), running(big) as (repo, dist, base):
-        assert len(req(base, "/api/ledger")[2]) > ui.PROBE_BYTES
-        port: int | None = urlsplit(base).port
-        ui.DIST = dist
-        rc, err = call_main(["--repo", str(repo), "--port", str(port), "--no-open"])
-        time.sleep(0.3)  # let the viewer's handler thread hit the closed socket
+    with tmpdir() as tmp, contextlib.redirect_stderr(server_err):
+        repo: Path = mk_repo(tmp, big)
+        dist: Path = mk_dist(tmp)
+        server, base = serve(repo, dist)
+        server.daemon_threads = False  # so server_close() joins the handler threads
+        try:
+            assert len(req(base, "/api/ledger")[2]) > ui.PROBE_BYTES
+            port: int | None = urlsplit(base).port
+            ui.DIST = dist
+            argv: list[str] = ["--repo", str(repo), "--port", str(port), "--no-open"]
+            rc, err = call_main(argv)
+        finally:
+            server.shutdown()
+            server.server_close()  # returns once every handler has finished
     assert rc == 1 and err == same_viewer_msg(port or 0), err
     assert server_err.getvalue() == "", server_err.getvalue()
 
@@ -493,29 +502,97 @@ def test_port_taken_by_dripping_holder() -> None:
     assert elapsed < 3.0, elapsed
 
 
+class FakeConn:
+    """Client socket stand-in: serves one canned request, every write fails."""
+
+    def __init__(self, request: bytes, exc: OSError) -> None:
+        self.request: bytes = request
+        self.exc: OSError = exc
+        self.writes: int = 0
+
+    def makefile(self, mode: str, bufsize: int = -1) -> io.BytesIO:
+        return io.BytesIO(self.request)
+
+    def getsockname(self) -> tuple[str, int]:
+        return ("127.0.0.1", FAKE_PORT)
+
+    def sendall(self, data: bytes) -> None:
+        self.writes += 1
+        raise self.exc
+
+    def close(self) -> None:
+        pass
+
+
+FAKE_PORT: int = 4321
+
+
+def fake_request(method: str, path: str, host: str | None = None) -> bytes:
+    h: str = host or f"127.0.0.1:{FAKE_PORT}"
+    return f"{method} {path} HTTP/1.0\r\nHost: {h}\r\n\r\n".encode()
+
+
+FAKE_REQUESTS: dict[str, bytes] = {  # answer: request
+    "403": fake_request("GET", "/api/ledger", "evil.example"),
+    "404": fake_request("GET", "/nope"),
+    "405": fake_request("POST", "/api/ledger"),
+    "200 json": fake_request("GET", "/api/ledger"),
+    "200 file": fake_request("GET", "/"),
+}
+
+
+def drive(repo: Path, dist: Path, request: bytes, exc: OSError) -> FakeConn:
+    """Run one request through the viewer's handler; its write raises `exc`."""
+    conn: FakeConn = FakeConn(request, exc)
+    handler: Any = ui.make_handler(repo, dist)  # Any: FakeConn is no socket
+    handler(conn, ("127.0.0.1", 1), None)
+    return conn
+
+
 def test_hangup_is_silent() -> None:
-    """A client that resets the connection right after its request must not make
-    the viewer print a traceback, whatever the answer was (403/404/405/200)."""
-    server_err: io.StringIO = io.StringIO()
-    with contextlib.redirect_stderr(server_err), running(TWO) as (_r, _d, base):
-        port: int = urlsplit(base).port or 0
-        host: str = f"127.0.0.1:{port}"
-        reqs: list[str] = [
-            "GET /api/ledger HTTP/1.0\r\nHost: evil.example\r\n\r\n",
-            f"GET /nope HTTP/1.0\r\nHost: {host}\r\n\r\n",
-            f"POST /api/ledger HTTP/1.0\r\nHost: {host}\r\n\r\n",
-            f"GET /api/ledger HTTP/1.0\r\nHost: {host}\r\n\r\n",
+    """A write to a client that hung up must not raise out of the handler, on any
+    answer path (403 / 404 / 405 / 200), for each errno a hang-up can show as."""
+    hangups: list[OSError] = [
+        BrokenPipeError(errno.EPIPE, "Broken pipe"),
+        ConnectionResetError(errno.ECONNRESET, "Connection reset by peer"),
+        OSError(errno.EPROTOTYPE, "Protocol wrong type for socket"),  # macOS
+        OSError(errno.EINVAL, "Invalid argument"),  # macOS
+    ]
+    with tmpdir() as tmp:
+        repo: Path = mk_repo(tmp, TWO)
+        dist: Path = mk_dist(tmp)
+        for name, request in FAKE_REQUESTS.items():
+            for exc in hangups:
+                conn: FakeConn = drive(repo, dist, request, exc)
+                assert conn.writes >= 1, (name, exc)  # the write was reached
+
+
+def test_other_oserror_still_raises() -> None:
+    """Only hang-up errnos are swallowed: any other OSError on a write, and a
+    failing file read, still propagate."""
+    with tmpdir() as tmp:
+        repo: Path = mk_repo(tmp, TWO)
+        dist: Path = mk_dist(tmp)
+        others: list[OSError] = [
+            OSError(errno.EIO, "I/O error"),
+            PermissionError(errno.EACCES, "Permission denied"),
         ]
-        for _ in range(25):
-            for r in reqs:
-                with socket.create_connection(("127.0.0.1", port), timeout=2) as s:
-                    # RST on close, so the server's write or read fails
-                    s.setsockopt(
-                        socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
-                    )
-                    s.sendall(r.encode())
-        time.sleep(0.3)  # let the handler threads meet the closed sockets
-    assert server_err.getvalue() == "", server_err.getvalue()
+        for exc in others:
+            for name in ("404", "200 json"):
+                try:
+                    drive(repo, dist, FAKE_REQUESTS[name], exc)
+                except OSError as e:
+                    assert e is exc, (name, e)
+                else:
+                    raise AssertionError(f"{name}: {exc!r} was swallowed")
+        if os.geteuid() != 0:  # root reads a mode-000 file anyway
+            (dist / "index.html").chmod(0)
+            try:
+                drive(repo, dist, FAKE_REQUESTS["200 file"], BrokenPipeError())
+            except PermissionError:
+                pass
+            else:
+                raise AssertionError("a failing file read was swallowed")
 
 
 def test_no_ledger_exit_1() -> None:

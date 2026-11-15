@@ -29,6 +29,12 @@ from urllib.parse import unquote
 
 DIST: Path = Path(__file__).resolve().parent.parent / "ui" / "dist"
 DEFAULT_PORT: int = 8765
+# A write to a socket whose peer is gone. macOS is said to report EPROTOTYPE or
+# EINVAL for it instead of EPIPE / ECONNRESET (not reproduced here; covered by
+# a unit test); ConnectionError covers the usual two.
+HANGUP_ERRNOS: frozenset[int] = frozenset(
+    {errno.EPIPE, errno.ECONNRESET, errno.EPROTOTYPE, errno.EINVAL}
+)
 
 
 def _load_ledger() -> ModuleType:
@@ -105,7 +111,9 @@ def make_handler(repo: Path, dist: Path) -> type[BaseHTTPRequestHandler]:
             error on any path, send_error's 403 / 404 / 405 included."""
             try:
                 super().handle_one_request()
-            except ConnectionError:
+            except OSError as e:
+                if not (isinstance(e, ConnectionError) or e.errno in HANGUP_ERRNOS):
+                    raise  # e.g. a failing file read is not a hang-up
                 self.close_connection = True
 
         def _send(self, code: int, ctype: str, body: bytes) -> None:
@@ -225,15 +233,17 @@ def _is_viewer_of(port: int, repo: Path) -> bool:
 
 
 def _port_taken_message(port: int, repo: Path) -> str:
-    """One of two texts built only from our own values, never the holder's."""
+    """One of two texts built only from our own values, never the holder's. The
+    second makes no claim about the holder: it also covers a slow or broken
+    viewer of this repo and a path spelled differently."""
     if _is_viewer_of(port, repo):
         return (
             "error: a ledger viewer for this repo already runs at "
             f"http://127.0.0.1:{port}/; pick another --port for a second one"
         )
     return (
-        f"error: 127.0.0.1:{port} is taken by another program or another "
-        "repo's ledger viewer; pick another --port"
+        f"error: 127.0.0.1:{port} is taken, and what holds it was not confirmed "
+        "as this repo's ledger viewer; pick another --port"
     )
 
 

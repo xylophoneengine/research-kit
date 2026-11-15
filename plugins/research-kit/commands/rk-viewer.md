@@ -17,7 +17,8 @@ The words `start` and `stop` are for you; never pass them to the script.
 2. Run this command with the Bash tool as a background task
    (`run_in_background: true`), from the repo root. Append only the options
    the user gave, `--port N` and `--repo DIR`, and nothing else from the
-   arguments:
+   arguments. `N` must be a plain number; put `DIR` in single quotes (the
+   shell then expands nothing in it):
 
    `python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" ui`
 
@@ -30,9 +31,10 @@ The words `start` and `stop` are for you; never pass them to the script.
    - `a ledger viewer for this repo already runs at <url>`: give the user
      that URL; a second one needs
      `/research-kit:rk-viewer start --port <other>`.
-   - `is taken by another program or another repo's ledger viewer`: do not
-     send the user to that address; offer
-     `/research-kit:rk-viewer start --port <other>`.
+   - `was not confirmed as this repo's ledger viewer`: do not send the user
+     to that address; offer
+     `/research-kit:rk-viewer start --port <other>`. (A viewer of this repo
+     that is slow or whose ledger does not load gives this line too.)
    - no ledger in this repo, or no built bundle: say so.
 
    The error line is written by the script alone; it never repeats text from
