@@ -17,7 +17,7 @@ If your session model is not Opus or Fable, say so in one line and continue.
 | Junior | `jr1..jrN` | `haiku` | Mechanical, spec'd, verifiable edits | Look up one fact, fetch/extract from a given source, collect data |
 | Senior | `sr1..srN` | `sonnet` | Clear goal, some judgment on how | Survey a sub-area, summarize a source set, run a defined analysis |
 | Expert | `exp1..expM` | `opus` | Critical, open-ended, subtle-error-prone | Hard or contested questions, method choice, weighing conflicting evidence |
-| Architect | `arch1` (optional, at most one) | `opus` | Interfaces between work items, rules a change touches; one design file, never code | Shared output format, what each source set must answer, what counts as verified |
+| Architect | `arch1` (optional, at most one) | `fable` | Interfaces between work items, rules a change touches; one design file, never code | Shared output format, what each source set must answer, what counts as verified |
 | Critic | `crit1`, `blind<round>` | `opus` | Review only, never implement | Review only, never write the report |
 
 Every teammate: `Agent` with `name` (role + number, never a task name; an

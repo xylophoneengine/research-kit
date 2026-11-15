@@ -416,7 +416,7 @@ flowchart TD
   J --> R["Report files in stage notes/team/ or pm/logs/team/ + short SendMessage (max ~500 chars)"]
   S --> R
   E --> R
-  L -.-> A["arch1 (opus, optional): one design file (requirements, interfaces, change impact, decisions) before workers start, never routes or implements"]
+  L -.-> A["arch1 (fable, optional): one design file (requirements, interfaces, change impact, decisions) before workers start, never routes or implements"]
   R --> C1["crit1 (opus, loop critic): correctness / evidence"]
   R --> C2["blindN (opus, disposable, fresh each round): outcome and intent"]
   C1 --> V{"Any BLOCKING finding?"}

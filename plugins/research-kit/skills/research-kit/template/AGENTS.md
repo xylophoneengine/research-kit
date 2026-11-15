@@ -40,7 +40,7 @@ Team implicit: no `TeamCreate`. Teammates spawned in ONE parallel message, each 
 | Junior | `jr1..jrN` | haiku | mechanical, spec'd, verifiable edits; run-and-report | look up one fact, fetch/extract from given source |
 | Senior | `sr1..srN` | sonnet | clear goal, some judgment on how | survey sub-area, run defined analysis, summarize source set |
 | Expert | `exp1..expM` | opus | critical, open-ended, subtle-error-prone | hard/contested question, method choice, weighing conflicting evidence |
-| Architect | `arch1` (optional, one) | opus | interfaces between work items, rules a change touches; one design file, never code | shared output format, what each source set must answer, what counts as verified |
+| Architect | `arch1` (optional, one) | fable | interfaces between work items, rules a change touches; one design file, never code | shared output format, what each source set must answer, what counts as verified |
 | Critic | `crit1`, `blind<round>` | opus | review only, never implement | review only, never write the report |
 
 Spawn call: `Agent(name=<name>, model=<model column>, subagent_type="research-kit:worker-high")` for every teammate. User names effort level: use `subagent_type="research-kit:worker-<effort>"` instead (low/medium/high/xhigh). Model still from roster. Names unique per session. Name already taken (earlier team, setup helper): suffix the round (`jr1-2`) and record the mapping in the task entry (`rk set T-<n> --owner jr1-2`); `SendMessage` routes a reused name to the newest agent.
