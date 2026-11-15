@@ -2092,7 +2092,8 @@ def test_reopened_stage_record_write_failure() -> None:  # blind11 F1
         assert code == 0 and out.startswith("S-1 is already closed"), out
         text: str = rec.read_text()
         assert text == L.render_stage_record(L.read_events(repo), "S-1"), text
-        assert f"Window: ledger lines 1 to 5, 7 to {len(jl(repo))}," in text, text
+        assert "Window: ledger lines 1 to 5 (" in text, text
+        assert f"), 7 to {len(jl(repo))} (" in text, text
         code, out = lrun(repo, "stage-close", "S-1")  # current now: plain refusal
         assert code == 1 and "S-1 is done, not open" in out, out
 
@@ -2123,10 +2124,37 @@ def test_record_of_reopened_stage() -> None:  # brief 025 fixes 1, 2
         assert lines[i + 1] == (
             f"- line 7, {day}, lead, after the close at line 5: closed too early"
         ), lines
-        assert lines[i - 2].startswith("Window: ledger lines 1 to 5, 7 to 9, "), lines
+        ts: list[str] = [ev["ts"] for ev in jl(repo)]  # times per span (blind13 F2)
+        assert lines[i - 2] == (
+            f"Window: ledger lines 1 to 5 ({ts[0]} to {ts[4]}), "
+            f"7 to 9 ({ts[6]} to {ts[8]})."
+        ), lines
         # fix 2: DB-1, written while S-1 was closed, is not claimed by the record
         assert not [x for x in lines if "DB-1" in x], lines
         assert "## Entries touched in the window, not of the stage (0)" in lines
+
+
+def test_record_of_reopened_stage_imported_closed() -> None:  # blind13 F1
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "01-software-old", "--imported", "--status",
+             "done", "--source", "old.md:1")
+        (repo / "pm/stages/01-software-old").mkdir(parents=True)
+        assert lrun(repo, "reopen", "S-1", "--note", "resume old")[0] == 0
+        lrun(repo, "add", "decision", "sign-off", "--owner", "user", "--link", "S-1")
+        assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 0
+        rec: Path = repo / "pm/stages/01-software-old/LEDGER.md"
+        text: str = rec.read_text()
+        lines: list[str] = text.splitlines()
+        assert lines[1] == "<!-- rk:stage-record S-1 close 4 -->", lines
+        i: int = lines.index("## Reopened (1)")
+        assert lines[i + 1].startswith("- line 2, ") and lines[i + 1].endswith(
+            "after the close at line 1: resume old"
+        ), lines
+        assert lines[i - 2].startswith("Window: ledger lines 1 to 1 ("), lines
+        code, out = lrun(repo, "stage-close", "S-1")  # current: plain refusal
+        assert code == 1 and "S-1 is done, not open" in out, out
+        assert rec.read_text() == text
 
 
 def test_add_stage_one_per_kind() -> None:  # brief 025 fix 3

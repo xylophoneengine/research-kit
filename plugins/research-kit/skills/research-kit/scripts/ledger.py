@@ -1783,13 +1783,26 @@ def render_stage_record(
     upto: list[tuple[int, dict[str, object]]] = [(n, v) for n, v in events if n <= end]
     state: dict[str, Entry] = fold(upto)
     st: Entry = state[sid]
-    spans: list[tuple[int, int]] = [  # an imported stage added done has none
+    found: list[tuple[int, int]] = [
         (lo, end if hi is None else hi) for lo, hi in _stage_spans(upto, {sid})[sid]
-    ] or [(st.lines[0], end)]
+    ]
+    spans: list[tuple[int, int]] = (  # a stage imported closed: its add line is
+        found  # span 0, so a later reopen counts as one
+        if found and found[0][0] == st.lines[0]
+        else [(st.lines[0], st.lines[0]), *found]
+    )
     window: list[tuple[int, dict[str, object]]] = [
         (n, v) for n, v in upto if any(lo <= n <= hi for lo, hi in spans)
     ]
     by_line: dict[int, dict[str, object]] = dict(upto)
+    window_line: str = (  # one span: the form of 0.2.3, byte for byte
+        f"Window: ledger lines {st.lines[0]} to {end}, {st.created} to {st.updated}."
+        if len(spans) == 1
+        else "Window: ledger lines " + ", ".join(  # times per span, not across gaps
+            f"{lo} to {hi} ({by_line[lo].get('ts')} to {by_line[hi].get('ts')})"
+            for lo, hi in spans
+        ) + "."
+    )
     reopens: list[str] = []
     for (lo, _), (_, closed) in zip(spans[1:], spans):
         ev: dict[str, object] = by_line[lo]
@@ -1840,7 +1853,7 @@ def render_stage_record(
         "",
         f"Generated from {LEDGER_REL} by rk.py when the stage was closed; frozen",
         "with the stage. Do not edit: hand edits are blocked.",
-        _window_line(st, spans),
+        window_line,
         *(part(f"Reopened ({len(reopens)})", reopens) if reopens else []),
         *part(f"Entries of the stage ({len(mine)})", [line(e) for e in mine]),
         *part(
@@ -1866,18 +1879,14 @@ def _record_head(st: Entry) -> str:
     return f"# Ledger of stage {st.id} {st.title} (generated)"
 
 
-def _window_line(st: Entry, spans: list[tuple[int, int]]) -> str:
-    rng: str = ", ".join(f"{lo} to {hi}" for lo, hi in spans)
-    return f"Window: ledger lines {rng}, {st.created} to {st.updated}."
-
-
 def _record_current(
     text: str | None, events: list[tuple[int, dict[str, object]]], sid: str
 ) -> bool:
     """Whether `text` is the record of the last close of stage `sid`: its first
     line (the title at the close) and its RECORD_MARK match the record made now.
     A record without the mark (a stage never reopened, or written by 0.2.3 and
-    earlier) matches by its `Window:` line, in the form those records have."""
+    earlier) matches by its `Window:` line in the 0.2.3 form, frozen here so
+    that a later change of the record's wording does not make it stale."""
     if text is None:
         return False
     want: str = render_stage_record(events, sid)
@@ -1889,7 +1898,9 @@ def _record_current(
         return now is not None and now.group(0) == mark.group(0)
     end: int = _close_line(events, sid) or 0
     st: Entry = fold([(n, v) for n, v in events if n <= end])[sid]
-    old: str = _window_line(st, [(st.lines[0], end)])  # one span: add to close
+    old: str = (  # 0.2.3: one span, add to close; never change this literal
+        f"Window: ledger lines {st.lines[0]} to {end}, {st.created} to {st.updated}."
+    )
     return old in text.split("\n")
 
 
