@@ -2112,6 +2112,28 @@ def test_doctor_gap_of_reopened_stage() -> None:  # blind11 F2, crit8 m1
         assert group(out, L.G_LATE) == ["DB-2 (after S-1) after", *late], out
 
 
+def test_doctor_reopened_imported_stage() -> None:  # blind14 F1, crit8-r12 m1
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "01-paper-old", "--imported", "--source",
+             "old.md:1", "--status", "done")  # line 1
+        (repo / "pm/stages/01-paper-old").mkdir(parents=True)
+        lrun(repo, "add", "stage", "02-software-x")  # line 2
+        lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-2")
+        lrun(repo, "stage-close", "S-2", "--sign-off", "D-1")  # line 4
+        commit_all(repo)
+        assert doctor(repo) == (0, "doctor: no findings\n")  # S-1 still skipped
+        lrun(repo, "reopen", "S-1", "--note", "redo")  # line 5
+        lrun(repo, "add", "decision", "ok2", "--owner", "user", "--link", "S-1")
+        lrun(repo, "stage-close", "S-1", "--sign-off", "D-2")  # line 7
+        lrun(repo, "add", "debt", "made after")  # DB-1, no stage open
+        out: str = doctor(repo)[1]
+        assert group(out, L.G_LATE) == ["DB-1 (after S-1) made after"], out
+        assert group(out, L.G_UNCOMMITTED) == [
+            "S-1 01-paper-old: 3 ledger lines and 1 folder files not in HEAD"
+        ], out
+
+
 def test_record_of_reopened_stage() -> None:  # brief 025 fixes 1, 2
     with tempfile.TemporaryDirectory() as d:
         repo: Path = reopened_repo(Path(d))  # closed at 5, DB-1 at 6, reopened at 7
@@ -2149,7 +2171,7 @@ def test_record_of_reopened_stage_imported_closed() -> None:  # blind13 F1
         assert lines[1] == "<!-- rk:stage-record S-1 close 4 -->", lines
         i: int = lines.index("## Reopened (1)")
         assert lines[i + 1].startswith("- line 2, ") and lines[i + 1].endswith(
-            "after the close at line 1: resume old"
+            "after the import at line 1 (done): resume old"  # blind14 F3
         ), lines
         assert lines[i - 2].startswith("Window: ledger lines 1 to 1 ("), lines
         code, out = lrun(repo, "stage-close", "S-1")  # current: plain refusal

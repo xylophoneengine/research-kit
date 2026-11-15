@@ -1786,10 +1786,11 @@ def render_stage_record(
     found: list[tuple[int, int]] = [
         (lo, end if hi is None else hi) for lo, hi in _stage_spans(upto, {sid})[sid]
     ]
-    spans: list[tuple[int, int]] = (  # a stage imported closed: its add line is
-        found  # span 0, so a later reopen counts as one
-        if found and found[0][0] == st.lines[0]
-        else [(st.lines[0], st.lines[0]), *found]
+    # a stage imported not open (done, shelved, ...): its add line is span 0, so a
+    # later reopen counts as one
+    added_closed: bool = not (found and found[0][0] == st.lines[0])
+    spans: list[tuple[int, int]] = (
+        [(st.lines[0], st.lines[0]), *found] if added_closed else found
     )
     window: list[tuple[int, dict[str, object]]] = [
         (n, v) for n, v in upto if any(lo <= n <= hi for lo, hi in spans)
@@ -1803,15 +1804,22 @@ def render_stage_record(
             for lo, hi in spans
         ) + "."
     )
+    add_f: object = by_line[st.lines[0]].get("f")
+    add_status: object = add_f.get("status") if isinstance(add_f, dict) else None
     reopens: list[str] = []
-    for (lo, _), (_, closed) in zip(spans[1:], spans):
+    for k, ((lo, _), (_, closed)) in enumerate(zip(spans[1:], spans)):
         ev: dict[str, object] = by_line[lo]
         f: object = ev.get("f")
         why: object = f.get("reason") if isinstance(f, dict) else None
         tail: str = f": {_cut(why)}" if isinstance(why, str) and why.strip() else ""
+        since: str = (  # span 0 of a stage imported not open was no close
+            f"import at line {closed} ({add_status})"
+            if k == 0 and added_closed
+            else f"close at line {closed}"
+        )
         reopens.append(
             f"- line {lo}, {str(ev.get('ts'))[:10]}, {ev.get('who')}, after the "
-            f"close at line {closed}{tail}"
+            f"{since}{tail}"
         )
     touched: set[object] = {v.get("id") for _, v in window} - {sid}
     mine: list[Entry] = [e for e in state.values() if e.stage == sid and e.id != sid]
@@ -2209,7 +2217,21 @@ def _findings(
         (e for e in state.values() if only is None or only in (e.id, e.stage)),
         key=lambda e: e.lines[0],
     )
-    stages: list[Entry] = [e for e in entries if e.type == "stage" and not _imported(e)]
+    # spans as in the record; an imported stage counts only from a reopen in this
+    # ledger on (its imported history is not checked): never reopened, none
+    spans: dict[str, list[tuple[int, int | None]]] = {
+        sid: [
+            s for s in sp
+            if not _imported(state[sid]) or s[0] != state[sid].lines[0]
+        ]
+        for sid, sp in _stage_spans(
+            events, {x.id for x in state.values() if x.type == "stage"}
+        ).items()
+    }
+    stages: list[Entry] = [
+        e for e in entries
+        if e.type == "stage" and (not _imported(e) or spans[e.id])
+    ]
     present: list[tuple[str, str]] = []  # (id, ref) of refs that exist
     imp: list[tuple[str, str]] = []
     gone: list[tuple[str, str]] = []  # missing, not imported, not in waste
@@ -2285,11 +2307,7 @@ def _findings(
             if lines or files:
                 out.append((False, G_UNCOMMITTED, f"{st.id} {st.title}: {lines} "
                             f"ledger lines and {files} folder files not in HEAD"))
-    spans: dict[str, list[tuple[int, int | None]]] = _stage_spans(
-        events,
-        {x.id for x in state.values() if x.type == "stage" and not _imported(x)},
-    )
-    opens: list[int] = sorted(  # add and reopen lines of all non-imported stages
+    opens: list[int] = sorted(  # add and reopen lines of all counted stages
         lo for sp in spans.values() for lo, _ in sp
     )
     loose: list[Entry] = [  # not from `entries`: these carry no stage
