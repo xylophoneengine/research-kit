@@ -1262,8 +1262,11 @@ def test_import_help_documents_rows() -> None:
     assert "required: type, title, source" in text and "order given" in text, text
     assert "never @KEY" in text and "must come\nbefore" in text, text
     flat: str = " ".join(text.split())  # closed stages: what the rows may do
-    assert "A done (closed) stage takes a row of any type but task and stage" in flat
-    assert "an open or running task row, or an open stage row, naming it fails" in flat
+    assert (
+        "A done (closed) stage refuses only a task or stage row that is open or "
+        "running (such a row fails the whole batch)" in flat
+    ), flat
+    assert "every other row may name it (backfill)" in flat, flat
     with tempfile.TemporaryDirectory() as d:  # the example rows import as shown
         root: Path = Path(d)
         repo: Path = new_repo(root)
@@ -2051,6 +2054,60 @@ def test_reopen_stage() -> None:  # a stage closed too early
         commit_all(repo)
         assert doctor(repo) == (0, "doctor: no findings\n")
         assert doctor(repo, "--stage", "S-1") == (0, "doctor S-1: no findings\n")
+
+
+def reopened_repo(root: Path) -> Path:
+    """S-1 (01-paper-x) closed with D-1, DB-1 logged stage-less while it was
+    closed, S-1 reopened, a new sign-off D-2 logged, not yet closed again."""
+    repo: Path = staged_repo(root)
+    lrun(repo, "close", "T-1", "--note", "ok")
+    lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+    lrun(repo, "add", "debt", "gap")  # DB-1: no stage open, so none
+    lrun(repo, "reopen", "S-1", "--note", "closed too early")
+    lrun(repo, "add", "decision", "ok2", "--owner", "user", "--link", "S-1")
+    return repo
+
+
+def test_reopened_stage_record_write_failure() -> None:  # blind11 F1
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = reopened_repo(Path(d))
+        rec: Path = repo / "pm/stages/01-paper-x/LEDGER.md"
+        first: str = rec.read_text()
+        real: Callable[..., None] = os.replace
+
+        def deny(src: Any, dst: Any) -> None:
+            if str(dst).endswith("LEDGER.md"):
+                raise OSError(13, "denied")
+            real(src, dst)
+
+        L.os.replace = deny
+        try:
+            code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-2")
+        finally:
+            L.os.replace = real
+        assert code == 1 and "could not be written" in out, out
+        assert L.load(repo)["S-1"].status == "done" and rec.read_text() == first
+        code, out = lrun(repo, "stage-close", "S-1")  # the documented rerun
+        assert code == 0 and out.startswith("S-1 is already closed"), out
+        text: str = rec.read_text()
+        assert text == L.render_stage_record(L.read_events(repo), "S-1"), text
+        assert f"Window: ledger lines 1 to {len(jl(repo))}," in text, text
+        code, out = lrun(repo, "stage-close", "S-1")  # current now: plain refusal
+        assert code == 1 and "S-1 is done, not open" in out, out
+
+
+def test_doctor_gap_of_reopened_stage() -> None:  # blind11 F2, crit8 m1
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = reopened_repo(Path(d))
+        late: list[str] = ["DB-1 (after S-1) gap"]
+        out: str = doctor(repo)[1]
+        assert group(out, L.G_LATE) == late and group(out, L.G_NOSTAGE) == [], out
+        lrun(repo, "stage-close", "S-1", "--sign-off", "D-2")
+        out = doctor(repo)[1]
+        assert group(out, L.G_LATE) == late and group(out, L.G_NOSTAGE) == [], out
+        lrun(repo, "add", "debt", "after")  # DB-2, after the second close
+        out = doctor(repo)[1]
+        assert group(out, L.G_LATE) == ["DB-2 (after S-1) after", *late], out
 
 
 def test_doctor_no_git() -> None:
@@ -3156,6 +3213,9 @@ def test_stage_record_of_retitled_imported_stage() -> None:
         code, out = lrun(repo, "stage-close", "S-1")  # now it has one: plain refusal
         assert code == 1 and "S-1 is done, not open" in out, out
         assert "not a generated record" not in out, out
+        new.write_text(head + "\nWindow: stale\n")  # a generated head, old window
+        assert lrun(repo, "stage-close", "S-1")[0] == 0  # F5: head as of the close
+        assert "stale" not in new.read_text()
 
 
 def test_stage_record_not_over_a_hand_made_file() -> None:

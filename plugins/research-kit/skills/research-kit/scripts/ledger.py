@@ -1034,10 +1034,10 @@ list of strings):
              superseded or shelved (known, not planned now)
   owner      name, default lead; a decision needs it (who decided)
   stage      a stage id, the exact title of one stage, its code (03b) or
-             its label; default: no stage. A done (closed) stage takes a
-             row of any type but task and stage, done or open (backfill);
-             an open or running task row, or an open stage row, naming it
-             fails the whole batch
+             its label; default: no stage. A done (closed) stage refuses
+             only a task or stage row that is open or running (such a row
+             fails the whole batch); every other row may name it
+             (backfill)
   note       free text
   legacy_id  the row's id in the old system; it is the entry's label
   label      same as legacy_id (give one of them): letters, digits, _ . - /,
@@ -1834,10 +1834,22 @@ def _record_head(st: Entry) -> str:
     return f"# Ledger of stage {st.id} {st.title} (generated)"
 
 
-def _head_at_close(repo: Path, st: Entry) -> str:
-    """First line of the record as written at the close: it names the title the
-    stage had then, which an imported stage may have lost since (`set --title`)."""
-    return render_stage_record(read_events(repo), st.id).split("\n", 1)[0]
+def _record_key(text: str | None) -> tuple[str, str] | None:
+    """(first line, `Window:` line) of a record: the stage with its title at the
+    close, and which close (a reopened stage is closed again: same first line,
+    later window). None for no record."""
+    if text is None:
+        return None
+    lines: list[str] = text.split("\n")
+    return lines[0], next((x for x in lines if x.startswith("Window: ")), "")
+
+
+def _file_text(path: Path) -> str | None:
+    """A file's text; None if it is not there or not readable."""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
 
 
 def _record_folder(repo: Path, st: Entry) -> Path | None:
@@ -1898,10 +1910,11 @@ def _cmd_stage_close(a: argparse.Namespace) -> int:
     state: dict[str, Entry] = load(repo)
     st: Entry = state[resolve(state, a.id, stage=True)]
     folder: Path | None = _record_folder(repo, st)
-    if (  # a closed stage with no generated record: write the record only
+    if (  # a closed stage without the record of its last close: write it only
         st.status == "done"
         and folder is not None
-        and _first_line(folder / STAGE_RECORD) != _head_at_close(repo, st)
+        and _record_key(_file_text(folder / STAGE_RECORD))
+        != _record_key(render_stage_record(read_events(repo), st.id))
     ):
         print(f"{st.id} is already closed; no ledger line written")
         print(_write_stage_record(repo, st))
@@ -2080,6 +2093,24 @@ def _close_line(events: list[tuple[int, dict[str, object]]], sid: str) -> int | 
     return line
 
 
+def _stage_spans(
+    events: list[tuple[int, dict[str, object]]], sids: set[str]
+) -> dict[str, list[tuple[int, int | None]]]:
+    """For each stage in `sids`: (open line, close line or None) of each time it
+    was open, from its add or a reopen to the next close."""
+    out: dict[str, list[tuple[int, int | None]]] = {s: [] for s in sids}
+    for n, ev in events:
+        f: object = ev.get("f")
+        sp: list[tuple[int, int | None]] | None = out.get(str(ev.get("id")))
+        if sp is None or not isinstance(f, dict):
+            continue
+        if f.get("status") == "open" and (not sp or sp[-1][1] is not None):
+            sp.append((n, None))
+        elif f.get("status") == "done" and sp and sp[-1][1] is None:
+            sp[-1] = (sp[-1][0], n)
+    return out
+
+
 def _ignored(repo: Path, refs: list[str]) -> set[str]:
     """Those of `refs` git ignores (`check-ignore`; works for missing files too;
     tracked files are never ignored). Empty set when git cannot tell."""
@@ -2193,26 +2224,28 @@ def _findings(
             if lines or files:
                 out.append((False, G_UNCOMMITTED, f"{st.id} {st.title}: {lines} "
                             f"ledger lines and {files} folder files not in HEAD"))
-    opens: list[int] = sorted(  # add lines of all non-imported stages
-        x.lines[0] for x in state.values() if x.type == "stage" and not _imported(x)
+    spans: dict[str, list[tuple[int, int | None]]] = _stage_spans(
+        events,
+        {x.id for x in state.values() if x.type == "stage" and not _imported(x)},
+    )
+    opens: list[int] = sorted(  # add and reopen lines of all non-imported stages
+        lo for sp in spans.values() for lo, _ in sp
     )
     loose: list[Entry] = [  # not from `entries`: these carry no stage
         e for e in state.values()
         if e.type != "stage" and not e.stage and not _imported(e)
     ]
-    ends: dict[str, int | None] = {
-        st.id: _close_line(events, st.id) if st.status == "done" else None
-        for st in stages
-    }
-    by_close: list[Entry] = sorted(  # gaps: the stage closed last before an entry
-        (st for st in stages if ends[st.id] is not None),
-        key=lambda st: -(ends[st.id] or 0),
+    mine: list[tuple[int, int | None, Entry]] = sorted(
+        ((lo, hi, st) for st in stages for lo, hi in spans[st.id]),
+        key=lambda x: x[0],
+    )
+    by_close: list[tuple[int, int | None, Entry]] = sorted(  # gaps: the stage
+        (x for x in mine if x[1] is not None),  # closed last before an entry
+        key=lambda x: -(x[1] or 0),
     )
     seen: set[str] = set()
     for late in (False, True):  # while a stage was open first, then the gaps
-        for st in by_close if late else stages:
-            start: int = st.lines[0]
-            end: int | None = ends[st.id]
+        for start, end, st in by_close if late else mine:
             after: int | None = next((k for k in opens if k > (end or 0)), None)
             lo, hi = (end or 0, after) if late else (start, end)
             for e in loose:
