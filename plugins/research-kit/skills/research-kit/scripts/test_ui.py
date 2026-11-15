@@ -14,9 +14,10 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import traceback
 from collections.abc import Callable, Iterator
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.machinery import ModuleSpec
 from pathlib import Path
 from types import ModuleType
@@ -255,7 +256,15 @@ def test_missing_bundle_exit_1() -> None:
     assert "npm run build" in err and str(tmp / "ui") in err, err
 
 
+def not_viewer_msg(port: int) -> str:
+    return (
+        f"error: 127.0.0.1:{port} is taken by something that is not a ledger "
+        "viewer; pick another --port\n"
+    )
+
+
 def test_port_taken_exit_1() -> None:
+    # A plain listener never answers: the probe must give up on its own (1 s).
     for addr in ("127.0.0.1", "0.0.0.0"):  # 0.0.0.0: SO_REUSEADDR would shadow it
         with tmpdir() as tmp, socket.socket() as s:
             s.bind((addr, 0))
@@ -266,8 +275,126 @@ def test_port_taken_exit_1() -> None:
             argv: list[str] = ["--repo", str(repo), "--port", str(port), "--no-open"]
             rc, err = call_main(argv)
         assert rc == 1, (addr, rc)
-        assert err.count("\n") == 1 and err.startswith("error: "), repr(err)
-        assert str(port) in err and "Traceback" not in err, err
+        assert err == not_viewer_msg(port), repr(err)
+
+
+def test_port_taken_by_viewer() -> None:
+    with running(TWO) as (repo, dist, base):
+        port: int | None = urlsplit(base).port
+        ui.DIST = dist
+        rc, err = call_main(["--repo", str(repo), "--port", str(port), "--no-open"])
+    assert rc == 1, rc
+    assert err == (
+        f"error: a ledger viewer for {repo} already runs at "
+        f"http://127.0.0.1:{port}/; pick another --port for a second one\n"
+    ), repr(err)
+
+
+def test_port_taken_by_viewer_broken_ledger() -> None:
+    with running(TWO + ["not json"]) as (repo, dist, base):
+        port: int | None = urlsplit(base).port
+        ui.DIST = dist
+        rc, err = call_main(["--repo", str(repo), "--port", str(port), "--no-open"])
+    assert rc == 1, rc
+    assert err == (
+        f"error: a ledger viewer already runs at http://127.0.0.1:{port}/ "
+        "(its ledger does not load); pick another --port for a second one\n"
+    ), repr(err)
+    assert "ledger.jsonl" not in err, err  # the holder's error text is not shown
+
+
+def test_port_taken_by_viewer_big_ledger() -> None:
+    """The answer is longer than the probe reads; the repo is still found."""
+    big: list[str] = [
+        '{"ts":"2026-11-13T12:00:00+01:00","who":"lead","ev":"add","id":"T-%d","f":'
+        '{"type":"task","title":"a","status":"open","owner":"x","stage":"",'
+        '"note":"%s","links":[],"refs":[]}}' % (i, "n" * 200)
+        for i in range(1, 4001)
+    ]
+    server_err: io.StringIO = io.StringIO()  # the viewer must not log the cut-off
+    with contextlib.redirect_stderr(server_err), running(big) as (repo, dist, base):
+        assert len(req(base, "/api/ledger")[2]) > ui.PROBE_BYTES
+        port: int | None = urlsplit(base).port
+        ui.DIST = dist
+        rc, err = call_main(["--repo", str(repo), "--port", str(port), "--no-open"])
+        time.sleep(0.3)  # let the viewer's handler thread hit the closed socket
+    assert rc == 1 and err.startswith(f"error: a ledger viewer for {repo} "), err
+    assert server_err.getvalue() == "", server_err.getvalue()
+
+
+def squatter(
+    code: int, body: bytes, location: str | None = None
+) -> tuple[ThreadingHTTPServer, list[tuple[str, str, str | None]]]:
+    """HTTP server on a free port that answers everything with a canned reply and
+    records (method, path, Host) of each request it gets."""
+    seen: list[tuple[str, str, str | None]] = []
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+        def do_GET(self) -> None:
+            seen.append((self.command, self.path, self.headers.get("Host")))
+            self.send_response(code)
+            if location:
+                self.send_header("Location", location)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server: ThreadingHTTPServer = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, seen
+
+
+def test_port_taken_by_non_viewer_http() -> None:
+    target, target_seen = squatter(200, b'{"repo": "/elsewhere"}')
+    redirect: str = f"http://127.0.0.1:{target.server_port}/api/ledger"
+    cases: list[tuple[int, bytes, str | None]] = [
+        (404, b"nope", None),
+        (200, b"<html>not json</html>", None),
+        (200, b"[1, 2]", None),
+        (200, b'{"entries": []}', None),
+        (200, b'{"repo": 7}', None),
+        (200, b"\xff\xfe", None),
+        (200, b'{"repo": "/x\\u001b]0;PWNED\\u0007\\u001b[2J"}', None),  # ESC, BEL
+        (200, b'{"repo": "/x\x1b[2J"}', None),  # raw ESC byte, not escaped
+        (  # newline plus a forged second line
+            200,
+            b'{"repo": "/x\\nrk ui: /y at http://127.0.0.1:1/ already runs"}',
+            None,
+        ),
+        (200, b'{"repo": "' + b"A" * 5000 + b'"}', None),  # over-long
+        (500, b'{"entries": []}', None),  # 500 without a string "error"
+        (500, b'{"error": 7}', None),
+        (302, b"", redirect),  # must not be followed
+    ]
+    try:
+        for code, body, location in cases:
+            server, seen = squatter(code, body, location)
+            try:
+                with tmpdir() as tmp:
+                    ui.DIST = mk_dist(tmp)
+                    port: int = server.server_port
+                    argv: list[str] = [
+                        "--repo",
+                        str(mk_repo(tmp, TWO)),
+                        "--port",
+                        str(port),
+                        "--no-open",
+                    ]
+                    rc, err = call_main(argv)
+            finally:
+                server.shutdown()
+                server.server_close()
+            assert rc == 1, (code, body, rc)
+            assert err == not_viewer_msg(port), (code, body, err)
+            # one GET /api/ledger with the Host the handler demands, nothing else
+            assert seen == [("GET", "/api/ledger", f"127.0.0.1:{port}")], seen
+        assert target_seen == [], target_seen
+    finally:
+        target.shutdown()
+        target.server_close()
 
 
 def test_no_ledger_exit_1() -> None:
@@ -316,6 +443,87 @@ def test_event_meta_passthrough() -> None:
         {"kit": "0.2.0", "sid": "abc", "rules": {"AGENTS.md": "2026-11-14a"}},
         {},
     ], got
+
+
+def dist_stamp(ui_dir: Path) -> str:
+    """sha256 hex over the bundle inputs in sorted POSIX-path order, each as
+    <path> NUL <bytes> NUL: src/** and public/** (if present), index.html,
+    package.json, package-lock.json, vite.config.ts, ui/tsconfig*.json. Paths with
+    a segment starting with "." are skipped. Same as ui/stamp.mjs."""
+    rels: list[str] = [
+        rel
+        for sub in ("src", "public")
+        for p in (ui_dir / sub).rglob("*")
+        if p.is_file()
+        for rel in [p.relative_to(ui_dir).as_posix()]
+        if not any(seg.startswith(".") for seg in rel.split("/"))
+    ]
+    rels += ["index.html", "package.json", "package-lock.json", "vite.config.ts"]
+    rels += [p.name for p in ui_dir.glob("tsconfig*.json") if p.is_file()]
+    h = hashlib.sha256()
+    for rel in sorted(rels):
+        h.update(rel.encode() + b"\0" + (ui_dir / rel).read_bytes() + b"\0")
+    return h.hexdigest()
+
+
+def test_dist_fresh() -> None:
+    ui_dir: Path = REAL_DIST.parent
+    stamp: Path = REAL_DIST / "src.sha256"
+    stale: str = f"ui/dist is stale: run npm run build in {ui_dir}"
+    assert stamp.is_file(), f"{stale} (no src.sha256)"
+    assert stamp.read_text().strip() == dist_stamp(ui_dir), stale
+
+
+def test_dist_stamp_detects_change() -> None:
+    with tmpdir() as tmp:
+        (tmp / "src" / "sub").mkdir(parents=True)
+        (tmp / "public").mkdir()
+        (tmp / "src" / "a.ts").write_text("a")
+        (tmp / "src" / "sub" / "b.ts").write_text("b")
+        (tmp / "public" / "favicon.svg").write_text("<svg/>")
+        for name in (
+            "index.html",
+            "package.json",
+            "package-lock.json",
+            "vite.config.ts",
+            "tsconfig.json",
+            "tsconfig.app.json",
+        ):
+            (tmp / name).write_text(name)
+        base: str = dist_stamp(tmp)
+        assert len(base) == 64 and dist_stamp(tmp) == base
+        # dotfiles and dot-directories never count
+        (tmp / "src" / ".DS_Store").write_text("x")
+        (tmp / "src" / "sub" / ".swp").write_text("x")
+        (tmp / "src" / ".cache").mkdir()
+        (tmp / "src" / ".cache" / "c.ts").write_text("x")
+        (tmp / "public" / ".DS_Store").write_text("x")
+        assert dist_stamp(tmp) == base
+        for rel in (
+            "src/a.ts",
+            "src/sub/b.ts",
+            "public/favicon.svg",
+            "index.html",
+            "package.json",
+            "package-lock.json",
+            "vite.config.ts",
+            "tsconfig.json",
+            "tsconfig.app.json",
+        ):
+            f: Path = tmp / rel
+            orig: bytes = f.read_bytes()
+            f.write_bytes(orig + b"x")  # one byte
+            assert dist_stamp(tmp) != base, rel
+            f.write_bytes(orig)
+            assert dist_stamp(tmp) == base, rel
+        (tmp / "src" / "c.ts").write_text("")  # a new empty file counts too
+        assert dist_stamp(tmp) != base
+        (tmp / "src" / "c.ts").unlink()
+        (tmp / "tsconfig.node.json").write_text("{}")  # any tsconfig*.json counts
+        assert dist_stamp(tmp) != base
+        (tmp / "tsconfig.node.json").unlink()
+        (tmp / "src" / "a.ts").rename(tmp / "src" / "z.ts")  # rename counts too
+        assert dist_stamp(tmp) != base
 
 
 def main() -> int:
