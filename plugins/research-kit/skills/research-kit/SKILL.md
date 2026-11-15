@@ -23,8 +23,8 @@ reference is core AGENTS.md 4.2. `add` and `set` take `--label L` (form
 title is its folder name and is never renamed; every ID argument also takes a
 label or a stage code (`03b`); receipts print the real ID and the entry's stage
 (or `(no stage)`); `set --stage` with the stage the entry already has writes
-nothing (`unchanged`); an `add` gets the single open stage by default; when no
-stage is open and the new entry is closed (a decision) and `--link`s a closed
+nothing (`unchanged`); an `add` gets the single open stage by default; when there
+is none (no stage open, or several) and the new entry is closed (a decision) and `--link`s a closed
 stage, the receipt says `(no stage: S-n is closed)` (an open entry gets the plain
 `(no stage)`). Only open tasks block a stage close, so for every type but task
 and stage (debt, deferred, fetch, handoff, declared types) `stage` means "raised
