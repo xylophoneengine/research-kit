@@ -2134,6 +2134,66 @@ def test_doctor_reopened_imported_stage() -> None:  # blind14 F1, crit8-r12 m1
         ], out
 
 
+def closed_s1_repo(root: Path) -> Path:
+    """S-1 (01-software-a) added and closed with D-1 (lines 1 to 3)."""
+    repo: Path = new_repo(root)
+    lrun(repo, "add", "stage", "01-software-a")
+    lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1")
+    lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+    return repo
+
+
+def test_doctor_imported_open_stage_reopened() -> None:  # blind15 F1
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = closed_s1_repo(Path(d))
+        for i, title in ((1, "02-paper-x"), (2, "03-experiment-y")):  # open
+            lrun(repo, "add", "stage", title, "--imported", "--source", f"a:{i}")
+        lrun(repo, "add", "task", "loose", "--note", "n")  # T-1: two open, none
+        (repo / "pm/stages/02-paper-x").mkdir(parents=True)
+        for k in (2, 3):  # close S-2, reopen it, close it again
+            lrun(repo, "add", "decision", f"ok{k}", "--owner", "user", "--link",
+                 "S-2", "--stage", "S-2")
+            assert lrun(repo, "stage-close", "S-2", "--sign-off", f"D-{k}")[0] == 0
+            if k == 2:
+                lrun(repo, "reopen", "S-2", "--note", "again")
+        rec: str = (repo / "pm/stages/02-paper-x/LEDGER.md").read_text()
+        assert "- T-1 task open (lead) loose [no stage]" in rec, rec  # in span 0
+        out: str = doctor(repo)[1]
+        assert group(out, L.G_NOSTAGE) == ["T-1 (S-2) loose"], out  # as the record
+        assert group(out, L.G_LATE) == [], out
+
+
+def test_doctor_import_line_is_no_close() -> None:  # exp6-r4 Lead's call 1
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        for i, title in ((1, "01-paper-old"), (2, "02-software-old")):
+            lrun(repo, "add", "stage", title, "--imported", "--source", f"o:{i}",
+                 "--status", "done")
+        lrun(repo, "add", "task", "t1", "--note", "n")
+        lrun(repo, "add", "debt", "d1")
+        out: str = doctor(repo)[1]
+        assert group(out, L.G_LATE) == [] and group(out, L.G_NOSTAGE) == [], out
+        lrun(repo, "add", "stage", "03-paper-new")  # S-3, a real open and close
+        lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-3")
+        lrun(repo, "stage-close", "S-3", "--sign-off", "D-1")
+        lrun(repo, "add", "stage", "04-paper-x", "--imported", "--source", "o:3",
+             "--status", "done")  # an import line ends no gap either
+        lrun(repo, "add", "debt", "d2")  # DB-2: late after S-3
+        out = doctor(repo)[1]
+        assert group(out, L.G_LATE) == ["DB-2 (after S-3) d2"], out
+
+
+def test_doctor_imported_open_stage_closed_here() -> None:  # crit8-r13 m1
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = closed_s1_repo(Path(d))
+        lrun(repo, "add", "stage", "02-paper-x", "--imported", "--source", "a:1")
+        lrun(repo, "add", "decision", "ok2", "--owner", "user", "--link", "S-2")
+        assert lrun(repo, "stage-close", "S-2", "--sign-off", "D-2")[0] == 0
+        lrun(repo, "add", "debt", "late")  # DB-1, right after S-2 closed
+        out: str = doctor(repo)[1]
+        assert group(out, L.G_LATE) == ["DB-1 (after S-2) late"], out
+
+
 def test_record_of_reopened_stage() -> None:  # brief 025 fixes 1, 2
     with tempfile.TemporaryDirectory() as d:
         repo: Path = reopened_repo(Path(d))  # closed at 5, DB-1 at 6, reopened at 7

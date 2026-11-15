@@ -1783,15 +1783,11 @@ def render_stage_record(
     upto: list[tuple[int, dict[str, object]]] = [(n, v) for n, v in events if n <= end]
     state: dict[str, Entry] = fold(upto)
     st: Entry = state[sid]
-    found: list[tuple[int, int]] = [
-        (lo, end if hi is None else hi) for lo, hi in _stage_spans(upto, {sid})[sid]
-    ]
-    # a stage imported not open (done, shelved, ...): its add line is span 0, so a
-    # later reopen counts as one
+    found: list[tuple[int, int | None]] = _stage_spans(upto, {sid})[sid]
     added_closed: bool = not (found and found[0][0] == st.lines[0])
-    spans: list[tuple[int, int]] = (
-        [(st.lines[0], st.lines[0]), *found] if added_closed else found
-    )
+    spans: list[tuple[int, int]] = [
+        (lo, end if hi is None else hi) for lo, hi in _with_add_span(found, st.lines[0])
+    ]
     window: list[tuple[int, dict[str, object]]] = [
         (n, v) for n, v in upto if any(lo <= n <= hi for lo, hi in spans)
     ]
@@ -2180,6 +2176,15 @@ def _stage_spans(
     return out
 
 
+def _with_add_span(
+    found: list[tuple[int, int | None]], add: int
+) -> list[tuple[int, int | None]]:
+    """A stage's spans as its record and doctor count them: `found` (from
+    `_stage_spans`), and for a stage added not open (imported done) its add line
+    as span 0, closed on that line, so a later reopen counts as one."""
+    return found if found and found[0][0] == add else [(add, add), *found]
+
+
 def _ignored(repo: Path, refs: list[str]) -> set[str]:
     """Those of `refs` git ignores (`check-ignore`; works for missing files too;
     tracked files are never ignored). Empty set when git cannot tell."""
@@ -2217,20 +2222,18 @@ def _findings(
         (e for e in state.values() if only is None or only in (e.id, e.stage)),
         key=lambda e: e.lines[0],
     )
-    # spans as in the record; an imported stage counts only from a reopen in this
-    # ledger on (its imported history is not checked): never reopened, none
-    spans: dict[str, list[tuple[int, int | None]]] = {
-        sid: [
-            s for s in sp
-            if not _imported(state[sid]) or s[0] != state[sid].lines[0]
-        ]
+    spans: dict[str, list[tuple[int, int | None]]] = {  # as in the record, all
+        sid: _with_add_span(sp, state[sid].lines[0])
         for sid, sp in _stage_spans(
             events, {x.id for x in state.values() if x.type == "stage"}
         ).items()
     }
+    # folder and not-in-HEAD checks (scope unchanged): an imported stage only
+    # once it was reopened here (a span that does not start at its import line)
     stages: list[Entry] = [
         e for e in entries
-        if e.type == "stage" and (not _imported(e) or spans[e.id])
+        if e.type == "stage"
+        and (not _imported(e) or any(lo != e.lines[0] for lo, _ in spans[e.id]))
     ]
     present: list[tuple[str, str]] = []  # (id, ref) of refs that exist
     imp: list[tuple[str, str]] = []
@@ -2307,20 +2310,28 @@ def _findings(
             if lines or files:
                 out.append((False, G_UNCOMMITTED, f"{st.id} {st.title}: {lines} "
                             f"ledger lines and {files} folder files not in HEAD"))
-    opens: list[int] = sorted(  # add and reopen lines of all counted stages
-        lo for sp in spans.values() for lo, _ in sp
+    # "late" = made after a close made in this ledger (a set to done) and before
+    # the next open made in it (an add as open, or a reopen); this holds for
+    # every stage. The import line of a stage imported closed (its span 0,
+    # (add, add), kept for the record) is neither: it starts and ends no gap.
+    opens: list[int] = sorted(
+        lo for sp in spans.values() for lo, hi in sp if hi is None or lo < hi
     )
     loose: list[Entry] = [  # not from `entries`: these carry no stage
         e for e in state.values()
         if e.type != "stage" and not e.stage and not _imported(e)
     ]
     mine: list[tuple[int, int | None, Entry]] = sorted(
-        ((lo, hi, st) for st in stages for lo, hi in spans[st.id]),
+        (
+            (lo, hi, st)
+            for st in entries if st.type == "stage"  # imported too: the record's
+            for lo, hi in spans[st.id]  # spans, no exception
+        ),
         key=lambda x: x[0],
     )
     by_close: list[tuple[int, int | None, Entry]] = sorted(  # gaps: the stage
-        (x for x in mine if x[1] is not None),  # closed last before an entry
-        key=lambda x: -(x[1] or 0),
+        (x for x in mine if x[1] is not None and x[0] < x[1]),  # closed last
+        key=lambda x: -(x[1] or 0),  # before an entry, by a real close (above)
     )
     seen: set[str] = set()
     for late in (False, True):  # while a stage was open first, then the gaps
