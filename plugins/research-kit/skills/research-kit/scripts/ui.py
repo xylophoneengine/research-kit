@@ -57,6 +57,18 @@ def _read(
     return events, ledger.fold(events)
 
 
+def _meta(ev: dict[str, object]) -> dict[str, object]:
+    """kit, sid, rules of a ledger event; a key of the wrong type is left out."""
+    out: dict[str, object] = {}
+    for k in ("kit", "sid"):
+        if isinstance(ev.get(k), str):
+            out[k] = ev[k]
+    r: object = ev.get("rules")
+    if isinstance(r, dict) and all(isinstance(v, str) for v in r.values()):
+        out["rules"] = r
+    return out
+
+
 def payload(repo: Path) -> dict[str, object]:
     """The whole ledger as JSON-ready data: entries, raw events, known types."""
     try:
@@ -70,7 +82,11 @@ def payload(repo: Path) -> dict[str, object]:
         "repo": str(repo),
         "entries": [dataclasses.asdict(e) for e in state.values()],
         "events": [
-            {"line": n, **{k: ev.get(k) for k in ("ts", "who", "ev", "id", "f")}}
+            {
+                "line": n,
+                **{k: ev.get(k) for k in ("ts", "who", "ev", "id", "f")},
+                **_meta(ev),
+            }
             for n, ev in events
         ],
         "types": ledger.known_types(repo),

@@ -1,8 +1,17 @@
-import { useMemo, useState } from "react";
+import { useContext, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import { IdLink, Linked } from "@/components/IdLink";
+import { EntryIndex, IdLink, Linked } from "@/components/IdLink";
 import { TypeBadge } from "@/components/TypeBadge";
-import { age, backlinks, byId, type Entry, type Ev, type Ledger } from "@/lib/ledger";
+import {
+  age,
+  backlinks,
+  byId,
+  evMeta,
+  stageCodeOf,
+  type Entry,
+  type Ev,
+  type Ledger,
+} from "@/lib/ledger";
 
 const pad = (n: number): string => String(n).padStart(2, "0");
 
@@ -21,20 +30,20 @@ function cut80(s: string): number {
   return n;
 }
 
-function Val({ v, ids }: { v: unknown; ids: Set<string> }) {
+function Val({ v, ids, own }: { v: unknown; ids: Set<string>; own?: string }) {
   const [more, setMore] = useState(false);
   const s = typeof v === "string" ? v : JSON.stringify(v);
   const n = cut80(s);
   if (s.length <= n) {
     return (
       <span className="whitespace-pre-wrap">
-        <Linked text={s} ledgerIds={ids} />
+        <Linked text={s} ledgerIds={ids} own={own} />
       </span>
     );
   }
   return (
     <span className="whitespace-pre-wrap">
-      <Linked text={more ? s : s.slice(0, n) + "\u2026"} ledgerIds={ids} />{" "}
+      <Linked text={more ? s : s.slice(0, n) + "\u2026"} ledgerIds={ids} own={own} />{" "}
       <button
         type="button"
         className="text-primary hover:underline"
@@ -46,7 +55,8 @@ function Val({ v, ids }: { v: unknown; ids: Set<string> }) {
   );
 }
 
-function HistoryLine({ ev, ids }: { ev: Ev; ids: Set<string> }) {
+function HistoryLine({ ev, ids, own }: { ev: Ev; ids: Set<string>; own?: string }) {
+  const meta = evMeta(ev);
   return (
     <li className="text-xs">
       <span className="font-mono text-muted-foreground">{fmtTs(ev.ts)}</span> {ev.who}{" "}
@@ -54,9 +64,14 @@ function HistoryLine({ ev, ids }: { ev: Ev; ids: Set<string> }) {
       {Object.entries(ev.f).map(([k, v]) => (
         <span key={k} className="ml-2">
           <span className="text-muted-foreground">{k}=</span>
-          <Val v={v} ids={ids} />
+          <Val v={v} ids={ids} own={own} />
         </span>
       ))}
+      {meta && (
+        <span className="ml-2 text-[10px] text-muted-foreground" title={ev.sid ? `sid=${ev.sid}` : undefined}>
+          {meta}
+        </span>
+      )}
     </li>
   );
 }
@@ -76,6 +91,7 @@ export function EntryDetail({ ledger, id }: { ledger: Ledger; id: string }) {
   const ids = useMemo(() => new Set(idx.keys()), [idx]);
   // which linked rows show their note ("links:D-1", "from:D-1"); per detail view
   const [open, setOpen] = useState<Set<string>>(new Set());
+  const { codes } = useContext(EntryIndex);
   const e: Entry | undefined = idx.get(id);
   if (!e) return <p className="p-4 text-sm">no such entry: {id}</p>;
 
@@ -108,13 +124,13 @@ export function EntryDetail({ ledger, id }: { ledger: Ledger; id: string }) {
         {t && (
           <>
             {" "}
-            <Badge variant="outline">{t.status}</Badge> <Linked text={t.title} ledgerIds={ids} />
+            <Badge variant="outline">{t.status}</Badge> <Linked text={t.title} ledgerIds={ids} own={own} />
           </>
         )}
         {t && shown && (
           <div className="mt-1 mb-2 ml-4 border-l pl-2 text-xs break-words whitespace-pre-wrap">
             {t.note ? (
-              <Linked text={t.note} ledgerIds={ids} />
+              <Linked text={t.note} ledgerIds={ids} own={own} />
             ) : (
               <span className="text-muted-foreground">(no note)</span>
             )}
@@ -124,13 +140,15 @@ export function EntryDetail({ ledger, id }: { ledger: Ledger; id: string }) {
     );
   };
   const stage = e.stage ? idx.get(e.stage) : undefined;
+  // stage code of the entry shown (a stage: its own code): resolves a bare work item (W6b)
+  const own: string | undefined = stageCodeOf(e.type === "stage" ? e.title : stage?.title ?? "");
   const fields: [string, React.ReactNode][] = [
     ["owner", e.owner || "-"],
     [
       "stage",
       e.stage ? (
         <>
-          <IdLink id={e.stage} ledgerIds={ids} /> {stage && <Linked text={stage.title} ledgerIds={ids} />}
+          <IdLink id={e.stage} ledgerIds={ids} /> {stage && <Linked text={stage.title} ledgerIds={ids} own={own} />}
         </>
       ) : (
         "-"
@@ -140,9 +158,25 @@ export function EntryDetail({ ledger, id }: { ledger: Ledger; id: string }) {
     ["updated", fmtTs(e.updated)],
     ["age", age(e, new Date())],
   ];
-  for (const k of ["source", "legacy_id", "date"]) {
+  for (const k of ["reason", "source", "legacy_id", "date"]) {
     const v = e.extra[k];
-    if (typeof v === "string") fields.push([k, v]);
+    if (typeof v !== "string") continue;
+    // a label "<stage code>/<item>": the code links to its stage when known
+    const cut = v.indexOf("/");
+    const sid = k === "legacy_id" && cut > 0 ? codes.get(v.slice(0, cut)) : undefined;
+    fields.push([
+      k === "legacy_id" ? "label" : k,
+      sid ? (
+        <>
+          <IdLink id={sid} ledgerIds={ids}>
+            {v.slice(0, cut)}
+          </IdLink>
+          {v.slice(cut)}
+        </>
+      ) : (
+        v
+      ),
+    ]);
   }
   const from = back.get(e.id) ?? [];
   const events = ledger.events.filter((v) => v.id === e.id);
@@ -156,7 +190,7 @@ export function EntryDetail({ ledger, id }: { ledger: Ledger; id: string }) {
         {e.extra.imported === true && <Badge variant="outline">imported</Badge>}
       </div>
       <h2 className="mt-2 text-base font-medium">
-        <Linked text={e.title} ledgerIds={ids} />
+        <Linked text={e.title} ledgerIds={ids} own={own} />
       </h2>
       <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
         {fields.map(([k, v]) => (
@@ -169,7 +203,7 @@ export function EntryDetail({ ledger, id }: { ledger: Ledger; id: string }) {
       <Section title="note">
         {e.note ? (
           <p className="break-words whitespace-pre-wrap text-sm">
-            <Linked text={e.note} ledgerIds={ids} />
+            <Linked text={e.note} ledgerIds={ids} own={own} />
           </p>
         ) : (
           <p className="text-sm text-muted-foreground">(no note)</p>
@@ -189,7 +223,7 @@ export function EntryDetail({ ledger, id }: { ledger: Ledger; id: string }) {
       <Section title="history">
         <ul className="space-y-1">
           {events.map((v) => (
-            <HistoryLine key={v.line} ev={v} ids={ids} />
+            <HistoryLine key={v.line} ev={v} ids={ids} own={own} />
           ))}
         </ul>
       </Section>

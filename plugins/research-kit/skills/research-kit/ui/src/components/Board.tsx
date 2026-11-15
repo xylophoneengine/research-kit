@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import type { Entry } from "@/lib/ledger";
 
 const COLS = ["running", "open", "done"];
-const FOLDED = ["dropped", "superseded"];
+const FOLDED = ["shelved", "dropped", "superseded"];
 const PAGE = 30;
 
 const ms = (s: string): number => {

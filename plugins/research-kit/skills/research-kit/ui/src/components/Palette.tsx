@@ -7,7 +7,7 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import { matches, pinExact, type Entry } from "@/lib/ledger";
+import { labelOf, matches, pinExact, type Entry } from "@/lib/ledger";
 
 // Cmd-K / Ctrl-K: the same search as the header box, over the whole ledger
 // (no filters), first 50 hits
@@ -50,6 +50,7 @@ export function Palette({
               }}
             >
               <span className="font-mono">{e.id}</span>
+              {labelOf(e) && <span className="font-mono text-muted-foreground">{labelOf(e)}</span>}
               <span className="text-muted-foreground">{e.status}</span>
               <span className="truncate">{e.title}</span>
             </CommandItem>

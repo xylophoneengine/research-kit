@@ -75,7 +75,7 @@ export function Filters({
     vs.map((v) => ({ value: v, text: v === NONE ? "(none)" : v }));
   const stages = f.stage.map((v) => ({
     value: v,
-    text: v === NONE ? "(none)" : `${v} ${ids.get(v)?.title.slice(0, 50) ?? ""}`.trim(),
+    text: v === NONE ? "unstaged" : `${v}${ids.get(v)?.title.slice(0, 50) ?? ""}`.trim(),
   }));
   const set = (k: Key) => (v: string[]) => patch({ [k]: v });
   const any =

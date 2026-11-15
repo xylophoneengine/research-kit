@@ -9,10 +9,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { age, parseRoute, type Entry } from "@/lib/ledger";
+import { age, labelOf, parseRoute, type Entry } from "@/lib/ledger";
 
-type Col = "id" | "type" | "status" | "title" | "owner" | "stage" | "age";
-const COLS: Col[] = ["id", "type", "status", "title", "owner", "stage", "age"];
+type Col = "id" | "label" | "type" | "status" | "title" | "owner" | "stage" | "age";
+const COLS: Col[] = ["id", "label", "type", "status", "title", "owner", "stage", "age"];
 type Sort = { col: Col; dir: 1 | -1 } | null;
 
 function ageMs(e: Entry, now: Date): number {
@@ -44,7 +44,7 @@ export function EntryTable({
     if (!sort) return entries; // default order from visible()
     const t = new Date();
     const val = (e: Entry): string | number =>
-      sort.col === "age" ? ageMs(e, t) : e[sort.col];
+      sort.col === "age" ? ageMs(e, t) : sort.col === "label" ? labelOf(e) : e[sort.col];
     return [...entries].sort((a, b) => {
       const x = val(a);
       const y = val(b);
@@ -115,6 +115,7 @@ export function EntryTable({
             onClick={() => onSelect(e.id)}
           >
             <TableCell className="font-mono">{e.id}</TableCell>
+            <TableCell className="font-mono">{labelOf(e)}</TableCell>
             <TableCell>
               <TypeBadge type={e.type} />
             </TableCell>
@@ -125,7 +126,10 @@ export function EntryTable({
               {e.title}
             </TableCell>
             <TableCell>{e.owner}</TableCell>
-            <TableCell>{e.stage}</TableCell>
+            <TableCell>
+              {e.stage ||
+                (e.type !== "stage" && <span className="text-muted-foreground">unstaged</span>)}
+            </TableCell>
             <TableCell>{age(e, now)}</TableCell>
           </TableRow>
         ))}

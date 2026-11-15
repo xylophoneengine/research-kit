@@ -3,12 +3,20 @@ import { Badge } from "@/components/ui/badge";
 import { TypeBadge } from "@/components/TypeBadge";
 import { typeClasses } from "@/lib/typeColor";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
-import { formatRoute, linkify, parseRoute, type Entry } from "@/lib/ledger";
+import { formatRoute, labelOf, linkify, parseRoute, type Entry } from "@/lib/ledger";
 
 // provided once by App: id -> entry (hover preview, link colour) and stage
-// code -> stage id (see stageCodes)
-export type Index = { entries: Map<string, Entry>; codes: Map<string, string> };
-export const EntryIndex = createContext<Index>({ entries: new Map(), codes: new Map() });
+// code -> stage id (see stageCodes), label -> entry id (see labelIndex)
+export type Index = {
+  entries: Map<string, Entry>;
+  codes: Map<string, string>;
+  labels: Map<string, string>;
+};
+export const EntryIndex = createContext<Index>({
+  entries: new Map(),
+  codes: new Map(),
+  labels: new Map(),
+});
 
 function Preview({ e }: { e: Entry }) {
   const note = e.note.length > 200 ? e.note.slice(0, 200) + "…" : e.note;
@@ -16,6 +24,7 @@ function Preview({ e }: { e: Entry }) {
     <div className="space-y-1 text-xs">
       <div className="flex flex-wrap items-center gap-1">
         <span className="font-mono font-semibold">{e.id}</span>
+        {labelOf(e) && <span className="font-mono text-muted-foreground">{labelOf(e)}</span>}
         <TypeBadge type={e.type} />
         <Badge variant={e.status === "running" ? "default" : "outline"}>{e.status}</Badge>
       </div>
@@ -68,18 +77,27 @@ export function IdLink({
   );
 }
 
-// text with every existing entry id turned into an IdLink; the rest stays text
-export function Linked({ text, ledgerIds }: { text: string; ledgerIds: Set<string> }) {
-  const { codes } = useContext(EntryIndex);
+// text with every existing entry id, label and stage code turned into an IdLink;
+// the rest stays text. `own`: stage code of the entry the text belongs to
+export function Linked({
+  text,
+  ledgerIds,
+  own,
+}: {
+  text: string;
+  ledgerIds: Set<string>;
+  own?: string;
+}) {
+  const { codes, labels } = useContext(EntryIndex);
   return (
     <>
-      {linkify(text, ledgerIds, codes).map((s, i) =>
+      {linkify(text, ledgerIds, codes, labels, own).map((s, i) =>
         typeof s === "string" ? (
           <span key={i}>{s}</span>
         ) : "label" in s ? (
           <LabelLink key={i} label={s.label} />
         ) : (
-          // a stage code keeps its own text; the link and the card are the stage's
+          // a stage code, label or work item keeps its own text; link and card are the entry's
           <IdLink key={i} id={s.id} ledgerIds={ledgerIds}>
             {s.text}
           </IdLink>

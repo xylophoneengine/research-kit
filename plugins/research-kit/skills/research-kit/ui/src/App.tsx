@@ -10,8 +10,8 @@ import { Palette } from "@/components/Palette";
 import { Split } from "@/components/Split";
 import { Stages } from "@/components/Stages";
 import { Timeline } from "@/components/Timeline";
-import { byId, stageCodes, visible, type Tab } from "@/lib/ledger";
-import { useMemo } from "react";
+import { byId, exactHit, labelIndex, stageCodes, visible, type Tab } from "@/lib/ledger";
+import { useEffect, useMemo } from "react";
 import { useLedger } from "@/useLedger";
 import { useRoute } from "@/useRoute";
 
@@ -22,12 +22,20 @@ export default function App() {
   const { route, open, patch } = useRoute();
 
   const onEnter = (): void => {
-    const q = route.q.trim().toLowerCase();
-    const hit = ledger?.entries.find((e) => e.id.toLowerCase() === q);
+    const hit = ledger && exactHit(ledger.entries, route.q);
     if (!hit) return;
     patch({ q: "" });
     open(hit.id);
   };
+
+  // Esc closes the detail pane, unless a dialog (palette) is open and takes the key itself
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent): void => {
+      if (ev.key === "Escape" && !document.querySelector('[role="dialog"]')) patch({ e: null });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [patch]);
 
   // Stages counts ignore the stage filter, like the row click that replaces it
   const rows = useMemo(
@@ -39,6 +47,7 @@ export default function App() {
     () => ({
       entries: ledger ? byId(ledger) : new Map(),
       codes: ledger ? stageCodes(ledger.entries) : new Map(),
+      labels: ledger ? labelIndex(ledger.entries) : new Map(),
     }),
     [ledger],
   );
@@ -119,18 +128,25 @@ export default function App() {
                   />
                 )}
                 {route.tab === "timeline" && (
-                  <Timeline entries={rows} events={ledger.events} ledgerIds={ids} />
+                  <Timeline entries={rows} events={ledger.events} ledgerIds={ids} onSelect={open} />
                 )}
               </>
             }
             right={
-              <>
-                {route.e ? (
-                <EntryDetail key={route.e} ledger={ledger} id={route.e} />
-              ) : (
-                <p className="p-4 text-muted-foreground">select an entry</p>
-              )}
-              </>
+              route.e ? (
+                <div className="relative">
+                  <button
+                    type="button"
+                    aria-label="close detail"
+                    title="close (Esc)"
+                    className="absolute right-2 top-2 z-10 px-1 text-muted-foreground hover:text-foreground"
+                    onClick={() => patch({ e: null })}
+                  >
+                    {"\u2715"}
+                  </button>
+                  <EntryDetail key={route.e} ledger={ledger} id={route.e} />
+                </div>
+              ) : null
             }
           />
         </>

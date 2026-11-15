@@ -292,6 +292,32 @@ def test_rk_dispatch() -> None:
     )
 
 
+def test_event_meta_passthrough() -> None:
+    lines: list[str] = [
+        '{"ts":"2026-11-13T12:00:00+01:00","who":"lead","ev":"add","id":"T-1",'
+        '"kit":"0.2.0","sid":"abc","f":{"type":"task","title":"a","status":"open",'
+        '"owner":"x","stage":"","note":"n","links":[],"refs":[]}}',
+        '{"ts":"2026-11-13T12:01:00+01:00","who":"lead","ev":"add","id":"S-1",'
+        '"kit":"0.2.0","sid":"abc","rules":{"AGENTS.md":"2026-11-14a"},'
+        '"f":{"type":"stage","title":"s","status":"open","owner":"","stage":"",'
+        '"note":"","links":[],"refs":[]}}',
+        '{"ts":"2026-11-13T12:05:00+01:00","who":"hook","ev":"set","id":"T-1",'
+        '"f":{"status":"running"}}',
+    ]
+    with tmpdir() as tmp:
+        data: dict[str, Any] = ui.payload(mk_repo(tmp, lines))
+    json.dumps(data)
+    keys: tuple[str, ...] = ("kit", "sid", "rules")
+    got: list[dict[str, Any]] = [
+        {k: ev[k] for k in keys if k in ev} for ev in data["events"]
+    ]
+    assert got == [
+        {"kit": "0.2.0", "sid": "abc"},
+        {"kit": "0.2.0", "sid": "abc", "rules": {"AGENTS.md": "2026-11-14a"}},
+        {},
+    ], got
+
+
 def main() -> int:
     tests: list[tuple[str, Callable[[], None]]] = [
         (n, f) for n, f in globals().items() if n.startswith("test_") and callable(f)

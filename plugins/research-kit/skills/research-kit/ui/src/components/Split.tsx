@@ -23,6 +23,7 @@ function save(v: number): void {
 }
 
 // Left pane | draggable handle | right pane. Pointer events, no library.
+// `right` null: no pane, no divider, left takes the full width
 export function Split({ left, right }: { left: React.ReactNode; right: React.ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
   const [pct, setPct] = useState<number>(load);
@@ -34,6 +35,7 @@ export function Split({ left, right }: { left: React.ReactNode; right: React.Rea
     setPct(Math.min(MAX, Math.max(MIN, ((x - r.left) / r.width) * 100)));
   };
 
+  if (right == null) return <div className="min-h-0 flex-1 overflow-auto">{left}</div>;
   return (
     <div ref={box} className={"flex min-h-0 flex-1 " + (drag ? "select-none" : "")}>
       <div className="min-h-0 min-w-0 overflow-auto" style={{ width: `${pct}%` }}>

@@ -75,7 +75,7 @@ export function Stages({
         ))}
         <TableRow className="cursor-pointer" onClick={() => go(NONE)}>
           <TableCell />
-          <TableCell className="text-muted-foreground">no stage</TableCell>
+          <TableCell className="text-muted-foreground">unstaged / backlog</TableCell>
           <TableCell />
           <TableCell>
             <Counts es={noStage} />
