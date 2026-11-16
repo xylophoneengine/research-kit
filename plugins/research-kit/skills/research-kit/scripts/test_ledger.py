@@ -2307,6 +2307,93 @@ def test_add_stage_one_per_kind() -> None:  # brief 025 fix 3
                     "--source", "a:1")[0] == 0  # imported history: not checked
 
 
+def test_add_stage_open_computes_nn() -> None:  # W1 T1, Q2, Q11, Q12
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        (repo / "AGENTS.md").write_text("<!-- research-kit: 2026-01-01a -->\n")
+        code, out = lrun(repo, "add", "stage", "paper-x", "--open")
+        assert code == 0 and out == (
+            "logged S-1: 01-paper-x\n"
+            "folder pm/stages/01-paper-x/ (deliverables/ notes/ code/ chat/)\n"
+        ), out
+        evs: list[dict[str, Any]] = jl(repo)
+        assert len(evs) == 1 and evs[0]["ev"] == "add", evs  # one add event (Q11)
+        assert evs[0]["f"]["status"] == "open" and evs[0]["f"]["title"] == "01-paper-x"
+        assert evs[0]["f"]["refs"] == ["pm/stages/01-paper-x/"], evs[0]
+        assert evs[0]["rules"] == {"AGENTS.md": "2026-01-01a"}, evs[0]
+        folder: Path = repo / "pm/stages/01-paper-x"
+        assert sorted(p.name for p in folder.iterdir()) == sorted(L.STAGE_DIRS)
+        out = lrun(repo, "add", "stage", "software-y", "--open")[1]
+        assert out.startswith("logged S-2: 02-software-y\n"), out
+        lrun(repo, "add", "stage", "07-paper-old", "--imported", "--source", "a:1")
+        assert L._max_nn(L.load(repo)) == 7  # imported NN titles count (Q2)
+        out = lrun(repo, "add", "stage", "experiment-z", "--open")[1]
+        assert out.startswith("logged S-4: 08-experiment-z\n"), out
+        lrun(repo, "add", "task", "o", "--imported", "--source", "a:2",
+             "--legacy-id", "09")  # T-1: code 09 names an entry: skipped (Q12)
+        out = lrun(repo, "add", "stage", "thesis-w", "--open")[1]
+        assert out.startswith("logged S-5: 10-thesis-w\n"), out
+        assert not (repo / "pm/stages/09-thesis-w").exists()
+        lrun(repo, "add", "stage", "99-paper-old", "--imported", "--source", "a:3")
+        assert L._max_nn(L.load(repo)) == 99
+        out = lrun(repo, "add", "stage", "reverse-v", "--open")[1]
+        assert out.startswith("logged S-7: 100-reverse-v\n"), out
+
+
+def test_add_stage_open_one_per_kind() -> None:  # W1 T1
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "paper-x", "--open")[0] == 0
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "add", "stage", "paper-y", "--open")
+        assert code == 1 and out == (
+            "error: cannot add stage 02-paper-y: S-1 (01-paper-x) is open, and at "
+            "most one paper stage may be open: stage-close S-1 first\n"
+        ), out
+        assert len(jl(repo)) == n
+        assert [p.name for p in (repo / "pm/stages").iterdir()] == ["01-paper-x"]
+
+
+def test_add_stage_open_refuses_nn_title() -> None:  # W1 T1, Q1
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        before: dict[str, bytes | None] = snapshot(root)
+        for argv in (
+            ("stage", "03-paper-x", "--open"),
+            ("stage", "paper", "--open"),
+            ("task", "x", "--note", "n", "--open"),
+            ("stage", "paper-x", "--follows", "S-1"),  # --follows needs --open
+        ):
+            code, out = lrun(repo, "add", *argv)
+            assert code == 1 and out.startswith("error: "), (argv, out)
+        code, out = lrun(repo, "add", "stage", "03-paper-x", "--open")
+        assert L.PLAN_FORM in out, out
+        assert snapshot(root) == before
+
+
+def test_open_title_follows() -> None:  # W1 T1, Q3, Q12
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        lrun(repo, "add", "stage", "03-paper-x")  # S-1, old form (until T3)
+        st: dict[str, Any] = L.load(repo)
+        assert L._open_title(st, "paper-y", "S-1") == "03b-paper-y"
+        assert L._open_title(st, "paper-y", None) == "04-paper-y"
+        lrun(repo, "add", "stage", "03b-software-q")  # S-2
+        st = L.load(repo)
+        assert L._open_title(st, "paper-y", "S-1") == "03c-paper-y"
+        assert L._open_title(st, "paper-y", "S-2") == "03c-paper-y"
+        lrun(repo, "add", "stage", "old", "--imported", "--source", "a:1")  # S-3
+        try:
+            L._open_title(L.load(repo), "paper-y", "S-3")
+            raise AssertionError("no NN title: refused")
+        except L.LedgerError as err:
+            assert "S-3" in str(err), err
+        code, out = lrun(repo, "add", "stage", "thesis-z", "--open", "--follows", "S-1")
+        assert code == 0 and out.startswith("logged S-4: 03c-thesis-z\n"), out
+        assert (repo / "pm/stages/03c-thesis-z/notes").is_dir()
+
+
 def test_reopen_stage_without_folder() -> None:  # brief 025 fix 4
     with tempfile.TemporaryDirectory() as d:
         repo: Path = new_repo(Path(d))

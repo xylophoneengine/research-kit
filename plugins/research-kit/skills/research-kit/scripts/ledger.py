@@ -15,13 +15,15 @@ import argparse
 import difflib
 import fcntl
 import functools
+import itertools
 import json
 import os
 import re
 import shutil
+import string
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -58,6 +60,8 @@ STAGE_RE: re.Pattern[str] = re.compile(
     r"^[0-9]{2,}[a-z]?-[a-z][a-z0-9]*-[A-Za-z0-9_.-]+$"
 )
 STAGE_FORM: str = "NN[letter]-<kind>-<topic>, e.g. 03b-paper-scan"
+PLAN_RE: re.Pattern[str] = re.compile(r"^[a-z][a-z0-9]*-[A-Za-z0-9_.-]+$")
+PLAN_FORM: str = "<kind>-<topic>, e.g. paper-scan"
 # the subfolders of template/AGENTS.md 3.2 (pinned by test_stage_dirs_match_agents)
 STAGE_DIRS: tuple[str, ...] = ("deliverables", "notes", "code", "chat")
 TASK_NOTE: str = (
@@ -659,6 +663,39 @@ def _stage_kind(title: str) -> str | None:
     return title.split("-")[1] if STAGE_RE.match(title) else None
 
 
+def _max_nn(state: dict[str, Entry]) -> int:
+    """The highest NN of a stage title NN[letter]-<kind>-<topic>, imported stages
+    too (else the next NN can hit a legacy folder); 0 if none."""
+    return max(
+        (
+            int(x.title.split("-", 1)[0].rstrip(string.ascii_lowercase))
+            for x in state.values()
+            if x.type == "stage" and STAGE_RE.match(x.title)
+        ),
+        default=0,
+    )
+
+
+def _open_title(state: dict[str, Entry], topic: str, follows: str | None) -> str:
+    """The title of `add stage <kind>-<topic> --open`: the next NN, or with
+    `follows` (a stage NN[letter]-...) its NN plus the next letter from b. A code
+    that already names an entry (a label, an imported stage) is skipped."""
+    codes: Iterator[str] = (f"{n:02d}" for n in itertools.count(_max_nn(state) + 1))
+    if follows is not None:
+        st: Entry = state[resolve(state, follows, stage=True)]
+        if not STAGE_RE.match(st.title):
+            raise LedgerError(
+                f"--follows {follows}: {st.id} ({st.title}) has no NN title "
+                f"({STAGE_FORM})"
+            )
+        nn: str = st.title.split("-", 1)[0].rstrip(string.ascii_lowercase)
+        codes = iter([nn + c for c in string.ascii_lowercase[1:]])
+    for code in codes:
+        if not _matches(state, code):
+            return f"{code}-{topic}"
+    raise LedgerError(f"--follows {follows}: the letters b to z are all taken")
+
+
 def _check_one_per_kind(state: dict[str, Entry], title: str, what: str) -> None:
     """Refuse `what` ("reopen S-n", "add stage T") for a stage titled `title`
     while another stage of its kind is open (at most one open stage per kind,
@@ -927,17 +964,30 @@ def _add_step(
         )
     if typ == "task" and not a.imported and not a.note.strip():
         raise LedgerError(TASK_NOTE)
-    if typ == "stage" and not a.imported and not STAGE_RE.match(title):
+    if (a.open and (typ != "stage" or a.imported)) or (
+        a.follows is not None and not a.open
+    ):
+        raise LedgerError(
+            "--open and --follows: only on a new stage, add stage <kind>-<topic> "
+            "--open [--follows S-m]"
+        )
+    if a.open and not PLAN_RE.match(title):
+        raise LedgerError(
+            f"stage title '{title}' with --open: want {PLAN_FORM}, the NN is "
+            "computed (letters, digits, _ . - in the topic)"
+        )
+    if typ == "stage" and not a.imported and not a.open and not STAGE_RE.match(title):
         raise LedgerError(
             f"stage title '{title}' is not a stage folder name; want {STAGE_FORM} "
             "(letters, digits, _ . - in the topic)"
         )
     label: str | None = _label(a.label, "--label") if a.label is not None else None
     made_folder: bool = typ == "stage" and not a.imported
-    folder: list[str] = [f"pm/stages/{title}/"] if made_folder else []
-    refs: list[str] = list(dict.fromkeys([*folder, *a.ref]))
 
     def step(state: dict[str, Entry]) -> tuple[str, dict[str, object]]:
+        name: str = _title(_open_title(state, title, a.follows)) if a.open else title
+        folder: list[str] = [f"pm/stages/{name}/"] if made_folder else []
+        refs: list[str] = list(dict.fromkeys([*folder, *a.ref]))
         links: list[str] = [  # "@KEY" links stay as given; import resolves them
             x if key_links and x.startswith("@") else _links(state, [x])[0]
             for x in a.link
@@ -953,12 +1003,12 @@ def _add_step(
         eid: str = next_id(state, types[typ])
         if label is not None:
             _check_label(state, label, eid)
-        _check_names(state, typ, title, a)
+        _check_names(state, typ, name, a)
         if typ == "stage" and not a.imported:  # imported history: as it was
-            _check_one_per_kind(state, title, f"add stage {title}")
+            _check_one_per_kind(state, name, f"add stage {name}")
         f: dict[str, object] = {
             "type": typ,
-            "title": title,
+            "title": name,
             "status": status,
             "owner": owner,
             "stage": stage,
@@ -1095,7 +1145,7 @@ def _import_row(obj: object, who: str) -> argparse.Namespace:
     fields: dict[str, object] = {
         "who": who, "imported": True, "owner": None, "stage": None, "note": "",
         "link": [], "ref": [], "status": None, "legacy_id": None, "label": None,
-        "date": None, "key": None,
+        "date": None, "key": None, "open": False, "follows": None,
     }
     return argparse.Namespace(**{**fields, **row})
 
@@ -2552,6 +2602,8 @@ def _parser() -> argparse.ArgumentParser:
     lab.add_argument("--legacy-id", default=None)
     lab.add_argument("--label", default=None, help="unique; e.g. 03b/W4")
     pa.add_argument("--date", default=None)
+    pa.add_argument("--open", action="store_true")
+    pa.add_argument("--follows", default=None)
     ps: argparse.ArgumentParser = sub.add_parser("start", parents=[common])
     ps.add_argument("id")
     ps.add_argument("--owner", default=None)
