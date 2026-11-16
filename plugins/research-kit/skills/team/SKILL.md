@@ -229,8 +229,8 @@ stays stale elsewhere; an architect that routes or builds is a second lead.
    is done), then close each task on its report
    (`python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" close T-<n> --note "<outcome>" --ref <report path>`; after a
    critic NO the task stays running; a task whose work is not on the base branch is staged instead:
-   `rk.py staged T-<n> --note "<branch, commit>" --ref <report path>`, and you land it
-   by id, `rk.py land T-<n>... --note "<merge commit>"`, when its branch lands; a bare
+   `python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" staged T-<n> --note "<branch, commit>" --ref <report path>`, and you land it
+   by id, `python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-kit/scripts/rk.py" land T-<n>... --note "<merge commit>"`, when its branch lands; a bare
    `land` closes every staged entry, other branches' too), and the review task with the verdicts
    and the review file paths (`--ref`), then run `research-kit:waste` (`waste.sh lead "<reason>" <paths>`)
    once for all of them; the user approves that one call. Offer to stop teammates that will

@@ -69,7 +69,7 @@ one write, one receipt line each; refused in a planned or shelved stage. A
 staged entry stays in the open list (`list --status staged` shows only those),
 is not running, and a staged task blocks `stage-close` and dropping a planned
 stage like an open one. Out of staged: `close` or `land` (done), `start`
-(running, more work), `reopen` (open). `land --note N [--ref P] [--stage S-n]
+(running, more work), `reopen` (open), `shelve` or `drop`. `land --note N [--ref P] [--stage S-n]
 [ID...]` closes every staged entry, or the named ones (a named entry that is
 not staged refuses the whole call); `landed 0` when there is none. `set --status
 staged` is not offered. Why: DB-29 stayed `open` while its fix sat on a branch;
@@ -104,7 +104,7 @@ the ledger.
 `doctor --start` feeds the SessionStart block (`kit <version>`, `pm: local only` in a local-only repo, a line per stale
 rule file: run `/rk-sync` between stages, not inside one); the block also prints
 the line `rk() { python3 -I "<path>/rk.py" "$@"; }` and a notice when `jq` is
-missing. A Bash call keeps no shell state: start each call that uses `rk` with
+missing. Design step (AGENTS.md 3.3): the user's yes to a stage's spec is a user decision labelled `<stage code>/SPEC` (e.g. `03/SPEC`); while an open stage has none, the session start block prints `spec: S-<n> <stage> has no user decision labelled <stage code>/SPEC (AGENTS.md 3.3)`. No command is refused. A Bash call keeps no shell state: start each call that uses `rk` with
 that line joined to the command by `;` (`rk() {...}; rk list`); `rk` in rule
 text means that command.
 
@@ -254,7 +254,7 @@ Full mode only (light has no stage entries: say so and stop).
    early: `rk reopen S-<n> --note "<why>"`, then the checklist again with a
    new sign-off.
 6. End by telling the user what is left for them: optional `/export` into
-   the stage's chat folder (it holds the tail the archive lacks), and committing.
+   the stage's chat folder (it holds the tail the archive lacks), and committing (local-only repo: nothing under pm/ is committed).
 
 ## Changing a generic rule
 

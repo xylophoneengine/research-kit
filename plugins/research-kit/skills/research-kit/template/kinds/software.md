@@ -1,4 +1,4 @@
-<!-- research-kit-kind software: 2026-11-14b -->
+<!-- research-kit-kind software: 2026-11-17a -->
 # Kind: software
 
 Applies to an app, library, tool or driver built with an orchestrator plus
@@ -18,7 +18,7 @@ fit; without them, run each stage by hand from the rules below.
 
 | # | Stage | Skill / tool | Done when |
 |---|-------|--------------|-----------|
-| 1 | Design: goal, non-goals, why not an existing tool, interfaces | `superpowers:brainstorming` or `grilling` | Spec written in stage notes and the user said yes |
+| 1 | Design: goal, non-goals, why not an existing tool, interfaces; run as the design step of core 3.3 | optional aids: `superpowers:brainstorming` or `grilling` | Spec written in stage notes and the user's yes logged with the label `<stage code>/SPEC` (core 3.3) |
 | 2 | Plan: tasks sized to one sitting, signatures copied in | `superpowers:writing-plans` | Every task names its files, frozen signatures and a failing test; user approved the plan |
 | 3 | Tests first: failing tests for each task | a `/team` teammate | Test command output shows the new tests red for the stated reason |
 | 4 | Build: one task per implementer | `superpowers:subagent-driven-development` or `/team` | A named teammate ran the gate and the lead read the pasted tail: green |

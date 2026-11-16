@@ -127,7 +127,11 @@ From 0.2.1: a ledger that holds a shelved entry needs kit 0.2.1 or newer in
 every session that opens the repo. An older kit refuses it with an
 unknown-status error: update the kit, do not edit the ledger line.
 
-From 0.2.5: a ledger with a planned stage or a staged entry needs kit 0.2.5 or newer in every session (plugin update per session); an older kit refuses it with an unknown-status error. Ledgers that use neither stay readable by 0.2.4, but open entries of an imported shelved stage now show as shelved and leave the open list.
+From 0.2.5: a ledger with a planned stage or a staged entry needs kit 0.2.5 or
+newer in every session (plugin update per session); an older kit refuses it with
+an unknown-status error. Ledgers that use neither stay readable by 0.2.4, but
+open entries of an imported shelved stage now show as shelved and leave the
+open list.
 
 ## Kinds
 
@@ -330,7 +334,7 @@ show` names the stored and the shown status.
 
 ```
 rk add <type> <title>       log a task, decision, deferred item, ...
-rk add stage <kind>-<topic> plan a stage (--open: open now; --follows, --before, --after)
+rk add stage <kind>-<topic> plan a stage (--open: open now (refused while a stage of its kind is open, 3.1); --follows, --before, --after)
 rk start|close|drop|reopen  change status (close and drop take --note)
 rk shelve                   known, not planned now: leaves the open list (needs --note)
 rk staged ID... --note T    work done, not landed (--ref R); stays open-listed, shown by rk list --status staged
@@ -354,6 +358,8 @@ rk stage-close S-n --sign-off D-m   close a stage, last; runs the doctor --stage
 rk render                   rebuild pm/STATUS.md
 rk brief-check              the brief gate the hook calls
 ```
+
+Design step (AGENTS.md 3.3): the user's yes to a stage's spec is a user decision labelled `<stage code>/SPEC` (e.g. `03/SPEC`); while an open stage has none, the session start block prints `spec: S-<n> <stage> has no user decision labelled <stage code>/SPEC (AGENTS.md 3.3)`. No command is refused.
 
 `rk-init` also appends a marked block to `.gitignore` (`pm/waste/`,
 `pm/handoffs/compact/`, `pm/scratch/`, `pm/reviews/`, `pm/stages/*/chat/`,
@@ -382,8 +388,8 @@ every request and reloads when the tab regains focus; it never writes the ledger
 or `pm/STATUS.md`. It listens on 127.0.0.1 only and has no login, so any user
 logged in on the same machine can read the ledger while it runs. Port 8765 by
 default, or the next free one up to 8774 when it is taken, but the start stops if a viewer of
-the same repo already answers on one of those ports (`--port N` names
-one; `--no-open`
+the same repo already answers on one of those ports (`--port N` names one;
+`--no-open`
 skips the browser; `--repo DIR` names the repo). `/rk-viewer stop` ends the
 viewer this session started; as a background task of the session it is expected
 to end with it. It needs Python only: the built frontend is committed under
