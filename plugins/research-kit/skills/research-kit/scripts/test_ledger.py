@@ -2502,7 +2502,8 @@ def test_add_stage_refuses_nn_title() -> None:
             code, out = lrun(repo, "add", "stage", title)
             assert code == 1 and out == (
                 f"error: stage title '{title}' has an NN: use <kind>-<topic>; "
-                "the NN comes at stage-open\n"
+                "the NN comes at stage-open; to open it now: rk add stage "
+                "<kind>-<topic> --open\n"
             ), out
             assert snapshot(root) == before, title  # nothing written, no folder
         assert not (repo / "pm/stages").exists()
@@ -2754,7 +2755,8 @@ def test_stage_open_follows() -> None:
         ]
 
 
-# T4, D-33 (rename is undone if the write fails); red: stage-open unknown
+# T4, D-33 (rename undone on a failure BEFORE the ledger line is written; a
+# failure after it: test_stage_open_failure_after_write); red: stage-open unknown
 def test_stage_open_rolls_back_rename() -> None:
     with tempfile.TemporaryDirectory() as d:  # injected in fold (plan section 11)
         repo: Path = new_repo(Path(d))
@@ -2771,7 +2773,7 @@ def test_stage_open_rolls_back_rename() -> None:
 
         def fold_fails_after_rename(events: Any) -> Any:
             """append folds the new lines before it writes them; at that point the
-            folder has been renamed, so this is the write failing after the rename."""
+            folder has been renamed: a failure after the rename, before the write."""
             if not pdir.exists():
                 raise OSError(28, "injected: no space left on device")
             return real(events)
@@ -3260,10 +3262,18 @@ def test_drop_planned_stage_with_open_entries() -> None:
         assert lrun(repo, "start", "T-1")[0] == 0
         plan_stages(repo, "software-p")  # S-2, folder P-2-software-p
         assert lrun(repo, "add", "debt", "flaky", "--stage", "S-2")[0] == 0  # DB-1
-        assert lrun(repo, "set", "T-1", "--stage", "S-2")[0] == 0  # running in it
+        moved: str = refused(repo, "set", "T-1", "--stage", "S-2")  # m4, D-32
+        assert moved == (
+            "error: S-2 is planned: a running task cannot go into it (work runs "
+            "only in an open stage): close or shelve it first, or open the stage: "
+            "rk stage-open S-2\n"
+        ), moved
         assert L.load(repo)["T-1"].status == "running"
+        assert lrun(
+            repo, "add", "task", "next", "--note", "n", "--stage", "S-2"
+        )[0] == 0  # T-2
         busy: str = (
-            "error: cannot drop S-2: open entries are in it: T-1 running, DB-1 "
+            "error: cannot drop S-2: open entries are in it: DB-1 open, T-2 "
             "open; close, drop or re-stage each (set ID --stage S-x) first\n"
         )  # in ledger order
         out: str = refused(
@@ -3279,6 +3289,7 @@ def test_drop_planned_stage_with_open_entries() -> None:
         # closed or shelved entries do not block
         assert lrun(repo, "close", "DB-1", "--note", "done")[0] == 0
         assert lrun(repo, "close", "T-1", "--note", "done")[0] == 0
+        assert lrun(repo, "close", "T-2", "--note", "done")[0] == 0
         assert lrun(repo, "add", "debt", "later", "--stage", "S-2")[0] == 0  # DB-2
         assert lrun(repo, "shelve", "DB-2", "--note", "later")[0] == 0
         folders: dict[str, bytes | None] = snapshot(repo / "pm" / "stages")
@@ -3410,6 +3421,7 @@ def test_stage_rename_done() -> None:
             "renamed S-1: 01-paper-x -> 01-paper-y",
             f"folder {old}/ -> {new}/",
             "refs: 2 rewritten",
+            f"wrote {new}/LEDGER.md",
         ], out
         st: Any = L.load(repo)
         assert st["S-1"].status == "done" and st["S-1"].title == "01-paper-y"
@@ -3536,7 +3548,8 @@ def test_stage_rename_refusals() -> None:
         assert out.startswith("renamed S-2: 01-paper-a -> 01-paper-z\n"), out
 
 
-# T11, D-33 (rename undone if the write fails; injection as in T4): red: same
+# T11, D-33 (rename undone on a failure before the ledger line is written;
+# injection as in T4; after it: test_stage_rename_failure_after_write): red: same
 def test_stage_rename_rolls_back() -> None:
     with tempfile.TemporaryDirectory() as d:
         repo: Path = new_repo(Path(d))
@@ -3553,7 +3566,7 @@ def test_stage_rename_rolls_back() -> None:
 
         def fold_fails_after_rename(events: Any) -> Any:
             """append folds the new lines before it writes them; at that point the
-            folder has been renamed, so this is the write failing after the rename."""
+            folder has been renamed: a failure after the rename, before the write."""
             if not old.exists():
                 raise OSError(28, "injected: no space left on device")
             return real(events)
@@ -5040,6 +5053,190 @@ def test_list_planned_line() -> None:
         shown: list[str] = body.split(", ")
         assert shown == [f"~{i:02d} paper-t{i:02d}" for i in range(1, len(shown) + 1)]
         assert len(shown) >= 3 and len(shown) + k == 12, (shown, k)
+
+
+def _injected(*args: Any) -> None:
+    raise OSError(28, "injected: no space left on device")
+
+
+# fix r1, crit1 B1: a failure AFTER the ledger line is written (write_status)
+# keeps the folder renamed: ledger and folder both new
+def test_stage_open_failure_after_write() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "paper-scan")[0] == 0
+        (repo / "pm/stages/P-1-paper-scan/notes/a.md").write_text("a")
+        code, out = lrun(
+            repo, "add", "debt", "d", "--stage", "S-1",
+            "--ref", "pm/stages/P-1-paper-scan/notes/a.md",
+        )  # fmt: skip
+        assert code == 0, out
+        real: Any = L.write_status
+        L.write_status = _injected
+        try:
+            try:
+                code, out = lrun(repo, "stage-open", "S-1")
+            except OSError:  # the error goes on, after the line is written
+                pass
+            else:
+                raise AssertionError(f"no OSError: {code} {out}")
+        finally:
+            L.write_status = real
+        st: Any = L.load(repo)
+        assert st["S-1"].status == "open" and st["S-1"].title == "01-paper-scan"
+        assert st["DB-1"].refs == ["pm/stages/01-paper-scan/notes/a.md"]
+        assert (repo / "pm/stages/01-paper-scan/notes/a.md").read_text() == "a"
+        assert not (repo / "pm/stages/P-1-paper-scan").exists()
+
+
+# fix r1, crit1 B1: the same for stage-rename, failure in the ledger's fsync
+def test_stage_rename_failure_after_write() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "paper-x", "--open")[0] == 0  # 01-paper-x
+        (repo / "pm/stages/01-paper-x/notes/a.md").write_text("a")
+        code, out = lrun(
+            repo, "add", "debt", "d", "--owner", "lead",
+            "--ref", "pm/stages/01-paper-x/notes/a.md",
+        )  # fmt: skip
+        assert code == 0, out
+        real: Any = os.fsync
+        os.fsync = _injected
+        try:
+            try:
+                code, out = lrun(repo, "stage-rename", "S-1", "paper-y")
+            except OSError:
+                pass
+            else:
+                raise AssertionError(f"no OSError: {code} {out}")
+        finally:
+            os.fsync = real
+        st: Any = L.load(repo)
+        assert st["S-1"].title == "01-paper-y"
+        assert st["DB-1"].refs == ["pm/stages/01-paper-y/notes/a.md"]
+        assert (repo / "pm/stages/01-paper-y/notes/a.md").read_text() == "a"
+        assert not (repo / "pm/stages/01-paper-x").exists()
+
+
+# fix r1, crit1 B2: a stage not added planned keeps the 0.2.4 record bytes; an
+# imported stage with --date starts its window at that date (st.created)
+def test_record_imported_dated_stage() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        (repo / "pm/stages/07-paper-old").mkdir(parents=True)
+        code, out = lrun(
+            repo, "add", "stage", "07-paper-old", "--imported",
+            "--source", "old.md:1", "--date", "2025-01-01",
+        )  # fmt: skip
+        assert code == 0, out
+        code, out = lrun(
+            repo, "add", "decision", "sign-off: 07-paper-old", "--owner", "user",
+            "--link", "S-1",
+        )  # fmt: skip
+        assert code == 0, out
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 0, out
+        st: Any = L.load(repo)["S-1"]
+        rec: Path = repo / "pm/stages/07-paper-old/LEDGER.md"
+        window: str = (
+            f"Window: ledger lines 1 to {st.lines[-1]}, 2025-01-01 to {st.updated}."
+        )
+        assert window in rec.read_text().split("\n"), rec.read_text()
+        before: bytes = rec.read_bytes()
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 1 and "S-1 is done, not open" in out, out
+        assert rec.read_bytes() == before
+
+
+# fix r1, crit1 m1: a queue value that is no number is refused by fold, with
+# the line, on every command; nothing is appended
+def test_fold_refuses_bad_queue() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        plan_stages(repo, "paper-a", "software-b")
+        good: str = (repo / L.LEDGER_REL).read_text()
+        for val in ("x", "1/0", True):
+            ev: dict[str, Any] = {
+                "ts": "2026-11-16T10:00:00+01:00", "who": "hand", "ev": "set",
+                "id": "S-2", "f": {"queue": val},
+            }
+            (repo / L.LEDGER_REL).write_text(good + json.dumps(ev) + "\n")
+            for argv in (("list",), ("add", "debt", "x"), ("stage-open", "S-1")):
+                out: str = refused(repo, *argv)
+                assert out.startswith(
+                    f"error: {L.LEDGER_REL}:3: bad queue {val!r}: want a number "
+                    "like 2 or 3/2"
+                ), (val, argv, out)
+            assert (repo / "pm/stages/P-1-paper-a").is_dir()
+
+
+# fix r1, crit1 m2: doctor's folder check skips a dropped stage (its P- folder
+# goes to pm/waste)
+def test_doctor_skips_dropped_stage_folder() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        plan_stages(repo, "paper-a")
+        code, out = lrun(repo, "set", "S-1", "--status", "dropped", "--note", "no")
+        assert code == 0, out
+        (repo / "pm/waste").mkdir()
+        (repo / "pm/stages/P-1-paper-a").rename(repo / "pm/waste/P-1-paper-a")
+        code, out = doctor(repo)
+        assert "P-1-paper-a" not in out and "S-1" not in out, out
+
+
+# fix r1, crit1 m4 (D-32: work runs only in an open stage): a dropped stage
+# takes no entry; a running entry does not go into a planned or shelved stage
+def test_stage_guards_dropped_and_running() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "paper-x", "--open")[0] == 0  # S-1
+        plan_stages(repo, "software-p", "software-q")  # S-2, S-3
+        code, out = lrun(repo, "set", "S-3", "--status", "dropped", "--note", "no")
+        assert code == 0, out
+        out = refused(repo, "add", "debt", "late", "--stage", "S-3")
+        assert out == (
+            "error: S-3 is dropped and takes no entry: pass --stage with an open "
+            "stage\n"
+        ), out
+        assert lrun(repo, "add", "debt", "d", "--stage", "S-1")[0] == 0  # DB-1
+        out = refused(repo, "set", "DB-1", "--stage", "S-3")
+        assert out == "error: S-3 is dropped and takes no entry: pick an open stage\n"
+        assert lrun(repo, "add", "task", "run", "--note", "n")[0] == 0  # T-1, S-1
+        assert lrun(repo, "start", "T-1")[0] == 0
+        code, out = lrun(repo, "set", "S-2", "--status", "shelved", "--note", "l")
+        assert code == 0, out
+        out = refused(repo, "set", "T-1", "--stage", "S-2")
+        assert out == (
+            "error: S-2 is shelved: a running task cannot go into it (work runs "
+            "only in an open stage): close or shelve it first, or open the stage: "
+            "rk set S-2 --status planned, then rk stage-open S-2\n"
+        ), out
+        # an open (not running) entry still moves into a planned or shelved stage
+        assert lrun(repo, "set", "DB-1", "--stage", "S-2")[0] == 0
+        # start in a planned stage keeps its own text
+        assert lrun(repo, "set", "S-2", "--status", "planned")[0] == 0
+        assert lrun(repo, "add", "task", "t2", "--note", "n", "--stage", "S-2")[0] == 0
+        out = refused(repo, "start", "T-2")
+        assert out == "error: stage S-2 is planned: rk stage-open S-2 first\n", out
+
+
+# fix r1, blind2 (i) and (iii): close / shelve / drop of a planned stage name
+# `set --status`; a drop names the P- folder that is left for pm/waste
+def test_planned_stage_texts() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        plan_stages(repo, "paper-x")
+        for cmd in ("close", "shelve", "drop"):
+            out: str = refused(repo, cmd, "S-1", "--note", "x")
+            assert out == (
+                "error: S-1 is a planned stage: use rk set S-1 --status "
+                "shelved|dropped --note ...\n"
+            ), (cmd, out)
+        code, out = lrun(repo, "set", "S-1", "--status", "dropped", "--note", "no")
+        assert code == 0 and out.splitlines()[1:] == [
+            "folder pm/stages/P-1-paper-x/ is left: move it to pm/waste"
+        ], out
+        assert (repo / "pm/stages/P-1-paper-x").is_dir()  # the waste step is later
 
 
 def main() -> int:

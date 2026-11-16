@@ -280,6 +280,14 @@ def fold(
         status: object = f.get("status")
         if status is not None and status not in STATUSES:
             raise _bad(n, f"unknown status {status!r}")
+        queue: object = f.get("queue")
+        if queue is not None:  # a Fraction string, read by _queue
+            try:
+                Fraction(queue if isinstance(queue, str) else "")
+            except (ValueError, ZeroDivisionError):
+                raise _bad(
+                    n, f"bad queue {queue!r}: want a number like 2 or 3/2"
+                ) from None
         if kind == "add":
             if eid in state:
                 raise LedgerError(
@@ -383,23 +391,30 @@ def make_event(
 
 
 def append(
-    repo: Path, build: Callable[[dict[str, Entry]], list[dict[str, object]]]
+    repo: Path,
+    build: Callable[[dict[str, Entry]], list[dict[str, object]]],
+    undo: Callable[[], None] | None = None,
 ) -> dict[str, Entry]:
     """Lock, fold, build events from the current state, append them.
 
     A LedgerError from `build` (or from validating its events) writes nothing.
+    `undo` runs, still under the lock, when anything fails before the lines are
+    written (flushed), never after: a failure after it leaves the ledger and
+    what `build` did both new.
     """
     path: Path = repo / LEDGER_REL
     if not path.is_file():
         raise LedgerError(f"no {LEDGER_REL} in {repo}; run rk.py init")
     with path.open("ab+") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
+        written: bool = False
         try:
             fh.seek(0)
             raw: bytes = fh.read()
             state: dict[str, Entry] = fold(_parse(raw))
             new: list[dict[str, object]] = build(state)
             if not new:
+                written = True  # nothing to write, nothing to undo
                 write_status(repo, state)
                 return state
             data: bytes = "".join(json.dumps(e) + "\n" for e in new).encode("ascii")
@@ -408,9 +423,12 @@ def append(
             new_state: dict[str, Entry] = fold(_parse(raw + data))
             fh.write(data)
             fh.flush()
+            written = True
             os.fsync(fh.fileno())
             write_status(repo, new_state)
         finally:
+            if not written and undo is not None:
+                undo()
             fcntl.flock(fh, fcntl.LOCK_UN)
     return new_state
 
@@ -657,8 +675,23 @@ def _check_stage_open(
     """Refuse putting an open or running task (or stage) into a stage that is
     done. Only tasks block a stage close; for any other type `stage` means
     "raised in", and an open one may sit in (or be set into) a closed stage. A
-    stage entry keeps the old rule: no open stage inside a done one."""
+    stage entry keeps the old rule: no open stage inside a done one. D-32 (work
+    runs only in an open stage): a dropped stage takes no entry, a planned or
+    shelved one no running entry."""
     st: Entry | None = state.get(sid) if sid else None
+    if st is not None and st.status == "dropped":
+        raise LedgerError(f"{sid} is dropped and takes no entry: {fix}")
+    if st is not None and status == "running" and st.status in ("planned", "shelved"):
+        way: str = "open the stage: " + (
+            f"rk stage-open {sid}" if st.status == "planned"
+            else f"rk set {sid} --status planned, then rk stage-open {sid}"
+        )
+        if _imported(st):  # an imported shelved stage is not planned again
+            way = fix
+        raise LedgerError(
+            f"{sid} is {st.status}: a running {typ} cannot go into it (work runs "
+            f"only in an open stage): close or shelve it first, or {way}"
+        )
     if (
         typ in ("task", "stage")
         and st is not None
@@ -1149,7 +1182,7 @@ def _add_step(
     if new_stage and not a.open and STAGE_RE.match(title):
         raise LedgerError(
             f"stage title '{title}' has an NN: use <kind>-<topic>; the NN comes at "
-            "stage-open"
+            "stage-open; to open it now: rk add stage <kind>-<topic> --open"
         )
     if new_stage and not PLAN_RE.match(title):
         raise LedgerError(
@@ -1500,11 +1533,11 @@ def _cmd_start(a: argparse.Namespace) -> int:
             return []
         if e.status != "open":
             raise LedgerError(f"{e.id} is {e.status}: use reopen first")
+        _check_stage_startable(state, e)  # first: its text names stage-open
         _check_stage_open(
             state, e.stage, e.type, "running",
             f"re-stage it first: set {e.id} --stage S-<x>",
         )
-        _check_stage_startable(state, e)
         f: dict[str, object] = {"status": "running"}
         if owner is not None:
             f["owner"] = owner
@@ -1530,6 +1563,11 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
     def build(state: dict[str, Entry]) -> list[dict[str, object]]:
         e: Entry = _entry(state, a.id)
         ids.append(e.id)
+        if e.type == "stage" and cmd != "reopen" and e.status == "planned":
+            raise LedgerError(
+                f"{e.id} is a planned stage: use rk set {e.id} --status "
+                "shelved|dropped --note ..."
+            )
         if e.type == "stage" and cmd != "reopen":
             raise LedgerError(f"{e.id} is a stage: use stage-close")
         if e.type == "decision" and cmd != "drop":  # shelve: Q1, every type but this
@@ -1732,6 +1770,9 @@ def _cmd_set(a: argparse.Namespace) -> int:
     tail: str = _in_stage(state[ids[0]])
     print(f"updated {ids[0]}: {', '.join(keys)}{tail}" if keys
           else f"unchanged {ids[0]}{tail}")
+    folder: str = _stage_dir(state[ids[0]])
+    if a.status == "dropped" and "/P-" in folder and (repo / folder).is_dir():
+        print(f"folder {folder} is left: move it to pm/waste")  # the waste step
     return 0
 
 
@@ -1815,19 +1856,22 @@ def _append_renaming(
     moves: list[tuple[Path, Path]],
 ) -> dict[str, Entry]:
     """`append`; the folder renames `build` made (it lists them in `moves`, as
-    its last step) are undone when the write fails, then the error goes on."""
-    try:
-        return append(repo, build)
-    except BaseException:
+    its last step) are undone, under the lock, when anything fails before the
+    ledger lines are written. A failure after that keeps them: the ledger and
+    the folder are both new, and the error goes on."""
+
+    def undo() -> None:
         for src, dst in reversed(moves):
             os.rename(dst, src)
-        raise
+
+    return append(repo, build, undo)
 
 
 def _cmd_stage_open(a: argparse.Namespace) -> int:
     """Open planned stage S-n in one locked step: the next NN (a letter with
     --follows), its P- folder renamed to the NN folder, every ref under it
-    rewritten; the rename is undone if the ledger write fails."""
+    rewritten; the rename is undone if anything fails before the ledger line is
+    written, and kept if something fails after it."""
     repo: Path = _repo(a)
     who: str = _name(a.who, "--who")
     moves: list[tuple[Path, Path]] = []
@@ -1962,7 +2006,7 @@ def _cmd_stage_rename(a: argparse.Namespace) -> int:
     state: dict[str, Entry] = _append_renaming(repo, build, moves)
     print("\n".join(said))
     if done:  # its record is written again with the stage-close writer
-        _write_stage_record(repo, state[done[0]])
+        print(_write_stage_record(repo, state[done[0]]))
     return 0
 
 
@@ -2281,9 +2325,11 @@ def render_stage_record(
         (n, v) for n, v in upto if any(lo <= n <= hi for lo, hi in spans)
     ]
     by_line: dict[int, dict[str, object]] = dict(upto)
+    from_ts: object = (  # created: an imported stage's --date, as in 0.2.4
+        st.created if first == st.lines[0] else by_line[first].get("ts")
+    )
     window_line: str = (  # one span: the form of 0.2.3, byte for byte
-        f"Window: ledger lines {first} to {end}, {by_line[first].get('ts')} to "
-        f"{st.updated}."
+        f"Window: ledger lines {first} to {end}, {from_ts} to {st.updated}."
         if len(spans) == 1
         else "Window: ledger lines " + ", ".join(  # times per span, not across gaps
             f"{lo} to {hi} ({by_line[lo].get('ts')} to {by_line[hi].get('ts')})"
@@ -2410,9 +2456,9 @@ def _record_current(
     upto: list[tuple[int, dict[str, object]]] = [(n, v) for n, v in events if n <= end]
     st: Entry = fold(upto)[sid]
     lo: int = _record_spans(upto, sid, st.lines[0])[0][0]  # add line, or the open
+    from_ts: object = st.created if lo == st.lines[0] else dict(upto)[lo].get("ts")
     old: str = (  # 0.2.3: one span, add to close; never change this literal
-        f"Window: ledger lines {lo} to {end}, {dict(upto)[lo].get('ts')} to "
-        f"{st.updated}."
+        f"Window: ledger lines {lo} to {end}, {from_ts} to {st.updated}."
     )
     return old in text.split("\n")
 
@@ -2751,10 +2797,12 @@ def _findings(
         ).items()
     }
     # folder and not-in-HEAD checks (scope unchanged): an imported stage only
-    # once it was reopened here (a span that does not start at its import line)
+    # once it was reopened here (a span that does not start at its import line);
+    # not a dropped stage: its folder goes to pm/waste
     stages: list[Entry] = [
         e for e in entries
         if e.type == "stage"
+        and e.status != "dropped"
         and (not _imported(e) or any(lo != e.lines[0] for lo, _ in spans[e.id]))
     ]
     present: list[tuple[str, str]] = []  # (id, ref) of refs that exist
