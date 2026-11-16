@@ -161,7 +161,9 @@ def test_no_git_call() -> None:
     assert calls and all(doc_start < i < doc_end for i in calls), "git outside doctor"
     run_at: int = text.index("subprocess.run(")
     assert doc_start < run_at < doc_end and text.index("def _git(") < run_at
-    assert L.GIT_READ == {"status", "diff", "ls-files", "check-ignore", "show"}
+    assert L.GIT_READ == {
+        "status", "diff", "ls-files", "check-ignore", "show", "rev-parse"
+    }  # design D2: rev-parse joins (git_exclude_file)
     with tempfile.TemporaryDirectory() as d:
         repo: Path = new_repo(Path(d))
         fakebin: Path = Path(d) / "bin"
@@ -5617,6 +5619,513 @@ def test_status_md_inherited_entries_findable() -> None:
         assert (rows["DB-1"], rows["T-1"], rows["DB-3"]) == (
             "shelved", "planned", "open"
         ), rows
+
+
+# ---- local-only mode (S-4, design-local-only-mode R2 to R7; W1: red first) ---
+# `pm` = "local" in pm/config.json: doctor, doctor --start and stage-close skip
+# the git checks on pm/. Texts are those of design I5; the broken-config texts
+# those of I2.
+
+LOCAL_NOTICE: str = "pm: local only (pm/config.json): git checks on pm/ skipped"
+NO_BINARY: str = "git: no git binary; git checks skipped"
+NOT_A_REPO: str = "git: not a git repo; git checks skipped"
+BROKEN_CONFIGS: list[tuple[str, str]] = [  # (file text, <what> of I2)
+    ("[1]\n", "not a JSON object"),
+    ("{torn", "not a JSON object"),
+    ('{"pm": "x"}', '"pm" must be "local" or "tracked"'),
+    ('{"pm": 1}', '"pm" must be "local" or "tracked"'),
+]
+
+
+def make_local(repo: Path, text: str = '{"pm": "local"}\n') -> None:
+    """Write pm/config.json (default: the local declaration)."""
+    (repo / "pm/config.json").write_text(text)
+
+
+def fake_git_log(root: Path) -> tuple[Path, Path]:
+    """A git on PATH that logs its arguments and stdin and does nothing else:
+    (the bin folder, the argument log: one line per call, `-C DIR ARGS`)."""
+    fakebin: Path = root / "fakebin"
+    fakebin.mkdir()
+    log: Path = root / "git-args"
+    script: Path = fakebin / "git"
+    script.write_text(
+        f'#!/bin/sh\necho "$*" >> "{log}"\ncat >> "{root / "git-stdin"}"\nexit 0\n'
+    )
+    script.chmod(0o755)
+    log.write_text("")
+    return fakebin, log
+
+
+def git_calls(log: Path) -> list[str]:
+    """The logged calls without `-C DIR`: `ls-files -- pm/ledger.jsonl`, ..."""
+    return [ln.split(" ", 2)[2] for ln in log.read_text().splitlines()]
+
+
+def done_uncommitted(root: Path) -> Path:
+    """Committed repo, then stage S-1 closed: its close is not in HEAD."""
+    repo: Path = staged_repo(root)
+    commit_all(repo)
+    (repo / "pm/stages/01-paper-x/notes/n.md").write_text("x")
+    assert lrun(repo, "close", "T-1", "--note", "ok")[0] == 0
+    code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+    assert code == 0, out
+    return repo
+
+
+def committed_refs_repo(root: Path, rels: list[str], ignore: str) -> Path:
+    """staged_repo whose T-1 has the files `rels` as refs; `ignore` is the
+    .gitignore; committed before the refs are set."""
+    repo: Path = staged_repo(root)
+    for rel in rels:
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text("x")
+    (repo / ".gitignore").write_text(ignore)
+    commit_all(repo)
+    refs: list[str] = [x for rel in rels for x in ("--ref", rel)]
+    code, out = lrun(repo, "set", "T-1", *refs)
+    assert code == 0, out
+    return repo
+
+
+IGNORE_ALL: str = "build/\npm/waste/\npm/scratch/\npm/stages/*/chat/\n"
+
+
+# I2: the one reader of pm/config.json
+def test_local_read_config() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        cfg: Path = repo / "pm/config.json"
+        before: dict[str, bytes | None] = snapshot(Path(d))
+        assert L.read_config(repo) == {"pm": "tracked"}  # no file
+        assert snapshot(Path(d)) == before  # read-only
+        good: list[tuple[str, dict[str, object]]] = [
+            ('{"pm": "local"}', {"pm": "local"}),
+            ('{"pm": "tracked"}\n', {"pm": "tracked"}),
+            ("{}", {"pm": "tracked"}),  # no key = tracked
+            ('{"x": [1, 2]}', {"x": [1, 2], "pm": "tracked"}),
+            ('{"x": 1, "pm": "local"}', {"x": 1, "pm": "local"}),
+        ]
+        for text, want in good:
+            cfg.write_text(text)
+            assert L.read_config(repo) == want, (text, L.read_config(repo))
+        bad: list[tuple[str, str]] = [
+            *BROKEN_CONFIGS, ("null", "not a JSON object"), ("", "not a JSON object"),
+        ]
+        for text, what in bad:
+            cfg.write_text(text)
+            try:
+                L.read_config(repo)
+            except L.LedgerError as e:
+                assert str(e) == f"pm/config.json: {what}", (text, str(e))
+            else:
+                raise AssertionError(f"read_config accepted {text!r}")
+        cfg.write_bytes(b"\xff\xfe{}")  # not UTF-8: same text
+        for shape in ("bytes", "folder"):  # unreadable: same text
+            if shape == "folder":
+                cfg.unlink()
+                cfg.mkdir()
+            try:
+                L.read_config(repo)
+            except L.LedgerError as e:
+                assert str(e) == "pm/config.json: not a JSON object", (shape, str(e))
+            else:
+                raise AssertionError(f"read_config accepted {shape}")
+
+
+# I3: the read-only git helpers rk.py uses (rk.py itself holds no subprocess)
+def test_local_git_helpers() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d).resolve()
+        repo: Path = new_repo(root)
+        plain: Path = root / "plain"
+        plain.mkdir()
+        with env(**GIT_ENV):
+            assert L.git_exclude_file(plain) is None  # in no git repo
+            assert L.git_tracked(plain, "pm/") is False
+            git(repo, "init", "-q")
+            got: Path | None = L.git_exclude_file(repo)
+            assert got is not None and got.is_absolute(), got
+            assert got.resolve() == (repo / ".git/info/exclude").resolve(), got
+            (repo / "pm/x.md").write_text("x")
+            assert L.git_tracked(repo, "pm/") is False  # untracked: no
+            git(repo, "add", "pm/x.md")
+            assert L.git_tracked(repo, "pm/") is True
+            assert L.git_tracked(repo, "pm/x.md") is True
+            assert L.git_tracked(repo, "other/") is False
+            with env(PATH=str(root / "nobin")):  # git cannot run
+                assert L.git_exclude_file(repo) is None
+                assert L.git_tracked(repo, "pm/") is False
+
+
+# I3 (addendum v2): the path of the repo folder below the git top level
+def test_local_git_prefix() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d).resolve()
+        top: Path = root / "top"
+        (top / "sub/deep").mkdir(parents=True)
+        plain: Path = root / "plain"
+        plain.mkdir()
+        with env(**GIT_ENV):
+            assert L.git_prefix(plain) is None  # in no git repo
+            git(top, "init", "-q")
+            assert L.git_prefix(top) == ""  # the top level: empty, no slash
+            assert L.git_prefix(top / "sub") == "sub/"
+            assert L.git_prefix(top / "sub/deep") == "sub/deep/"
+            with env(PATH=str(root / "nobin")):  # git cannot run
+                assert L.git_prefix(top / "sub") is None
+
+
+# R3: rk.py never parses the config itself (and holds no subprocess: the
+# existing test_no_git_call)
+def test_local_rk_py_does_not_parse_config() -> None:
+    assert "json.load" not in RK_PY.read_text()
+
+
+# R5: the notice is output line 1; a clean local repo prints it and the count
+def test_local_doctor_notice_and_count() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        commit_all(repo)
+        assert doctor(repo)[1] == "doctor: no findings\n"  # tracked: no notice
+        make_local(repo)
+        code, out = doctor(repo)
+        assert code == 0 and out == f"{LOCAL_NOTICE}\ndoctor: no findings\n", out
+        code, out = doctor(repo, "--stage", "S-1")
+        assert code == 0, out
+        assert out == f"{LOCAL_NOTICE}\ndoctor S-1: no findings\n", out
+
+
+# R5: no git binary, not a repo: notice line 1, the 0.2.5 `git:` line is line 2
+def test_local_doctor_notice_before_git_line() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        make_local(repo)
+        code, out = doctor(repo)
+        assert code == 0, out
+        assert out.splitlines()[:2] == [LOCAL_NOTICE, NOT_A_REPO], out
+        with env(PATH=str(Path(d) / "nobin")):
+            out = doctor(repo)[1]
+        assert out.splitlines()[:2] == [LOCAL_NOTICE, NO_BINARY], out
+        out = doctor(repo, "--stage", "S-1")[1]
+        assert out.splitlines()[:2] == [LOCAL_NOTICE, NOT_A_REPO], out
+
+
+# R5 table row "ledger not append-only against HEAD": not run
+def test_local_doctor_skips_ledger_against_head() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        commit_all(repo)
+        lrun(repo, "add", "task", "u", "--note", "n")
+        path: Path = repo / L.LEDGER_REL
+        lines: list[str] = path.read_text().splitlines(keepends=True)
+        path.write_text(lines[0] + lines[2] + lines[1] + "".join(lines[3:]))
+        code, out = doctor(repo)  # tracked: the 0.2.5 finding
+        assert code == 1 and group(out, L.G_HEAD) != [], out
+        make_local(repo)
+        code, out = doctor(repo)
+        assert out.splitlines()[0] == LOCAL_NOTICE, out
+        assert group(out, L.G_HEAD) == [] and "append-only" not in out, out
+        assert code == 0, out
+
+
+# R5 table row "done stage not in HEAD": not run
+def test_local_doctor_skips_done_stage_not_in_head() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = done_uncommitted(Path(d))
+        code, out = doctor(repo)  # tracked: the 0.2.5 finding
+        assert code == 0 and group(out, L.G_UNCOMMITTED) != [], out
+        make_local(repo)
+        code, out = doctor(repo)
+        assert out.splitlines()[0] == LOCAL_NOTICE, out
+        assert group(out, L.G_UNCOMMITTED) == [] and "not in HEAD" not in out, out
+        assert code == 0 and out.endswith("doctor: no findings\n"), out
+
+
+# R5 table row "ref in a git-ignored or waste folder": under pm/ only waste
+def test_local_doctor_ignored_refs_under_pm() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        rels: list[str] = [
+            "pm/waste/team/r1.md", "pm/scratch/x.md",
+            "pm/stages/01-paper-x/chat/INDEX.md", "build/out.md", "notes.md",
+        ]
+        repo: Path = committed_refs_repo(Path(d), rels, IGNORE_ALL)
+        waste: str = "T-1 pm/waste/team/r1.md (waste)"
+        outside: str = "T-1 build/out.md (ignored)"
+        want: list[str] = [waste, "T-1 pm/scratch/x.md (ignored)", outside]
+        assert group(doctor(repo)[1], L.G_IGNORED) == want  # tracked: 0.2.5
+        make_local(repo)
+        code, out = doctor(repo)
+        assert out.splitlines()[0] == LOCAL_NOTICE, out
+        assert code == 0, out  # a ref outside pm/ stays as in 0.2.5
+        assert group(out, L.G_IGNORED) == [waste, outside], out
+
+
+# R5 table row "ref to a git-ignored file that is not here": under pm/ (chat/
+# refs included) a HARD missing ref instead; outside pm/ as in 0.2.5
+def test_local_doctor_missing_ref_under_pm_is_hard() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        rels: list[str] = [
+            "pm/scratch/x.md", "pm/stages/01-paper-x/chat/INDEX.md",
+            "build/out.md",
+        ]
+        repo: Path = committed_refs_repo(Path(d), rels, IGNORE_ALL)
+        for rel in rels:
+            (repo / rel).unlink()
+        code, out = doctor(repo)  # tracked: all three SOFT
+        assert code == 0 and group(out, L.G_REF) == [], out
+        assert group(out, L.G_IGNORED_GONE) == [f"T-1 {r}" for r in rels], out
+        make_local(repo)
+        code, out = doctor(repo)
+        assert out.splitlines()[0] == LOCAL_NOTICE, out
+        assert code == 1, out
+        assert group(out, L.G_REF) == [f"T-1 {r}" for r in rels[:2]], out
+        assert group(out, L.G_IGNORED_GONE) == ["T-1 build/out.md"], out
+        assert "HARD missing ref (2)" in out, out
+
+
+# R5 table rows "unchanged": a ref into pm/waste/ whose file is gone stays SOFT
+# (the user empties the waste folder); refs outside pm/ as in 0.2.5
+def test_local_doctor_unchanged_groups() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        rels: list[str] = ["pm/waste/team/r1.md", "build/out.md", "build/gone.md"]
+        repo: Path = committed_refs_repo(Path(d), rels, IGNORE_ALL)
+        (repo / rels[0]).unlink()
+        (repo / rels[2]).unlink()
+        want: dict[str, list[str]] = {
+            L.G_WASTE_GONE: ["T-1 pm/waste/team/r1.md"],
+            L.G_IGNORED: ["T-1 build/out.md (ignored)"],
+            L.G_IGNORED_GONE: ["T-1 build/gone.md"],
+        }
+        code, out = doctor(repo)
+        assert code == 0 and {g: group(out, g) for g in want} == want, out
+        make_local(repo)
+        code, out = doctor(repo)
+        assert out.splitlines()[0] == LOCAL_NOTICE, out
+        assert code == 0 and {g: group(out, g) for g in want} == want, out
+        assert out.endswith("doctor: 0 hard, 3 soft\n"), out
+
+
+# R5 table row "stage folder not here, and git has no file of it": HARD
+def test_local_doctor_missing_stage_folder_is_hard() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        commit_all(repo)
+        shutil.rmtree(repo / "pm/stages/01-paper-x")
+        code, out = doctor(repo)  # tracked: git has no file of it: SOFT
+        assert code == 0, out
+        assert group(out, L.G_FOLDER_EMPTY) == ["S-1 pm/stages/01-paper-x/"], out
+        make_local(repo)
+        code, out = doctor(repo)
+        assert out.splitlines()[0] == LOCAL_NOTICE, out
+        assert code == 1 and group(out, L.G_FOLDER_EMPTY) == [], out
+        assert group(out, L.G_FOLDER) == ["S-1 pm/stages/01-paper-x/"], out
+        assert "HARD missing stage folder (1)" in out, out
+
+
+# R5: the count line counts the findings printed, not the skipped ones
+def test_local_doctor_count_line_counts_printed() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        commit_all(repo)
+        waste: Path = repo / "pm/waste/team/w.md"
+        waste.parent.mkdir(parents=True)
+        waste.write_text("x")
+        assert lrun(repo, "set", "T-1", "--ref", "pm/waste/team/w.md")[0] == 0
+        (repo / "pm/stages/01-paper-x/notes/n.md").write_text("x")
+        assert lrun(repo, "close", "T-1", "--note", "ok")[0] == 0
+        assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 0
+        waste.unlink()
+        code, out = doctor(repo)  # tracked: the waste row and not-in-HEAD
+        assert code == 0 and out.endswith("doctor: 0 hard, 2 soft\n"), out
+        make_local(repo)
+        code, out = doctor(repo)
+        assert code == 0 and out.splitlines()[0] == LOCAL_NOTICE, out
+        assert out.endswith("doctor: 0 hard, 1 soft\n"), out
+
+
+# R6: local doctor and stage-close run no `git show`, no `git status`, no
+# check-ignore / ls-files on a path under pm/ except the _git_skip probe
+def test_local_runs_no_git_on_pm() -> None:
+    probe: str = f"ls-files -- {L.LEDGER_REL}"
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        fakebin, log = fake_git_log(root)
+        path: str = f"{fakebin}{os.pathsep}{os.environ['PATH']}"
+
+        def calls(repo: Path, *argv: str) -> list[str]:
+            log.write_text("")
+            with env(PATH=path):
+                lrun(repo, *argv)
+            return git_calls(log)
+
+        def doctor_repo(sub: str) -> Path:
+            """Done stage S-1 whose folder and a ref (under pm/) are gone."""
+            repo: Path = staged_repo(root / sub)
+            for rel in ("pm/scratch/x.md", "pm/scratch/y.md"):
+                (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+                (repo / rel).write_text("x")
+            lrun(repo, "set", "T-1", "--ref", "pm/scratch/x.md", "--ref",
+                 "pm/scratch/y.md")
+            assert lrun(repo, "close", "T-1", "--note", "ok")[0] == 0
+            assert lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")[0] == 0
+            (repo / "pm/scratch/y.md").unlink()
+            shutil.rmtree(repo / "pm/stages/01-paper-x")
+            return repo
+
+        def close_repo(sub: str) -> Path:
+            """Open stage S-1; T-1 has a present ref under pm/."""
+            repo: Path = staged_repo(root / sub)
+            (repo / "pm/scratch").mkdir()
+            (repo / "pm/scratch/x.md").write_text("x")
+            lrun(repo, "set", "T-1", "--ref", "pm/scratch/x.md")
+            assert lrun(repo, "close", "T-1", "--note", "ok")[0] == 0
+            return repo
+
+        tracked: list[str] = calls(doctor_repo("t1"), "doctor")
+        subs: set[str] = {c.split()[0] for c in tracked}
+        assert {"check-ignore", "show", "status"} <= subs, tracked  # the scenario
+        local: Path = doctor_repo("l1")
+        make_local(local)
+        got: list[str] = calls(local, "doctor")
+        assert set(got) <= {probe}, got
+        got = calls(local, "doctor", "--stage", "S-1")
+        assert set(got) <= {probe}, got
+        sc: list[str] = ["stage-close", "S-1", "--sign-off", "D-1"]
+        assert "check-ignore" in " ".join(calls(close_repo("t2"), *sc))
+        local = close_repo("l2")
+        make_local(local)
+        got = calls(local, *sc)
+        assert set(got) <= {probe}, got
+        assert L.load(local)["S-1"].status == "done"  # the close itself ran
+
+
+# D-73 (Q5): stage-close prints the notice only when it prints findings; it is
+# line 1, the `git:` line line 2
+def test_local_stage_close_notice_only_with_findings() -> None:
+    def ready(sub: str) -> Path:
+        """Stage S-1 with its task closed: stage-close is not refused."""
+        repo: Path = staged_repo(Path(d) / sub)
+        assert lrun(repo, "close", "T-1", "--note", "ok")[0] == 0
+        return repo
+
+    with tempfile.TemporaryDirectory() as d:
+        clean: Path = ready("a")
+        make_local(clean)
+        code, out = lrun(clean, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 0 and out.startswith("closed S-1: sign-off D-1\n"), out
+        assert LOCAL_NOTICE not in out, out
+        repo: Path = ready("b")
+        assert lrun(repo, "add", "decision", "cut", "--owner", "lead")[0] == 0
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 0, out
+        assert "  D-2 (lead) cut" in out, out
+        assert LOCAL_NOTICE not in out, out  # tracked: no notice
+        repo = ready("c")
+        make_local(repo)
+        assert lrun(repo, "add", "decision", "cut", "--owner", "lead")[0] == 0
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 0, out
+        assert out.splitlines()[:2] == [LOCAL_NOTICE, NOT_A_REPO], out
+        assert "  D-2 (lead) cut" in out, out
+        assert "closed S-1: sign-off D-1" in out, out
+
+
+# R7: doctor --start: `pm: local only` is line 2, at most 3 lines in all, one
+# rule file behind = its line, several = `+N more: rk doctor` (D-71), no git
+def test_local_doctor_start_lines() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        kit: str = f"kit {L.kit_version()}"
+        repo: Path = new_repo(root)
+        make_local(repo)
+        fakebin, log = fake_git_log(root)
+
+        def start() -> list[str]:
+            log.write_text("")
+            with env(PATH=f"{fakebin}{os.pathsep}{os.environ['PATH']}"):
+                code, out = lrun(repo, "doctor", "--start")
+            assert code == 0, out
+            assert git_calls(log) == [], "doctor --start ran git"
+            assert len(out.splitlines()) <= 3, out
+            return out.splitlines()
+
+        got: list[str] = start()
+        assert got == [kit, "pm: local only"], got
+        (repo / "AGENTS.md").write_text("<!-- research-kit: 2000-01-01a -->\n")
+        a_kit: str | None = L._line1_stamp(L.TEMPLATE_DIR / "AGENTS.md")
+        assert start() == [
+            kit, "pm: local only", f"AGENTS.md 2000-01-01a, kit {a_kit}: run /rk-sync"
+        ]
+        for n, k in enumerate(("paper", "software"), start=2):
+            (repo / f"pm/kinds/{k}.md").write_text(
+                f"<!-- research-kit-kind {k}: 2000-01-01a -->\n"
+            )
+            assert start() == [kit, "pm: local only", f"+{n} more: rk doctor"]
+
+
+# R4 + I5c: broken config: doctor lists HARD `pm/config.json does not parse`,
+# exits 1 and checks the repo as tracked (no notice; the git groups run)
+def test_local_broken_config_doctor() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = done_uncommitted(Path(d))
+        assert group(doctor(repo)[1], L.G_UNCOMMITTED) != []  # tracked
+        for text, what in BROKEN_CONFIGS:
+            make_local(repo, text)
+            code, out = doctor(repo)
+            assert code == 1, (text, out)
+            assert out.startswith("HARD pm/config.json does not parse (1)\n"), out
+            assert group(out, "pm/config.json does not parse") == [what], out
+            assert LOCAL_NOTICE not in out, out
+            assert group(out, L.G_UNCOMMITTED) != [], out  # as tracked
+
+
+# R4 + I5b: broken config: doctor --start prints its line and exits 0
+def test_local_broken_config_doctor_start() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        kit: str = f"kit {L.kit_version()}"
+        for text, _ in BROKEN_CONFIGS:
+            make_local(repo, text)
+            code, out = lrun(repo, "doctor", "--start")
+            assert code == 0, out
+            assert out.splitlines()[:2] == [kit, "pm/config.json does not parse"], out
+            assert "pm: local only" not in out, out
+
+
+# R4: broken config: stage-close exits 1 with `pm/config.json: <what>`, writes
+# nothing (no ledger line, no stage record)
+def test_local_broken_config_stage_close() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        assert lrun(repo, "close", "T-1", "--note", "ok")[0] == 0  # not refused
+        for text, what in BROKEN_CONFIGS:
+            make_local(repo, text)
+            before: dict[str, bytes | None] = snapshot(Path(d))
+            code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+            assert code == 1 and f"pm/config.json: {what}" in out, (text, out)
+            assert snapshot(Path(d)) == before, text
+        make_local(repo, "{}")  # no key = tracked: the same call now closes
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 0 and "closed S-1: sign-off D-1" in out, out
+
+
+# R4: add, set, list, show, start, close never read the file (a guard: green
+# before the build, must stay green)
+def test_local_broken_config_ledger_commands_unaffected() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = staged_repo(Path(d))
+        for text, _ in BROKEN_CONFIGS:
+            make_local(repo, text)
+            code, out = lrun(repo, "add", "task", "x", "--note", "n")
+            assert code == 0, (text, out)
+            tid: str = out.split()[1].rstrip(":")
+            for argv in (
+                ("set", tid, "--owner", "sr1"), ("list", "--all"), ("show", tid),
+                ("start", tid), ("close", tid, "--note", "ok"),
+            ):
+                code, out = lrun(repo, *argv)
+                assert code == 0, (text, argv, out)
 
 
 def main() -> int:

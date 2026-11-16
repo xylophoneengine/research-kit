@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import json
 import re
 import os
 import shutil
@@ -14,6 +15,7 @@ import sys
 import tempfile
 import traceback
 from collections.abc import Callable
+from collections.abc import Iterator
 from importlib.machinery import ModuleSpec
 from pathlib import Path
 from types import ModuleType
@@ -757,6 +759,729 @@ def test_ledger_end_to_end() -> None:
             [*git, "status", "--porcelain"], env=genv, capture_output=True, text=True
         )
         assert r.stdout == " M pm/ledger.jsonl\n", r.stdout
+
+
+# ---- local-only mode (S-4, design-local-only-mode R2 to R14; W1: red first) ---
+# `rk init|sync --pm local` declares pm/config.json {"pm": "local"} and writes
+# a block into git's exclude file instead of .gitignore/.gitattributes. Texts
+# are those of design I4 (block) and I5 (output lines).
+
+START_LOCAL: str = "# >>> research-kit (local only)"
+
+
+def block(prefix: str = "") -> str:
+    """The exclude block of design I4 (addendum v2, D-76, D-77, D-78): anchored to
+    the repo folder, `prefix` = its path below the git top level ("" or "sub/");
+    its start line carries the prefix (D-78), so each kit folder owns a block."""
+    body: str = "".join(
+        f"/{prefix}{p}\n" for p in ("pm/", "AGENTS.md", "CLAUDE.md", "**/_dry/")
+    )
+    start: str = f"{START_LOCAL} {prefix}" if prefix else START_LOCAL
+    return f"{start}\n{body}# <<< research-kit\n"
+
+
+BLOCK: str = block()  # a repo folder at the git top level
+# the block of the first build: same markers, unanchored lines
+LEGACY_BLOCK: str = (
+    f"{START_LOCAL}\npm/\nAGENTS.md\nCLAUDE.md\n_dry/\n# <<< research-kit\n"
+)
+OLD_BLOCK: str = f"{START_LOCAL}\nOLD\n# <<< research-kit\n"
+TRACKED_BLOCK: str = "# >>> research-kit\npm/waste/\n# <<< research-kit\n"
+CONFIG_LOCAL: str = '{\n  "pm": "local"\n}\n'
+CONFIG_TRACKED: str = '{\n  "pm": "tracked"\n}\n'
+NO_GIT: str = "no git repo: exclude block not written"
+REFUSAL: str = (
+    "pm/ has files in git; local-only needs them untracked first "
+    "(git rm -r --cached pm/ is yours to run)"
+)
+NOTE_EXCLUDE: str = (
+    "note: .git/info/exclude holds a research-kit block; remove it by hand"
+)
+BROKEN: list[tuple[str, str]] = [  # (file text, <what> of design I2)
+    ("[1]\n", "not a JSON object"),
+    ("{torn", "not a JSON object"),
+    ('{"pm": "x"}', '"pm" must be "local" or "tracked"'),
+    ('{"pm": 1}', '"pm" must be "local" or "tracked"'),
+]
+
+
+def runk(fn: Callable[..., int], *args: object, **kw: object) -> tuple[int, str]:
+    """Like run, with keyword arguments (pm=...)."""
+    buf: io.StringIO = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code: int = fn(*args, **kw)
+    return code, buf.getvalue()
+
+
+@contextlib.contextmanager
+def _path(value: str) -> Iterator[None]:
+    """PATH set to `value`, restored afterwards."""
+    old: str | None = os.environ.get("PATH")
+    os.environ["PATH"] = value
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = old
+
+
+def _fake_git(root: Path) -> tuple[Path, str]:
+    """A git on PATH that only touches a marker: (marker, PATH value)."""
+    fake: Path = root / "fakebin"
+    fake.mkdir()
+    marker: Path = root / "git-called"
+    script: Path = fake / "git"
+    script.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
+    script.chmod(0o755)
+    return marker, f"{fake}{os.pathsep}{os.environ['PATH']}"
+
+
+def _g(repo: Path, *args: str) -> str:
+    """A real git command in `repo` without the user's config; its stdout."""
+    exe: str | None = shutil.which("git")
+    assert exe is not None, "git not found"
+    r: subprocess.CompletedProcess[str] = subprocess.run(
+        [exe, "-C", str(repo), "-c", "user.name=t",
+         "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false",
+         "-c", "core.hooksPath=/dev/null", *args],
+        env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1",
+             "GIT_CONFIG_GLOBAL": "/dev/null"},
+        capture_output=True, text=True,
+    )  # fmt: skip
+    assert r.returncode == 0, (args, r.stderr)
+    return r.stdout
+
+
+def _git_repo(root: Path) -> Path:
+    """setup(root) plus `git init` in its repo dir."""
+    repo: Path = setup(root)
+    _g(repo, "init", "-q")
+    return repo
+
+
+def _tree(repo: Path) -> dict[str, bytes | None]:
+    """snapshot without .git (git's own files change by themselves)."""
+    return {
+        k: v for k, v in snapshot(repo).items()
+        if k != ".git" and not k.startswith(".git/")
+    }
+
+
+def _excl(repo: Path) -> Path:
+    return repo / ".git/info/exclude"
+
+
+def _excl_text(repo: Path) -> str:
+    return _excl(repo).read_text() if _excl(repo).exists() else ""
+
+
+def _created_line(out: str) -> str:
+    return next(ln for ln in out.splitlines() if ln.startswith("created pm/"))
+
+
+# R2: a repo that is not local runs no git command (a guard: green before the
+# build, must stay green)
+def test_local_r2_no_git_without_pm() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = setup(root)
+        marker, path = _fake_git(root)
+        with _path(path):
+            assert run(rk.cmd_init, repo, ["paper"], "light", "user")[0] == 0
+            assert run(rk.cmd_sync, repo, False, False)[0] == 0
+            assert run(rk.cmd_sync, repo, True, False)[0] == 0
+            assert run(rk.cmd_add_kind, repo, "software")[0] == 0
+            assert run(rk.cmd_upgrade, repo)[0] == 0
+            (repo / "pm/config.json").write_text(CONFIG_TRACKED)  # declared
+            assert run(rk.cmd_sync, repo, True, False)[0] == 0
+            assert run(rk.cmd_add_kind, repo, "thesis")[0] == 0
+        assert not marker.exists(), "rk ran git in a tracked repo"
+
+
+# R2, design D1: `--pm tracked` on a repo that is not local runs no git command
+# and writes no pm/config.json
+def test_local_r2_pm_tracked_runs_no_git() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = setup(root)
+        marker, path = _fake_git(root)
+        with _path(path):
+            code, out = runk(
+                rk.cmd_init, repo, ["paper"], "light", "user", pm="tracked"
+            )
+            assert code == 0, out
+            for write in (False, True):
+                code, out = runk(rk.cmd_sync, repo, write, False, pm="tracked")
+                assert code == 0, out
+        assert not marker.exists(), "rk ran git for --pm tracked"
+        assert not (repo / "pm/config.json").exists()
+
+
+# I6: the CLI flag `--pm {local,tracked}` on init and sync
+def test_local_cli_pm_flag() -> None:
+    def cli(*argv: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-I", str(RK_PY), *argv], capture_output=True, text=True
+        )
+
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = Path(d) / "repo"
+        repo.mkdir()
+        for sub in ("init", "sync"):
+            assert "--pm {local,tracked}" in cli(sub, "--help").stdout, sub
+        init: list[str] = ["init", str(repo), "--kinds", "paper", "--mode", "light"]
+        bad: subprocess.CompletedProcess[str] = cli(*init, "--pm", "bogus")
+        assert bad.returncode == 2 and list(repo.iterdir()) == [], bad
+        r: subprocess.CompletedProcess[str] = cli(*init, "--pm", "local")
+        assert r.returncode == 0, (r.stdout, r.stderr)
+        assert (repo / "pm/config.json").read_text() == CONFIG_LOCAL
+        assert NO_GIT in r.stdout, r.stdout  # a temp dir is no git repo
+        r = cli("sync", str(repo), "--pm", "tracked")
+        assert r.returncode == 0 and "== pm/config.json ==" in r.stdout, r.stdout
+        assert (repo / "pm/config.json").read_text() == CONFIG_LOCAL  # dry run
+
+
+# R4: broken config: init, sync (dry run and write), add-kind, upgrade exit 1,
+# print a line with `pm/config.json: <what>` and write nothing
+def test_local_broken_config_writes_nothing() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = setup(root)
+        assert run(rk.cmd_init, repo, ["paper"], "light", "user")[0] == 0
+        fresh: Path = root / "fresh"  # init: no AGENTS.md yet
+        (fresh / "pm").mkdir(parents=True)
+        for text, what in BROKEN:
+            want: str = f"pm/config.json: {what}"
+            (repo / "pm/config.json").write_text(text)
+            before: dict[str, bytes | None] = _tree(repo)
+            calls: list[tuple[str, Callable[..., int], tuple[object, ...]]] = [
+                ("sync", rk.cmd_sync, (repo, False, False)),
+                ("sync --write", rk.cmd_sync, (repo, True, False)),
+                ("add-kind", rk.cmd_add_kind, (repo, "software")),
+                ("upgrade", rk.cmd_upgrade, (repo,)),
+            ]
+            for name, fn, args in calls:
+                code, out = run(fn, *args)
+                assert code == 1 and want in out, (name, text, out)
+                assert _tree(repo) == before, (name, text)
+            (fresh / "pm/config.json").write_text(text)
+            before = _tree(fresh)
+            code, out = run(rk.cmd_init, fresh, ["paper"], "light", "user")
+            assert code == 1 and want in out, ("init", text, out)
+            assert _tree(fresh) == before, ("init", text)
+
+
+# R8, I5i: a local repo's init, sync, add-kind and upgrade neither create nor
+# change .gitignore and .gitattributes
+def test_local_never_touches_gitignore_files() -> None:
+    for present in (False, True):
+        with tempfile.TemporaryDirectory() as d:
+            repo: Path = _git_repo(Path(d))
+            gi: Path = repo / ".gitignore"
+            ga: Path = repo / ".gitattributes"
+            if present:
+                gi.write_bytes(b"keep-me/")  # no newline at the end on purpose
+                ga.write_bytes(b"*.png binary")
+            steps: list[tuple[str, Callable[[], tuple[int, str]]]] = [
+                ("init", lambda: runk(
+                    rk.cmd_init, repo, ["paper"], "light", "user", pm="local")),
+                ("add-kind", lambda: run(rk.cmd_add_kind, repo, "software")),
+                ("upgrade", lambda: run(rk.cmd_upgrade, repo)),
+                ("sync", lambda: run(rk.cmd_sync, repo, True, False)),
+            ]  # fmt: skip
+            for name, step in steps:
+                code, out = step()
+                assert code == 0, (name, out)
+                if name == "init":
+                    line: str = _created_line(out)
+                    assert "pm/config.json" in line, line
+                    assert ".gitignore" not in line, line
+                    assert ".gitattributes" not in line, line
+                if present:
+                    assert gi.read_bytes() == b"keep-me/", (name, gi.read_bytes())
+                    assert ga.read_bytes() == b"*.png binary", name
+                else:
+                    assert not gi.exists() and not ga.exists(), name
+
+
+# R9, I1, I4, I5i: init in a git repo: config, one exclude block, nothing else
+def test_local_init_in_git_repo() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = _git_repo(Path(d))
+        old: str = _excl_text(repo)
+        code, out = runk(rk.cmd_init, repo, ["paper"], "full", "user", pm="local")
+        assert code == 0, out
+        assert (repo / "pm/config.json").read_text() == CONFIG_LOCAL
+        text: str = _excl(repo).read_text()
+        assert text.startswith(old) and text.endswith(BLOCK), text
+        assert text.count(START_LOCAL) == 1 and text.count(rk.GI_END) == 1, text
+        assert not (repo / ".gitignore").exists(), "init wrote .gitignore"
+        assert not (repo / ".gitattributes").exists(), "init wrote .gitattributes"
+        line: str = _created_line(out)
+        assert "pm/config.json" in line and ".git/info/exclude" in line, line
+        assert ".gitignore" not in line and ".gitattributes" not in line, line
+        assert _g(repo, "status", "--porcelain") == "", "something is not excluded"
+        _g(repo, "check-ignore", "-q", "pm/ledger.jsonl")  # rc 0: ignored
+
+
+# R9: text outside the markers stays byte-equal; a 0.2.5 tracked block in the
+# exclude file (start line `# >>> research-kit`) is never matched by the block
+def test_local_exclude_block_keeps_text_outside() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        (root / "a").mkdir()
+        repo: Path = _git_repo(root / "a")  # appended after other text
+        above: str = f"# mine\nmy/\n{TRACKED_BLOCK}\nmid/\n"
+        _excl(repo).write_text(above)
+        code, out = runk(rk.cmd_init, repo, ["paper"], "full", "user", pm="local")
+        assert code == 0, out
+        text: str = _excl(repo).read_text()
+        assert text.startswith(above) and text.endswith(BLOCK), text
+        assert text.count(START_LOCAL) == 1, text
+        (root / "b").mkdir()
+        repo = _git_repo(root / "b")  # last line without a newline
+        _excl(repo).write_text("mine/")
+        assert runk(rk.cmd_init, repo, ["paper"], "full", "user", pm="local")[0] == 0
+        text = _excl(repo).read_text()
+        assert text.startswith("mine/\n") and text.endswith(BLOCK), text
+        assert text.count(START_LOCAL) == 1, text
+        (root / "c").mkdir()
+        repo = _git_repo(root / "c")  # an old block is refreshed in place
+        below: str = "\nbelow/\nno-newline-at-end"
+        _excl(repo).write_text(above + OLD_BLOCK + below)
+        assert runk(rk.cmd_init, repo, ["paper"], "full", "user", pm="local")[0] == 0
+        assert _excl(repo).read_text() == above + BLOCK + below, _excl(repo).read_text()
+
+
+# R9, I5e: sync --write refreshes the block in place; a second run changes
+# nothing (same bytes); one block after every run
+def test_local_exclude_block_twice_same_bytes() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = _git_repo(Path(d))
+        assert runk(rk.cmd_init, repo, ["paper"], "full", "user", pm="local")[0] == 0
+        done: bytes = _excl(repo).read_bytes()
+        code, out = run(rk.cmd_sync, repo, True, False)
+        assert code == 0 and "up to date" in out, out
+        assert _excl(repo).read_bytes() == done
+        _excl(repo).write_text(_excl(repo).read_text().replace(BLOCK, OLD_BLOCK))
+        for want in ("wrote .git/info/exclude", "up to date"):  # refresh, then none
+            code, out = run(rk.cmd_sync, repo, True, False)
+            assert code == 0 and want in out, (want, out)
+            assert ("wrote " in out) == (want != "up to date"), out
+            assert _excl(repo).read_bytes() == done, _excl(repo).read_text()
+            assert _excl(repo).read_text().count(START_LOCAL) == 1
+
+
+def _ignored(top: Path, rel: str) -> bool:
+    """Does git (run at `top`, the git top level) ignore the path `rel`?"""
+    exe: str | None = shutil.which("git")
+    assert exe is not None, "git not found"
+    r: subprocess.CompletedProcess[bytes] = subprocess.run(
+        [exe, "-C", str(top), "check-ignore", "-q", "--no-index", rel],
+        env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1",
+             "GIT_CONFIG_GLOBAL": "/dev/null"},
+        capture_output=True,
+    )  # fmt: skip
+    assert r.returncode in (0, 1), r
+    return r.returncode == 0
+
+
+# R9 (a), D-77, addendum v2: top-level repo: the block is anchored; `_dry/` at
+# any depth is ignored
+def test_local_exclude_block_anchored_top_level() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = _git_repo(Path(d))
+        assert runk(rk.cmd_init, repo, ["paper"], "full", "user", pm="local")[0] == 0
+        assert _excl(repo).read_text().endswith(BLOCK), _excl(repo).read_text()
+        assert "/pm/\n/AGENTS.md\n/CLAUDE.md\n/**/_dry/\n" in BLOCK
+        for rel in ("pm/f", "AGENTS.md", "CLAUDE.md", "_dry/f", "x/_dry/f"):
+            assert _ignored(repo, rel), rel
+        for rel in ("x/pm/f", "x/CLAUDE.md", "x/AGENTS.md", "template/pm/f"):
+            assert not _ignored(repo, rel), rel
+
+
+# R9 (b), D-77: repo folder `sub/` of a git repo: the lines carry `/sub/`
+def test_local_exclude_block_anchored_in_subfolder() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        rk.TEMPLATE_DIR = fake_template(root)
+        top: Path = root / "top"
+        sub: Path = top / "sub"
+        sub.mkdir(parents=True)
+        _g(top, "init", "-q")
+        assert runk(rk.cmd_init, sub, ["paper"], "full", "user", pm="local")[0] == 0
+        assert _excl(top).read_text().endswith(block("sub/")), _excl(top).read_text()
+        assert _excl(top).read_text().count(START_LOCAL) == 1
+        lines: str = "/sub/pm/\n/sub/AGENTS.md\n/sub/CLAUDE.md\n/sub/**/_dry/\n"
+        assert lines in block("sub/")  # the helper itself
+        for rel in ("sub/pm/f", "sub/AGENTS.md", "sub/CLAUDE.md", "sub/_dry/f",
+                    "sub/x/_dry/f"):
+            assert _ignored(top, rel), rel
+        for rel in ("pm/f", "sub/x/pm/f", "_dry/f", "AGENTS.md", "sub/x/CLAUDE.md"):
+            assert not _ignored(top, rel), rel
+        assert _g(top, "status", "--porcelain") == "", "not excluded in sub/"
+        before: bytes = _excl(top).read_bytes()  # sync --write: the same bytes
+        code, out = run(rk.cmd_sync, sub, True, False)
+        assert code == 0 and _excl(top).read_bytes() == before, out
+
+
+# R9 (c), addendum v2: a file with the first build's unanchored block ends with
+# exactly one anchored block, the text outside the markers byte-equal (init and
+# sync --write)
+def test_local_exclude_block_unanchored_rewritten() -> None:
+    above: str = "# mine\nmy/\n\n"
+    below: str = "\nbelow/\nno-newline-at-end"
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        (root / "a").mkdir()
+        repo: Path = _git_repo(root / "a")
+        _excl(repo).write_text(above + LEGACY_BLOCK + below)
+        assert runk(rk.cmd_init, repo, ["paper"], "full", "user", pm="local")[0] == 0
+        assert _excl(repo).read_text() == above + BLOCK + below, _excl(repo).read_text()
+        (root / "b").mkdir()
+        repo = _git_repo(root / "b")
+        assert runk(rk.cmd_init, repo, ["paper"], "full", "user", pm="local")[0] == 0
+        _excl(repo).write_text(above + LEGACY_BLOCK + below)
+        code, out = run(rk.cmd_sync, repo, True, False)
+        assert code == 0 and "wrote .git/info/exclude" in out, out
+        text: str = _excl(repo).read_text()
+        assert text == above + BLOCK + below, text
+        assert text.count(START_LOCAL) == 1 and "\n_dry/\n" not in text, text
+
+
+# R9, I5e: in a linked worktree the file written is the main checkout's
+# .git/info/exclude (pattern test_gitignore_keeps_team_reports_tracked: real git)
+def test_local_worktree_writes_main_exclude() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        main: Path = _git_repo(root)
+        (main / "README.md").write_text("x\n")
+        _g(main, "add", "README.md")
+        _g(main, "commit", "-q", "-m", "c")
+        wt: Path = root / "wt"
+        _g(main, "worktree", "add", "-q", "-b", "wtb", str(wt))
+        assert (wt / ".git").is_file()
+        code, out = runk(rk.cmd_init, wt, ["paper"], "full", "user", pm="local")
+        assert code == 0, out
+        text: str = _excl(main).read_text()
+        assert text.endswith(BLOCK) and text.count(START_LOCAL) == 1, text
+        assert ".git/info/exclude" in _created_line(out), out
+        assert _g(wt, "status", "--porcelain") == "", "not excluded in the worktree"
+        _excl(main).write_text(text.replace(BLOCK, OLD_BLOCK))
+        code, out = run(rk.cmd_sync, wt, True, False)  # file outside repo_dir
+        assert code == 0, out
+        assert "wrote .git/info/exclude" in out, out
+        assert _excl(main).read_text() == text, _excl(main).read_text()
+
+
+# R10, I5i: no git binary / not a git repo: no exclude file, the line, the
+# config written, exit 0
+def test_local_init_without_git() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        (root / "plain").mkdir()
+        repo: Path = setup(root / "plain")  # not a git repo
+        code, out = runk(rk.cmd_init, repo, ["paper"], "full", "user", pm="local")
+        assert code == 0 and NO_GIT in out, out
+        assert (repo / "pm/config.json").read_text() == CONFIG_LOCAL
+        assert not (repo / ".git").exists()
+        (root / "nobin").mkdir()
+        (root / "bin").mkdir()
+        repo = _git_repo(root / "bin")  # a repo, but git cannot run
+        old: str = _excl_text(repo)
+        with _path(str(root / "nobin")):
+            code, out = runk(rk.cmd_init, repo, ["paper"], "full", "user", pm="local")
+        assert code == 0 and NO_GIT in out, out
+        assert (repo / "pm/config.json").read_text() == CONFIG_LOCAL
+        assert _excl_text(repo) == old, "the exclude file was written"
+        line: str = _created_line(out)
+        assert "pm/config.json" in line and ".git/info/exclude" not in line, line
+        assert ".gitignore" not in line and ".gitattributes" not in line, line
+
+
+# R10, I5e: the same for sync --write
+def test_local_sync_write_without_git() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        (root / "plain").mkdir()
+        repo: Path = setup(root / "plain")
+        assert run(rk.cmd_init, repo, ["paper"], "full", "user")[0] == 0
+        code, out = runk(rk.cmd_sync, repo, True, False, pm="local")
+        assert code == 0 and NO_GIT in out and "wrote pm/config.json" in out, out
+        assert (repo / "pm/config.json").read_text() == CONFIG_LOCAL
+        assert not (repo / ".git").exists()
+        (root / "nobin").mkdir()
+        (root / "bin").mkdir()
+        repo = _git_repo(root / "bin")
+        assert run(rk.cmd_init, repo, ["paper"], "full", "user")[0] == 0
+        old: str = _excl_text(repo)
+        with _path(str(root / "nobin")):
+            code, out = runk(rk.cmd_sync, repo, True, False, pm="local")
+        assert code == 0 and NO_GIT in out and "wrote pm/config.json" in out, out
+        assert (repo / "pm/config.json").read_text() == CONFIG_LOCAL
+        assert _excl_text(repo) == old, "the exclude file was written"
+
+
+# R11, I5d: sync without --write writes nothing, names the config and the
+# exclude file, never `== .gitignore ==` or `== .gitattributes ==`
+def test_local_sync_dry_run() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = _git_repo(Path(d))
+        assert run(rk.cmd_init, repo, ["paper"], "full", "user")[0] == 0
+        old: str = "# >>> research-kit\nOLD\n# <<< research-kit\n"
+        (repo / ".gitignore").write_text(old)
+        (repo / ".gitattributes").write_text(old)  # tracked: both headings
+        assert "== .gitignore ==" in run(rk.cmd_sync, repo, False, False)[1]
+        before: dict[str, bytes | None] = _tree(repo)
+        excl: bytes = _excl(repo).read_bytes()
+        code, out = runk(rk.cmd_sync, repo, False, False, pm="local")
+        assert code == 0, out
+        assert any(ln.startswith("== pm/config.json ==") for ln in out.splitlines())
+        want: str = "== .git/info/exclude == research-kit block added/refreshed"
+        assert want in out, out
+        assert "== .gitignore ==" not in out, out
+        assert "== .gitattributes ==" not in out, out
+        assert "dry run" in out, out
+        assert _tree(repo) == before and not (repo / "pm/config.json").exists()
+        assert _excl(repo).read_bytes() == excl, "a dry run wrote the exclude file"
+
+
+# R12, I5h: `--pm local` with files of pm/ in git: exit 1, the refusal, nothing
+# written (AGENTS.md included), for init and for sync (dry run and write)
+def test_local_refuses_tracked_pm() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        (root / "a").mkdir()
+        repo: Path = _git_repo(root / "a")
+        (repo / "pm").mkdir()
+        (repo / "pm/x.md").write_text("x\n")
+        _g(repo, "add", "pm/x.md")
+        before: dict[str, bytes | None] = _tree(repo)
+        excl: bytes = _excl(repo).read_bytes()
+        code, out = runk(rk.cmd_init, repo, ["paper"], "full", "user", pm="local")
+        assert code == 1 and REFUSAL in out, out
+        assert _tree(repo) == before and not (repo / "AGENTS.md").exists()
+        assert _excl(repo).read_bytes() == excl
+        (root / "b").mkdir()
+        repo = _git_repo(root / "b")
+        assert run(rk.cmd_init, repo, ["paper"], "full", "user")[0] == 0
+        _g(repo, "add", "pm/ledger.jsonl")
+        before = _tree(repo)
+        excl = _excl(repo).read_bytes()
+        for write in (False, True):
+            code, out = runk(rk.cmd_sync, repo, write, False, pm="local")
+            assert code == 1 and REFUSAL in out, (write, out)
+            assert _tree(repo) == before, write
+            assert _excl(repo).read_bytes() == excl, write
+
+
+# R13, I5g, I5e: `sync --pm tracked --write` on a local repo: config tracked,
+# the 0.2.5 blocks, the exclude file byte-equal, the note
+def test_local_switch_to_tracked() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = _git_repo(Path(d))
+        assert runk(rk.cmd_init, repo, ["paper"], "full", "user", pm="local")[0] == 0
+        excl: bytes = _excl(repo).read_bytes()
+        before: dict[str, bytes | None] = _tree(repo)
+        code, out = runk(rk.cmd_sync, repo, False, False, pm="tracked")  # dry run
+        assert code == 0 and NOTE_EXCLUDE in out, out
+        assert "== .gitignore ==" in out, out
+        assert _tree(repo) == before, "a dry run wrote something"
+        code, out = runk(rk.cmd_sync, repo, True, False, pm="tracked")
+        assert code == 0, out
+        assert NOTE_EXCLUDE in out and "wrote pm/config.json" in out, out
+        assert "wrote .gitignore" in out and "wrote .gitattributes" in out, out
+        assert (repo / "pm/config.json").read_text() == CONFIG_TRACKED
+        assert (repo / ".gitignore").read_text() == rk.gitignore_text(""), out
+        line: str = "pm/ledger.jsonl merge=union"
+        want: str = f"{rk.GI_START}\n{line}\n{rk.GI_END}\n"
+        assert (repo / ".gitattributes").read_text() == want
+        assert _excl(repo).read_bytes() == excl, "the exclude file was changed"
+        code, out = run(rk.cmd_sync, repo, True, False)  # now a tracked repo
+        assert code == 0 and "up to date" in out and "note:" not in out, out
+
+
+def _multi_repo(root: Path, *rels: str) -> tuple[Path, list[Path]]:
+    """One git repo `root/top` and the kit folders `rels` in it (top-level folder
+    = "" -> the repo root itself); (repo, folders)."""
+    rk.TEMPLATE_DIR = fake_template(root)
+    top: Path = root / "top"
+    dirs: list[Path] = [top / rel for rel in rels]
+    for folder in dirs:
+        folder.mkdir(parents=True, exist_ok=True)
+    _g(top, "init", "-q")
+    return top, dirs
+
+
+def _init_local(folder: Path) -> None:
+    code, out = runk(rk.cmd_init, folder, ["paper"], "full", "user", pm="local")
+    assert code == 0, out
+
+
+def _block_text(text: str, start: str) -> str:
+    """The block that starts with the exact line `start` ('' when none)."""
+    m: re.Match[str] | None = re.search(
+        rf"^{re.escape(start)}$.*?^{re.escape(rk.GI_END)}$\n?", text, re.M | re.S
+    )
+    return m.group(0) if m else ""
+
+
+# D-78 (crit1 N1): one block per kit folder: two kit folders of one git repo
+def test_local_two_kit_folders_two_blocks() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        top, (inner, two) = _multi_repo(Path(d), "inner", "sub/two")
+        _init_local(inner)
+        _init_local(two)
+        text: str = _excl(top).read_text()
+        assert block("inner/") in text and block("sub/two/") in text, text
+        assert f"{START_LOCAL} inner/\n" in text, text
+        assert f"{START_LOCAL} sub/two/\n" in text, text
+        assert text.count(rk.GI_END) == 2 and text.count(START_LOCAL) == 2, text
+        listed: list[str] = _g(top, "status", "--porcelain").splitlines()
+        for under in ("inner/pm", "inner/AGENTS.md", "sub/two/pm"):
+            assert not [ln for ln in listed if under in ln], (under, listed)
+        assert _ignored(top, "inner/pm/f") and _ignored(top, "sub/two/AGENTS.md")
+        assert not _ignored(top, "pm/f") and not _ignored(top, "sub/pm/f")
+
+
+# D-78: a kit at the git root and a kit in sub/: the root block keeps today's
+# start line, the sub block carries its prefix; either init order
+def test_local_root_kit_and_sub_kit_two_blocks() -> None:
+    for first_root in (True, False):
+        with tempfile.TemporaryDirectory() as d:
+            top, (root_kit, sub) = _multi_repo(Path(d), "", "sub")
+            for folder in ((root_kit, sub) if first_root else (sub, root_kit)):
+                _init_local(folder)
+            text: str = _excl(top).read_text()
+            assert START_LOCAL in text.splitlines(), (first_root, text)  # root
+            assert f"{START_LOCAL} sub/" in text.splitlines(), (first_root, text)
+            assert block() in text and block("sub/") in text, (first_root, text)
+            assert text.count(rk.GI_END) == 2, (first_root, text)
+            assert _g(top, "status", "--porcelain") == "", first_root
+
+
+# D-78: a rerun (sync --pm local --write) in one folder neither duplicates its
+# block nor touches the other folder's block (byte-equal, also a changed one)
+def test_local_rerun_leaves_other_block() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        top, (inner, two) = _multi_repo(Path(d), "inner", "sub/two")
+        _init_local(inner)
+        _init_local(two)
+        done: bytes = _excl(top).read_bytes()
+        code, out = runk(rk.cmd_sync, inner, True, False, pm="local")
+        assert code == 0 and _excl(top).read_bytes() == done, out
+        s_inner: str = f"{START_LOCAL} inner/"
+        s_two: str = f"{START_LOCAL} sub/two/"
+        text: str = done.decode()
+        stale: str = text.replace(
+            _block_text(text, s_inner), f"{s_inner}\nOLD\n{rk.GI_END}\n"
+        ).replace(_block_text(text, s_two), f"{s_two}\nOLD\n{rk.GI_END}\n")
+        _excl(top).write_text(stale)
+        code, out = runk(rk.cmd_sync, inner, True, False, pm="local")
+        assert code == 0 and "wrote .git/info/exclude" in out, out
+        now: str = _excl(top).read_text()
+        assert _block_text(now, s_inner) == block("inner/"), now  # refreshed
+        assert _block_text(now, s_two) == f"{s_two}\nOLD\n{rk.GI_END}\n", now
+        assert now.count(s_inner) == 1 and now.count(s_two) == 1, now
+        assert now.count(rk.GI_END) == 2, now
+
+
+# D-78: switch back to tracked in one folder (today: config tracked, the 0.2.5
+# blocks, the exclude file byte-equal, the note): the other block is untouched
+def test_local_switch_back_leaves_other_block() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        top, (inner, two) = _multi_repo(Path(d), "inner", "sub/two")
+        _init_local(inner)
+        _init_local(two)
+        done: bytes = _excl(top).read_bytes()
+        code, out = runk(rk.cmd_sync, two, True, False, pm="tracked")
+        assert code == 0 and NOTE_EXCLUDE in out, out
+        assert (two / "pm/config.json").read_text() == CONFIG_TRACKED
+        assert (inner / "pm/config.json").read_text() == CONFIG_LOCAL
+        assert _excl(top).read_bytes() == done, "the exclude file was changed"
+        mine: str = _block_text(done.decode(), f"{START_LOCAL} inner/")
+        assert mine == block("inner/"), done.decode()  # inner's block exists
+
+
+# R14, I1: a rewrite of pm/config.json keeps every other key and its value
+def test_local_config_rewrite_keeps_other_keys() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = setup(Path(d))
+        assert run(rk.cmd_init, repo, ["paper"], "full", "user")[0] == 0
+        cfg: Path = repo / "pm/config.json"
+        for text in (
+            '{"x": 1, "pm": "tracked"}', '{"x": 1}', '{"pm": "tracked", "y": [1, 2]}'
+        ):
+            cfg.write_text(text)
+            want: str = json.dumps({**json.loads(text), "pm": "local"}, indent=2)
+            code, out = runk(rk.cmd_sync, repo, True, False, pm="local")
+            assert code == 0, (text, out)
+            assert cfg.read_text() == want + "\n", (text, cfg.read_text())
+        cfg.write_text('{"x": 1, "pm": "local"}')  # back to tracked, x kept
+        code, out = runk(rk.cmd_sync, repo, True, False, pm="tracked")
+        assert code == 0, out
+        want = json.dumps({"x": 1, "pm": "tracked"}, indent=2) + "\n"
+        assert cfg.read_text() == want, cfg.read_text()
+
+
+# I5g, Q2: sync in a local repo finds a research-kit block in .gitignore or
+# .gitattributes: prints the note (dry run and write), removes nothing, and a
+# note alone is no write
+def test_local_sync_notes_existing_blocks() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = _git_repo(Path(d))
+        assert runk(rk.cmd_init, repo, ["paper"], "full", "user", pm="local")[0] == 0
+        gi: Path = repo / ".gitignore"
+        ga: Path = repo / ".gitattributes"
+        gi.write_text("mine/\n")
+        ga.write_text("*.png binary\n")
+        code, out = run(rk.cmd_sync, repo, False, False)
+        assert code == 0 and "holds a research-kit block" not in out, out
+        gi.write_text(rk.gitignore_text("mine/\n"))
+        ga.write_text(f"{rk.GI_START}\npm/ledger.jsonl merge=union\n{rk.GI_END}\n")
+        before: dict[str, bytes | None] = _tree(repo)
+        excl: bytes = _excl(repo).read_bytes()
+        for write in (False, True):
+            code, out = run(rk.cmd_sync, repo, write, False)
+            assert code == 0, out
+            for f in (".gitignore", ".gitattributes"):
+                note: str = f"note: {f} holds a research-kit block; remove it by hand"
+                assert note in out, (write, out)
+            assert "wrote " not in out, out
+            assert "== .gitignore ==" not in out, out
+            assert _tree(repo) == before, write
+            assert _excl(repo).read_bytes() == excl, write
+
+
+# crit1 m3, m4: a bad `pm` value from Python is refused, writing nothing; a
+# non-ASCII value of another key is written as it is
+def test_local_pm_value_checked_and_utf8_kept() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = setup(Path(d))
+        assert run(rk.cmd_init, repo, ["paper"], "light", "user")[0] == 0
+        before: dict[str, bytes | None] = _tree(repo)
+        assert runk(rk.cmd_sync, repo, True, False, pm="bogus")[0] == 1
+        assert runk(rk.cmd_init, repo, ["paper"], "light", "user", pm="bogus")[0] == 1
+        assert _tree(repo) == before
+        cfg: Path = repo / "pm/config.json"
+        cfg.write_text('{"name": "Zoë", "pm": "tracked"}', encoding="utf-8")
+        assert runk(rk.cmd_sync, repo, True, False, pm="local")[0] == 0
+        assert "Zoë" in cfg.read_text(encoding="utf-8")
+
+
+# Q1 (D-69): add-kind and upgrade in a local repo refresh the exclude block
+def test_local_add_kind_upgrade_refresh_exclude() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = _git_repo(Path(d))
+        assert runk(rk.cmd_init, repo, ["paper"], "light", "user", pm="local")[0] == 0
+        for fn, args in ((rk.cmd_add_kind, "software"), (rk.cmd_upgrade, None)):
+            _excl(repo).write_text(OLD_BLOCK)
+            code, out = run(fn, repo, *([args] if args else []))
+            assert code == 0, out
+            assert _excl(repo).read_text() == BLOCK, (fn.__name__, _excl(repo))
+            assert not (repo / ".gitignore").exists(), fn.__name__
 
 
 def _ledger_tests() -> list[tuple[str, Callable[[], None]]]:
