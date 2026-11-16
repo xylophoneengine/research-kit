@@ -37,7 +37,7 @@ RECORD_MARK_RE: re.Pattern[str] = re.compile(
     r"^<!-- rk:stage-record \S+ close [0-9]+ -->$", re.M
 )
 STATUSES: tuple[str, ...] = (
-    "open", "running", "done", "dropped", "superseded", "shelved"
+    "open", "running", "done", "dropped", "superseded", "planned", "shelved"
 )
 OPEN_STATUSES: tuple[str, ...] = ("open", "running")
 BUILTIN_TYPES: dict[str, str] = {
@@ -415,12 +415,22 @@ def append(
 
 def _matches(state: dict[str, Entry], ref: str) -> list[Entry]:
     """Entries `ref` names other than by id: its label, or for a stage its exact
-    title or its code (the title up to the first '-', `03b` of `03b-paper-x`)."""
+    title or its code (the title up to the first '-', `03b` of `03b-paper-x`). A
+    planned title (<kind>-<topic>) has no code; an imported one keeps its own."""
     return [
         x
         for x in state.values()
         if x.extra.get("legacy_id") == ref
-        or (x.type == "stage" and ref in (x.title, x.title.split("-", 1)[0]))
+        or (
+            x.type == "stage"
+            and (
+                ref == x.title
+                or (
+                    ref == x.title.split("-", 1)[0]
+                    and (_imported(x) or bool(STAGE_RE.match(x.title)))
+                )
+            )
+        )
     ]
 
 
@@ -515,7 +525,9 @@ def _check_names(
     checks: list[tuple[str, str, bool]] = []  # (what, name, labels only)
     if typ == "stage":
         what: str = f"stage '{title}'"
-        checks += [(what, n, a.imported) for n in (title, title.split("-", 1)[0])]
+        coded: bool = a.imported or bool(STAGE_RE.match(title))  # as `_matches`
+        names: list[str] = [title, title.split("-", 1)[0]] if coded else [title]
+        checks += [(what, n, a.imported) for n in names]
     if a.imported and a.legacy_id is not None:
         checks.append((f"legacy id '{a.legacy_id}'", a.legacy_id, False))
     for what, n, labels_only in checks:
@@ -674,6 +686,27 @@ def _max_nn(state: dict[str, Entry]) -> int:
         ),
         default=0,
     )
+
+
+def _stage_dir(e: Entry) -> str:
+    """The folder of stage `e`: pm/stages/P-<n>-<kind>-<topic>/ (n of S-n) for a
+    planned title (not imported), else pm/stages/<title>/."""
+    if not _imported(e) and PLAN_RE.match(e.title):
+        return f"pm/stages/P-{_num(e.id)}-{e.title}/"
+    return f"pm/stages/{e.title}/"
+
+
+def _queue_end(state: dict[str, Entry]) -> str:
+    """The queue value of a newly planned stage: after the last planned one."""
+    last: float = max(
+        (
+            float(str(x.extra["queue"]))
+            for x in state.values()
+            if x.type == "stage" and x.status == "planned" and "queue" in x.extra
+        ),
+        default=0.0,
+    )
+    return str(int(last) + 1)
 
 
 def _open_title(state: dict[str, Entry], topic: str, follows: str | None) -> str:
@@ -940,6 +973,11 @@ def _add_step(
         )
         if val is not None
     ]
+    if a.status == "planned":
+        raise LedgerError(
+            "--status planned: a stage is planned by add stage <kind>-<topic> "
+            "without --status; no other add and no import row sets it"
+        )
     if a.status in ("superseded", "shelved"):  # shelved needs a reason: rk shelve
         import_only.append(f"--status {a.status}")
     if import_only and not a.imported:
@@ -951,16 +989,19 @@ def _add_step(
             date.fromisoformat(a.date)
         except ValueError:
             raise LedgerError(f"--date '{a.date}': want YYYY-MM-DD") from None
-    status: str = a.status or ("done" if typ == "decision" else "open")
+    new_stage: bool = typ == "stage" and not a.imported
+    plain: str = "planned" if new_stage and not a.open else "open"
+    status: str = a.status or ("done" if typ == "decision" else plain)
     if typ == "decision" and status in OPEN_STATUSES:
         raise LedgerError(
             "a decision is in force when logged (status done); an open question "
             'for the user is a deferred entry: add deferred "<question>" --owner user'
         )
-    if typ == "stage" and status != "open" and not a.imported:
+    if new_stage and status != plain:
         raise LedgerError(
-            f"--status {status}: a stage is logged open and closed with "
-            "stage-close; another status only with --imported"
+            f"--status {status}: a new stage is planned (add stage <kind>-<topic>) "
+            "or opened with --open, and closed with stage-close; another status "
+            "only with --imported"
         )
     if typ == "task" and not a.imported and not a.note.strip():
         raise LedgerError(TASK_NOTE)
@@ -976,17 +1017,25 @@ def _add_step(
             f"stage title '{title}' with --open: want {PLAN_FORM}, the NN is "
             "computed (letters, digits, _ . - in the topic)"
         )
-    if typ == "stage" and not a.imported and not a.open and not STAGE_RE.match(title):
+    if new_stage and not a.open and STAGE_RE.match(title):
         raise LedgerError(
-            f"stage title '{title}' is not a stage folder name; want {STAGE_FORM} "
+            f"stage title '{title}' has an NN: use <kind>-<topic>; the NN comes at "
+            "stage-open"
+        )
+    if new_stage and not PLAN_RE.match(title):
+        raise LedgerError(
+            f"stage title '{title}' is not a stage name; want {PLAN_FORM} "
             "(letters, digits, _ . - in the topic)"
         )
     label: str | None = _label(a.label, "--label") if a.label is not None else None
-    made_folder: bool = typ == "stage" and not a.imported
 
     def step(state: dict[str, Entry]) -> tuple[str, dict[str, object]]:
         name: str = _title(_open_title(state, title, a.follows)) if a.open else title
-        folder: list[str] = [f"pm/stages/{name}/"] if made_folder else []
+        eid: str = next_id(state, types[typ])
+        folder: list[str] = []
+        if new_stage:  # the P- form of `_stage_dir` while planned
+            pre: str = f"P-{_num(eid)}-" if status == "planned" else ""
+            folder = [f"pm/stages/{pre}{name}/"]
         refs: list[str] = list(dict.fromkeys([*folder, *a.ref]))
         links: list[str] = [  # "@KEY" links stay as given; import resolves them
             x if key_links and x.startswith("@") else _links(state, [x])[0]
@@ -1000,7 +1049,6 @@ def _add_step(
         _check_stage_open(
             state, stage, typ, status, "pass --stage with an open stage"
         )
-        eid: str = next_id(state, types[typ])
         if label is not None:
             _check_label(state, label, eid)
         _check_names(state, typ, name, a)
@@ -1018,6 +1066,8 @@ def _add_step(
         }
         if label is not None:
             f["legacy_id"] = label
+        if status == "planned":
+            f["queue"] = _queue_end(state)
         if a.imported:
             f["imported"] = True
             f["source"] = a.source
@@ -1052,7 +1102,7 @@ def _cmd_add(a: argparse.Namespace) -> int:
     e: Entry = state[made[0]]
     print(f"logged {e.id}: {e.title}{_add_tail(e, state)}")
     if e.type == "stage" and not a.imported:  # after the write: a refused add
-        folder: Path = repo / "pm" / "stages" / e.title  # makes no folder
+        folder: Path = repo / _stage_dir(e)  # makes no folder
         try:
             for sub in STAGE_DIRS:
                 (folder / sub).mkdir(parents=True, exist_ok=True)
@@ -1062,7 +1112,7 @@ def _cmd_add(a: argparse.Namespace) -> int:
                 f"{err.strerror}; make it by hand"
             ) from None
         dirs: str = " ".join(f"{s}/" for s in STAGE_DIRS)
-        print(f"folder pm/stages/{e.title}/ ({dirs})")
+        print(f"folder {_stage_dir(e)} ({dirs})")
     return 0
 
 
@@ -1270,6 +1320,8 @@ def _add_tail(e: Entry, state: dict[str, Entry]) -> str:
     an entry that is done a late fact belongs to the stage now open, and the
     closed stage's LEDGER.md is frozen. An open entry gets the plain tail (its
     stage is the default one, or none; it may be set into a closed stage)."""
+    if e.type == "stage" and e.status == "planned":
+        return " (planned)"
     if e.stage or e.type == "stage" or e.status in OPEN_STATUSES:
         return _in_stage(e)
     for x in (state.get(i) for i in e.links):
@@ -2289,7 +2341,7 @@ def _findings(
     imp: list[tuple[str, str]] = []
     gone: list[tuple[str, str]] = []  # missing, not imported, not in waste
     for e in entries:
-        own: str = f"pm/stages/{e.title}/" if e.type == "stage" else ""
+        own: str = _stage_dir(e) if e.type == "stage" else ""
         for r in e.refs:
             if not _is_path(r) or r == own:  # own folder: the folder check
                 continue
@@ -2329,7 +2381,7 @@ def _findings(
         out.append((False, G_IMPORTED, f"{len(imp)} refs of {n} imported entries "
                     f"missing, e.g. {imp[0][0]} {imp[0][1]}"))
     for st in stages:
-        folder: str = f"pm/stages/{st.title}/"
+        folder: str = _stage_dir(st)
         if (repo / folder).is_dir():
             continue
         tracked: subprocess.CompletedProcess[bytes] | None = (

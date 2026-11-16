@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import importlib.util
 import io
@@ -1518,7 +1519,8 @@ def test_stage_folder() -> None:
         n: int = len(jl(repo))
         for bad in ("01-a", "1-paper-x", "03-Paper-x", "03b paper x", "paper"):
             code, out = lrun(repo, "add", "stage", bad)
-            assert code == 1 and "NN[letter]-<kind>-<topic>" in out, (bad, out)
+            assert code == 1 and "<kind>-<topic>" in out, (bad, out)
+            assert "NN[letter]" not in out, (bad, out)
         assert len(jl(repo)) == n
         assert sorted(p.name for p in (repo / "pm/stages").iterdir()) == [
             "01-paper-scan", "01b-software-x"
@@ -1539,16 +1541,24 @@ def test_names_unique_both_ways() -> None:
             lrun(repo, "add", "task", f"o{i}", "--imported", "--source", f"a:{i}",
                  "--legacy-id", legacy)
         lrun(repo, "add", "task", "c", "--note", "n", "--label", "03b/W1")  # T-3
-        lrun(repo, "add", "stage", "03b-paper-scan")  # S-1
-        lrun(repo, "add", "stage", "old", "--imported", "--source", "a:9")  # S-2
+        lrun(repo, "add", "stage", "03-paper-old", "--imported", "--source", "a:0",
+             "--status", "done")  # S-1: gives the NN 03 for --follows
+        lrun(repo, "add", "stage", "paper-scan", "--open", "--follows", "S-1")  # S-2
+        lrun(repo, "add", "stage", "old", "--imported", "--source", "a:9")  # S-3
         n: int = len(jl(repo))
+        # the CLI cannot reach these (the NN is computed, Q12 skips a taken code);
+        # the guard itself stays (stage-rename uses it): called directly
+        new: argparse.Namespace = argparse.Namespace(imported=False, legacy_id=None)
         for title, name, owner in (
             ("08-paper-z", "08", "T-1"),
             ("09-paper-q", "09-paper-q", "T-2"),
-            ("03b-paper-other", "03b", "S-1"),
+            ("03b-paper-other", "03b", "S-2"),
         ):
-            code, out = lrun(repo, "add", "stage", title)
-            assert code == 1 and f"'{name}' already names {owner}" in out, out
+            try:
+                L._check_names(L.load(repo), "stage", title, new)
+                raise AssertionError(f"{title}: no clash")
+            except L.LedgerError as err:
+                assert f"'{name}' already names {owner}" in str(err), err
         assert len(jl(repo)) == n and not (repo / "pm/stages/08-paper-z").exists()
         rows: Path = write_rows(root, [
             {"type": "task", "title": "x", "source": "P:1", "label": "03b/W1"},
@@ -1558,7 +1568,7 @@ def test_names_unique_both_ways() -> None:
         lines: list[str] = out.splitlines()
         assert code == 1 and len(lines) == 2, out
         assert "legacy id '03b/W1': '03b/W1' already names T-3" in lines[0], out
-        assert "already names S-1" in lines[1], out
+        assert "already names S-2" in lines[1], out
         code, out = lrun(repo, "add", "task", "z", "--imported", "--source", "P:3",
                          "--legacy-id", "03b/W1")
         assert code == 1 and "already names T-3" in out, out
@@ -1566,18 +1576,30 @@ def test_names_unique_both_ways() -> None:
                          "--source", "a:8")  # imported stage code = a --label
         assert code == 1 and "'03b/W1' already names T-3" in out, out
         # a stage keeps its title: it is the folder name and gives the code
-        for ref in ("S-1", "03b"):
+        for ref in ("S-2", "03b"):
             code, out = lrun(repo, "set", ref, "--title", "13-paper-x")
-            assert code == 1 and "S-1 is a stage" in out, out
+            assert code == 1 and "S-2 is a stage" in out, out
             assert "pm/stages/03b-paper-scan/" in out, out
         assert len(jl(repo)) == n
-        assert lrun(repo, "set", "S-2", "--title", "older")[0] == 0  # imported
+        assert lrun(repo, "set", "S-3", "--title", "older")[0] == 0  # imported
         ok: Path = write_rows(root, [  # imported duplicates: still tolerated
             {"type": "task", "title": "x", "source": "Q:1", "label": "08"},
             {"type": "task", "title": "y", "source": "Q:2", "legacy_id": "old-1"},
             {"type": "task", "title": "w", "source": "Q:3", "legacy_id": "old-1"},
         ])
-        assert lrun(repo, "import", str(ok))[0] == 0
+        assert lrun(repo, "import", str(ok))[0] == 0  # T-4 to T-6
+        # through the CLI: a planned title that names a legacy id is refused
+        lrun(repo, "add", "task", "o3", "--imported", "--source", "a:3",
+             "--legacy-id", "paper-q")  # T-7
+        n = len(jl(repo))
+        code, out = lrun(repo, "add", "stage", "paper-q")
+        assert code == 1 and "'paper-q' already names T-7" in out, out
+        assert len(jl(repo)) == n and not (repo / "pm/stages/P-4-paper-q").exists()
+        # ... and a computed NN skips the code `08` that T-1 names (Q12)
+        lrun(repo, "add", "stage", "07-paper-old", "--imported", "--source", "a:7",
+             "--status", "done")  # S-4, NN 7
+        out = lrun(repo, "add", "stage", "software-z", "--open")[1]
+        assert out.startswith("logged S-5: 09-software-z\n"), out
 
 
 def test_brief_check_label_punctuation() -> None:
@@ -2398,6 +2420,159 @@ def test_open_title_follows() -> None:  # W1 T1, Q3, Q12
         code, out = lrun(repo, "add", "stage", "thesis-z", "--open", "--follows", "S-1")
         assert code == 0 and out.startswith("logged S-4: 01c-thesis-z\n"), out
         assert (repo / "pm/stages/01c-thesis-z/notes").is_dir()
+
+
+# T3, D-29/D-33: receipt, P- folder, queue; red: STAGE_RE refuses `paper-scan`
+def test_add_stage_plans() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        (repo / "a.md").write_text("a")
+        dirs: str = " ".join(f"{s}/" for s in L.STAGE_DIRS)
+        assert L.STATUSES[-1] == "shelved" and "planned" in L.STATUSES
+        assert L._queue_end(L.load(repo)) == "1"  # no stage yet
+        code, out = lrun(repo, "add", "stage", "paper-scan")
+        assert code == 0 and out == (
+            "logged S-1: paper-scan (planned)\n"
+            f"folder pm/stages/P-1-paper-scan/ ({dirs})\n"
+        ), out
+        folder: Path = repo / "pm/stages/P-1-paper-scan"
+        assert sorted(p.name for p in folder.iterdir()) == sorted(L.STAGE_DIRS)
+        st: Any = L.load(repo)
+        assert st["S-1"].status == "planned" and st["S-1"].title == "paper-scan"
+        assert st["S-1"].refs == ["pm/stages/P-1-paper-scan/"], st["S-1"].refs
+        assert st["S-1"].extra["queue"] == "1", st["S-1"].extra
+        assert not (repo / "pm/stages/paper-scan").exists()
+        code, out = lrun(repo, "add", "stage", "software-y", "--ref", "a.md")
+        assert code == 0 and out.splitlines()[0] == "logged S-2: software-y (planned)"
+        assert out.splitlines()[1].startswith("folder pm/stages/P-2-software-y/ ("), out
+        st = L.load(repo)
+        assert st["S-2"].extra["queue"] == "2", st["S-2"].extra
+        assert st["S-2"].refs == ["pm/stages/P-2-software-y/", "a.md"], st["S-2"].refs
+        assert (repo / "pm/stages/P-2-software-y/notes").is_dir()
+        assert L._queue_end(st) == "3"
+        assert L._stage_dir(st["S-1"]) == "pm/stages/P-1-paper-scan/"
+        code, out = lrun(repo, "add", "stage", "old", "--imported", "--source", "a:1")
+        assert code == 0 and out == "logged S-3: old\n", out  # imported: as it was
+        assert L._stage_dir(L.load(repo)["S-3"]) == "pm/stages/old/"
+        assert not (repo / "pm/stages/old").exists()
+        code, out = lrun(repo, "add", "stage", "paper-scan")  # a title names one
+        assert code == 1 and "already names S-1" in out, out
+
+
+# T3, D-32/D-34: planned is no open stage; entries may join it; red: add refused
+def test_planned_not_open() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        assert lrun(repo, "add", "stage", "paper-y")[0] == 0  # S-1, planned
+        out: str = lrun(repo, "list")[1]
+        assert out.splitlines()[0] == "open 0 (running 0)", out
+        assert "S-1" not in out, out
+        assert L._default_stage(L.load(repo), "task", False) == ""
+        code, out = lrun(
+            repo, "add", "debt", "later", "--owner", "lead", "--stage", "S-1"
+        )
+        assert code == 0 and "DB-1" in out, out
+        code, out = lrun(repo, "add", "task", "t", "--note", "n", "--stage", "S-1")
+        assert code == 0 and "T-1" in out, out
+        assert lrun(repo, "add", "debt", "loose", "--owner", "lead")[0] == 0  # DB-2
+        st: Any = L.load(repo)
+        stages_of: list[str] = [st[i].stage for i in ("DB-1", "T-1", "DB-2")]
+        assert stages_of == ["S-1", "S-1", ""], stages_of
+        before: dict[str, bytes | None] = snapshot(root)
+        code, out = lrun(repo, "stage-close", "S-1")
+        assert code == 1 and "S-1 is planned, not open" in out, out
+        assert snapshot(root) == before
+        code, out = lrun(repo, "add", "stage", "paper-x", "--open")  # beside a plan
+        assert code == 0 and out.startswith("logged S-2: 01-paper-x\n"), out
+        assert L._default_stage(L.load(repo), "task", False) == "S-2"  # not S-1
+        rows: list[str] = lrun(repo, "list")[1].splitlines()[1:]
+        ids: list[str] = [ln.split()[0] for ln in rows]
+        assert "S-2" in ids and "S-1" not in ids, ids
+        assert L.load(repo)["S-1"].status == "planned"
+
+
+# T3, D-29/Q1: an NN title is refused with the hint; red: today it opens the stage
+def test_add_stage_refuses_nn_title() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        before: dict[str, bytes | None] = snapshot(root)
+        for title in ("03-paper-x", "03b-paper-x"):
+            code, out = lrun(repo, "add", "stage", title)
+            assert code == 1 and out == (
+                f"error: stage title '{title}' has an NN: use <kind>-<topic>; "
+                "the NN comes at stage-open\n"
+            ), out
+            assert snapshot(root) == before, title  # nothing written, no folder
+        assert not (repo / "pm/stages").exists()
+        code, out = lrun(
+            repo, "add", "stage", "03-paper-x", "--imported", "--source", "a:1"
+        )  # imported: as it was
+        assert code == 0 and out == "logged S-1: 03-paper-x\n", out
+        assert not (repo / "pm/stages").exists()
+
+
+# T3, D-28/D-34: planned only by add stage; red: argparse choices lack `planned`
+def test_planned_status_only_by_add_stage() -> None:
+    msg: str = (
+        "--status planned: a stage is planned by add stage <kind>-<topic> "
+        "without --status; no other add and no import row sets it"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        before: dict[str, bytes | None] = snapshot(root)
+        for argv in (
+            ("task", "t", "--note", "n", "--status", "planned"),
+            ("debt", "d", "--status", "planned"),
+            ("stage", "paper-q", "--status", "planned"),
+            ("task", "t", "--imported", "--source", "a:1", "--status", "planned"),
+        ):
+            code, out = lrun(repo, "add", *argv)
+            assert code == 1 and out == f"error: {msg}\n", (argv, out)
+            assert snapshot(root) == before, argv
+        for row in (
+            {"type": "task", "title": "x", "source": "P:1", "status": "planned"},
+            {"type": "stage", "title": "paper-q", "source": "P:2", "status": "planned"},
+        ):
+            rows: Path = write_rows(root, [row])
+            before = snapshot(root)
+            code, out = lrun(repo, "import", str(rows))
+            assert code == 1 and f"{rows}:1: {msg}" in out, (row, out)
+            assert snapshot(root) == before, row
+        assert jl(repo) == []
+
+
+# T3, D-29: a planned title has no stage code; red: code `paper` would clash
+def test_planned_title_has_no_code() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        for title in ("paper-scan", "paper-draft"):  # same first word: no clash
+            code, out = lrun(repo, "add", "stage", title)
+            assert code == 0, (title, out)
+        assert lrun(repo, "show", "paper-scan")[1].startswith("id: S-1\n")
+        assert lrun(repo, "show", "paper-draft")[1].startswith("id: S-2\n")
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "show", "paper")
+        assert code == 1 and "no such entry paper" in out, out
+        assert len(jl(repo)) == n
+
+
+# T3, D-33: doctor knows the P- folder; red: a stage cannot be planned yet
+def test_doctor_planned_stage_folder() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "paper-scan")[0] == 0
+        code, out = doctor(repo)
+        assert code == 0 and "HARD" not in out, out
+        shutil.rmtree(repo / "pm/stages/P-1-paper-scan")
+        code, out = doctor(repo)
+        assert code == 1, out
+        assert group(out, "missing stage folder") == [
+            "S-1 pm/stages/P-1-paper-scan/"
+        ], out
+        assert group(out, "missing ref") == [], out  # its own folder ref: once
 
 
 def test_reopen_stage_without_folder() -> None:  # brief 025 fix 4
