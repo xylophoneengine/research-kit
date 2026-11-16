@@ -186,7 +186,7 @@ export function earlierTitles(events: Ev[], id: string): { title: string; until:
 }
 
 // Entries shown with a `staged` badge: open or running, neither task nor stage, with
-// at least one linked task (either direction) and every linked task done. Display only.
+// at least one task that links to it and every such task done. Display only.
 export function stagedIds(l: Ledger): Set<string> {
   const idx = byId(l);
   const back = backlinks(l);
@@ -194,7 +194,7 @@ export function stagedIds(l: Ledger): Set<string> {
   for (const e of l.entries) {
     if (e.type === "task" || e.type === "stage") continue;
     if (e.status !== "open" && e.status !== "running") continue;
-    const tasks = [...new Set([...e.links, ...(back.get(e.id) ?? [])])]
+    const tasks = (back.get(e.id) ?? [])
       .map((id) => idx.get(id))
       .filter((x): x is Entry => x !== undefined && x.type === "task");
     if (tasks.length > 0 && tasks.every((x) => x.status === "done")) out.add(e.id);

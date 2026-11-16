@@ -21,11 +21,11 @@ export const EntryIndex = createContext<Index>({
   staged: new Set(),
 });
 
-// beside the status badge of an entry whose linked tasks are all done (display only)
+// beside the status badge of an entry that tasks link to, all done (display only)
 export function StagedBadge({ id }: { id: string }) {
   const { staged } = useContext(EntryIndex);
   return staged.has(id) ? (
-    <Badge variant="outline" className="text-muted-foreground" title="work done in linked tasks, not landed">
+    <Badge variant="outline" className="text-muted-foreground" title="linked tasks all done">
       staged
     </Badge>
   ) : null;

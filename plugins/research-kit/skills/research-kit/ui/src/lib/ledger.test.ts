@@ -468,25 +468,26 @@ test("earlierTitles: one line per earlier name of an entry, newest first (T-52)"
   expect(earlierTitles(evs, "S-9")).toEqual([]);
 });
 
-test("stagedIds: open/running non-task non-stage entry whose linked tasks are all done (T-53)", () => {
+test("stagedIds: open/running non-task non-stage entry that tasks link to, all done (T-53)", () => {
   const mk = (id: string, type: string, status: string, links: string[] = []): Entry =>
     ({ ...t1, id, type, status, links });
   const es = [
-    mk("DB-1", "debt", "open", ["T-1"]),            // links to a done task: staged
-    mk("DB-2", "debt", "running"),                   // task T-2 links to it: staged
-    mk("DB-3", "debt", "open", ["T-1", "T-3"]),     // one linked task not done
-    mk("DB-4", "debt", "open"),                      // no linked task
-    mk("DB-5", "debt", "done", ["T-1"]),            // not open or running
-    mk("DB-6", "debt", "open", ["D-1"]),            // linked entry is no task
+    mk("DB-1", "debt", "open"),                      // done T-1 links to it: staged
+    mk("DB-2", "debt", "running"),                   // done T-2 links to it: staged
+    mk("DB-3", "debt", "open"),                      // T-1 done, T-3 open link to it: not
+    mk("DB-4", "debt", "open"),                      // no task links to it: not
+    mk("DB-5", "debt", "done"),                      // not open or running: not
+    mk("DB-6", "debt", "open", ["T-1"]),            // it links to a done task, none links to it: not
+    mk("DB-7", "debt", "open", ["T-1"]),            // both directions with T-1: staged
+    mk("DB-8", "debt", "open"),                      // T-2 links to it, unknown X-99 ignored: staged
     mk("D-1", "decision", "done"),
-    mk("S-1", "stage", "open", ["T-1"]),            // a stage never
-    mk("T-1", "task", "done"),
-    mk("T-2", "task", "done", ["DB-2"]),
-    mk("T-3", "task", "open"),
+    mk("S-1", "stage", "open"),                      // a stage never
+    mk("T-1", "task", "done", ["DB-1", "DB-3", "DB-5", "DB-7", "S-1"]),
+    mk("T-2", "task", "done", ["DB-2", "DB-8", "X-99"]),
+    mk("T-3", "task", "open", ["DB-3"]),
     mk("T-4", "task", "open", ["T-1"]),             // a task never
-    mk("DB-7", "debt", "open", ["T-1", "X-99"]),    // unknown id ignored
   ];
-  expect([...stagedIds({ ...L, entries: es })].sort()).toEqual(["DB-1", "DB-2", "DB-7"]);
+  expect([...stagedIds({ ...L, entries: es })].sort()).toEqual(["DB-1", "DB-2", "DB-7", "DB-8"]);
 });
 
 test("status planned: own status, never open (T-45)", () => {
