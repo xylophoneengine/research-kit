@@ -122,7 +122,7 @@ From 0.2.1: a ledger that holds a shelved entry needs kit 0.2.1 or newer in
 every session that opens the repo. An older kit refuses it with an
 unknown-status error: update the kit, do not edit the ledger line.
 
-From 0.2.5: a ledger with a planned stage needs that kit in every session; an older kit refuses it with an unknown-status error.
+From 0.2.5: a ledger with a planned stage or a staged entry needs kit 0.2.5 or newer in every session (plugin update per session); an older kit refuses it with an unknown-status error. Ledgers that use neither stay readable by 0.2.4.
 
 ## Kinds
 
@@ -311,13 +311,20 @@ hand; it shows what was known at close and a later `rk set` does not rewrite it.
 A stage closed too early comes back with `rk reopen S-n --note "<why>"`
 (refused while another stage of its kind is open, and for a stage without a
 folder); its next `stage-close` needs a new sign-off and writes the record
-again, with each open span and each reopen.
+again, with each open span and each reopen. Statuses of an entry: open,
+running, staged (work done on a branch, not landed: `rk staged ID --note
+"<branch, commit>"`; it stays in the open list, `rk list --status staged` shows
+only those), done, dropped, shelved, superseded; a stage also planned. Staged
+work lands with `rk close` (each) or `rk land` (all staged, or the named ones);
+a staged task blocks `rk stage-close` like an open one.
 
 ```
 rk add <type> <title>       log a task, decision, deferred item, ...
 rk add stage <kind>-<topic> plan a stage (--open: open now; --follows, --before, --after)
 rk start|close|drop|reopen  change status (close and drop take --note)
 rk shelve                   known, not planned now: leaves the open list (needs --note)
+rk staged ID... --note T    work done, not landed (--ref R); stays open-listed, shown by rk list --status staged
+rk land [ID...] --note T    close every staged entry, or the named ones (--stage S-n limits it)
 rk set | rk supersede       edit fields (--ref-drop PATH removes a wrong ref); replace a decision
                             --stage of every type but task and stage (e.g. debt, deferred, fetch,
                             handoff) = raised in: while open it may be put into a closed

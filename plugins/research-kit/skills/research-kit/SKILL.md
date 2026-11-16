@@ -59,6 +59,17 @@ section in STATUS.md. Out of shelved: `reopen` (open; the closed-stage rule
 applies) or `drop`; `close`, `start` and a second `shelve` are refused. `add
 --status shelved` only with `--imported`. Why: the reason is required, so
 "not now" is a decision with its why, not a silent open item.
+`staged ID... --note "<where: branch, commit>" [--ref P]` moves open or running
+entries (any type but stage and decision) to `staged`: work done, not landed;
+one write, one receipt line each; refused in a planned or shelved stage. A
+staged entry stays in the open list (`list --status staged` shows only those),
+is not running, and a staged task blocks `stage-close` and dropping a planned
+stage like an open one. Out of staged: `close` or `land` (done), `start`
+(running, more work), `reopen` (open). `land --note N [--ref P] [--stage S-n]
+[ID...]` closes every staged entry, or the named ones (a named entry that is
+not staged refuses the whole call); `landed 0` when there is none. `set --status
+staged` is not offered. Why: DB-29 stayed `open` while its fix sat on a branch;
+close only what is on the base branch.
 `close`, `drop`, `shelve` and `reopen` also store their `--note` as the field
 `reason` (why the entry has its current status; the next one replaces it; the
 note still appends as before); `show` prints `reason: ...`, the stage record
