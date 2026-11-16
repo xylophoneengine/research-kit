@@ -725,7 +725,7 @@ def test_ledger_end_to_end() -> None:
             assert r.returncode == 0, (argv, r.stdout, r.stderr)
             return r.stdout
 
-        tool("add", "stage", "01-software-x")
+        tool("add", "stage", "software-x", "--open")
         tool("add", "task", "build", "--owner", "sr1", "--note", "n")
         tool(
             "brief-check", "--who", "hook",
