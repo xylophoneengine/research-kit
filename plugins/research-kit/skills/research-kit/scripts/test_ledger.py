@@ -3576,6 +3576,57 @@ def test_stage_rename_rolls_back() -> None:
         assert code == 0 and out.startswith("renamed S-1: 01-paper-x -> 01-paper-y\n")
 
 
+# W1 T10, DB-29 / spec "Done when" 4: the user's case end to end through the CLI
+def test_db29_probe() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        p: str = "pm/stages/P-1-paper-scan"
+        code, out = lrun(repo, "add", "stage", "paper-scan")  # S-1, planned
+        assert code == 0 and out.startswith("logged S-1: paper-scan (planned)\n"), out
+        (repo / p / "notes/a.md").write_text("a")
+        code, out = lrun(repo, "add", "debt", "d", "--stage", "S-1", "--ref",
+                         f"{p}/notes/a.md")  # DB-1, in the planned stage
+        assert code == 0 and out == "logged DB-1: d (stage S-1)\n", out
+        code, out = lrun(repo, "add", "task", "t", "--note", "n", "--stage", "S-1")
+        assert code == 0 and out == "logged T-1: t (stage S-1)\n", out
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "start", "T-1")  # not in a planned stage
+        assert code == 1 and out == (
+            "error: stage S-1 is planned: rk stage-open S-1 first\n"
+        ), out
+        assert len(jl(repo)) == n
+        commit_all(repo)
+        assert doctor(repo)[0] == 0
+        code, out = lrun(repo, "add", "stage", "paper-draft", "--before", "S-1")
+        assert code == 0 and out.startswith("logged S-2: paper-draft (planned)\n")
+        assert queue_ids(repo) == ["S-2", "S-1"]
+        assert forecast_of(repo) == {"S-2": "~01", "S-1": "~02"}
+        n = len(jl(repo))
+        code, out = lrun(repo, "add", "stage", "software-tool", "--open")  # between
+        assert code == 0 and out.startswith("logged S-3: 01-software-tool\n"), out
+        assert [(e["ev"], e["id"]) for e in jl(repo)[n:]] == [("add", "S-3")]
+        assert forecast_of(repo) == {"S-2": "~02", "S-1": "~03"}  # shifted, unwritten
+        commit_all(repo)
+        assert doctor(repo)[0] == 0
+        code, out = lrun(repo, "stage-open", "S-1")  # later: the next free NN
+        assert code == 0 and out == (
+            "opened S-1: 02-paper-scan\n"
+            f"folder {p}/ -> pm/stages/02-paper-scan/\n"
+            "refs: 2 rewritten\n"
+        ), out
+        st: Any = L.load(repo)
+        assert (st["S-1"].status, st["S-1"].title) == ("open", "02-paper-scan")
+        assert st["DB-1"].stage == "S-1" and st["T-1"].stage == "S-1"
+        assert st["DB-1"].refs == ["pm/stages/02-paper-scan/notes/a.md"]
+        assert (repo / "pm/stages/02-paper-scan/notes/a.md").read_text() == "a"
+        assert not (repo / p).exists()
+        assert forecast_of(repo) == {"S-2": "~03"}
+        assert lrun(repo, "start", "T-1") == (0, "started T-1: t\n")
+        commit_all(repo)
+        code, out = doctor(repo)
+        assert code == 0 and "HARD" not in out, out
+
+
 def test_reopen_stage_without_folder() -> None:  # brief 025 fix 4
     with tempfile.TemporaryDirectory() as d:
         repo: Path = new_repo(Path(d))
