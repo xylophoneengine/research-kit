@@ -30,7 +30,6 @@ import {
   stageNumber,
   sortDefault,
   sortGroups,
-  stagedIds,
   STATUSES,
   stageCodeOf,
   stageCodes,
@@ -381,7 +380,7 @@ test("boardCol: deferred column holds open and running deferred entries only", (
   expect(boardCol(e("decision", "superseded"))).toBe("superseded");
   // every column the board lists is reachable
   expect(new Set(["open", "running", "done", "dropped", "superseded", "shelved"].map((s) => boardCol(e("task", s)))).size).toBe(6);
-  expect(BOARD_COLS).toHaveLength(8);
+  expect(BOARD_COLS).toHaveLength(9);
 });
 
 test("byType: builtin order first, declared types after by name", () => {
@@ -471,26 +470,25 @@ test("earlierTitles: one line per earlier name of an entry, newest first (T-52)"
   expect(earlierTitles(evs, "S-9")).toEqual([]);
 });
 
-test("stagedIds: open/running non-task non-stage entry that tasks link to, all done (T-53)", () => {
-  const mk = (id: string, type: string, status: string, links: string[] = []): Entry =>
-    ({ ...t1, id, type, status, links });
-  const es = [
-    mk("DB-1", "debt", "open"),                      // done T-1 links to it: staged
-    mk("DB-2", "debt", "running"),                   // done T-2 links to it: staged
-    mk("DB-3", "debt", "open"),                      // T-1 done, T-3 open link to it: not
-    mk("DB-4", "debt", "open"),                      // no task links to it: not
-    mk("DB-5", "debt", "done"),                      // not open or running: not
-    mk("DB-6", "debt", "open", ["T-1"]),            // it links to a done task, none links to it: not
-    mk("DB-7", "debt", "open", ["T-1"]),            // both directions with T-1: staged
-    mk("DB-8", "debt", "open"),                      // T-2 links to it, unknown X-99 ignored: staged
-    mk("D-1", "decision", "done"),
-    mk("S-1", "stage", "open"),                      // a stage never
-    mk("T-1", "task", "done", ["DB-1", "DB-3", "DB-5", "DB-7", "S-1"]),
-    mk("T-2", "task", "done", ["DB-2", "DB-8", "X-99"]),
-    mk("T-3", "task", "open", ["DB-3"]),
-    mk("T-4", "task", "open", ["T-1"]),             // a task never
-  ];
-  expect([...stagedIds({ ...L, entries: es })].sort()).toEqual(["DB-1", "DB-2", "DB-7", "DB-8"]);
+test("status staged: own status, filter entry and board column between running and done, never open (T-59)", () => {
+  const mk = (id: string, type: string, status: string): Entry => ({ ...t1, id, type, status, started: "" });
+  const kit = ["open", "running", "staged", "done", "dropped", "superseded", "shelved", "planned"];
+  // every status the kit can send is a filter entry and lands in a board column the board lists
+  for (const s of kit) {
+    expect(STATUSES, s).toContain(s);
+    expect(BOARD_COLS, s).toContain(boardCol(mk("T-9", "task", s)));
+  }
+  expect(boardCol(mk("DB-1", "debt", "staged"))).toBe("staged");
+  expect(boardCol(mk("DF-1", "deferred", "staged"))).toBe("staged");
+  expect(BOARD_COLS.indexOf("staged")).toBeGreaterThan(BOARD_COLS.indexOf("running"));
+  expect(BOARD_COLS.indexOf("staged")).toBeLessThan(BOARD_COLS.indexOf("done"));
+  // not open: the default open+running filter leaves it out, status=staged shows it
+  const db = mk("DB-1", "debt", "staged");
+  const LS: Ledger = { ...L, entries: [...L.entries, db] };
+  expect(ids(visible(LS, route("#/list")))).toEqual(["T-1", "T-2", "S-1"]);
+  expect(ids(visible(LS, route("#/list?status=staged")))).toEqual(["DB-1"]);
+  expect(ids(visible(LS, route("#/list?status=all")))).toContain("DB-1");
+  expect(sortDefault([db, t2], LS.types).map((e) => e.id)).toEqual(["T-2", "DB-1"]); // after open
 });
 
 test("status planned: own status, never open (T-45)", () => {

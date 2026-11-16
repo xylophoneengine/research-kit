@@ -1,6 +1,5 @@
 import { EyeOffIcon } from "lucide-react";
 import { useState } from "react";
-import { StagedBadge } from "@/components/IdLink";
 import { TypeBadge } from "@/components/TypeBadge";
 import { Button } from "@/components/ui/button";
 import { BOARD_COLS, boardCol, sortBy, type Entry, type SortKey } from "@/lib/ledger";
@@ -31,7 +30,6 @@ function Card({
       <div className="flex items-center gap-1">
         <span className="font-mono font-semibold">{e.id}</span>
         <TypeBadge type={e.type} />
-        <StagedBadge id={e.id} />
       </div>
       <div className="mt-1 line-clamp-2 break-words">{e.title}</div>
       <div className="mt-1 text-muted-foreground">{e.owner || "-"}</div>

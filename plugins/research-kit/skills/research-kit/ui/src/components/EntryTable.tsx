@@ -1,5 +1,4 @@
 import { useEffect } from "react";
-import { StagedBadge } from "@/components/IdLink";
 import { StatusBadge } from "@/components/StatusBadge";
 import { TypeBadge } from "@/components/TypeBadge";
 import {
@@ -124,7 +123,7 @@ export function EntryTable({
               <TypeBadge type={e.type} />
             </TableCell>
             <TableCell>
-              <StatusBadge status={e.status} /> <StagedBadge id={e.id} />
+              <StatusBadge status={e.status} />
             </TableCell>
             <TableCell className="max-w-0 w-full truncate" title={e.title}>
               {e.title}

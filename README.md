@@ -358,8 +358,9 @@ so branch merges of the append-only ledger do not conflict.
 timeline; a search box (also Ctrl/Cmd-K) finds an entry by id, title or note, and
 a detail pane shows one entry with its history. The stages tab is one table:
 planned stages stand among the opened ones by number, with the kit's `~NN` forecast
-in front of the title (not computed in the viewer), stages without a number last; an open or running entry (not a task or
-stage) that tasks link to, all of them done, carries a `staged` badge. It reads the ledger fresh on
+in front of the title (not computed in the viewer), stages without a number last; the status `staged` (done, not
+landed) has its own amber badge, filter entry and board column between running and
+done, and is not counted as open. It reads the ledger fresh on
 every request and reloads when the tab regains focus; it never writes the ledger
 or `pm/STATUS.md`. It listens on 127.0.0.1 only and has no login, so any user
 logged in on the same machine can read the ledger while it runs. Port 8765 by

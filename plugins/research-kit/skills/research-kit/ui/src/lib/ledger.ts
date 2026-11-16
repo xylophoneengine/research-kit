@@ -37,9 +37,9 @@ export const DEFAULT_ORDER: Record<SortTab, string> = {
 };
 
 export const NONE = "-"; // filter token for an empty owner / stage
-export const STATUSES = ["open", "running", "done", "dropped", "superseded", "shelved", "planned"];
+export const STATUSES = ["open", "running", "staged", "done", "dropped", "superseded", "shelved", "planned"];
 
-export const BOARD_COLS = ["running", "open", "deferred", "planned", "shelved", "done", "dropped", "superseded"];
+export const BOARD_COLS = ["running", "open", "deferred", "planned", "shelved", "staged", "done", "dropped", "superseded"];
 
 // Board column of an entry: its status, except that an open or running
 // `deferred` entry goes to the "deferred" column (it is parked, not open).
@@ -194,23 +194,6 @@ export function earlierTitles(events: Ev[], id: string): { title: string; until:
     cur = t;
   }
   return out.reverse();
-}
-
-// Entries shown with a `staged` badge: open or running, neither task nor stage, with
-// at least one task that links to it and every such task done. Display only.
-export function stagedIds(l: Ledger): Set<string> {
-  const idx = byId(l);
-  const back = backlinks(l);
-  const out = new Set<string>();
-  for (const e of l.entries) {
-    if (e.type === "task" || e.type === "stage") continue;
-    if (e.status !== "open" && e.status !== "running") continue;
-    const tasks = (back.get(e.id) ?? [])
-      .map((id) => idx.get(id))
-      .filter((x): x is Entry => x !== undefined && x.type === "task");
-    if (tasks.length > 0 && tasks.every((x) => x.status === "done")) out.add(e.id);
-  }
-  return out;
 }
 
 // the one text for what id mode matches (id button, exact button, palette hint)
