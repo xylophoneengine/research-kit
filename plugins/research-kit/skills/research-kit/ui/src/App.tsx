@@ -187,6 +187,7 @@ export default function App() {
                     sort={route.sort}
                     desc={route.desc}
                     statusFilter={route.status}
+                    forecast={ledger.plan?.forecast}
                     selected={route.e}
                     onSelect={open}
                   />

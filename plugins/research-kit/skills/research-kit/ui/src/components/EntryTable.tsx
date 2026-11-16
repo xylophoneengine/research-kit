@@ -9,7 +9,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { DEFAULT_ORDER, age, clickSort, labelOf, parseRoute, type Entry, type SortKey } from "@/lib/ledger";
+import { DEFAULT_ORDER, age, clickSort, labelOf, parseRoute, shownStatus, type Entry, type SortKey } from "@/lib/ledger";
 
 // the column names are sort keys (see SORT_KEYS)
 const COLS = ["id", "label", "type", "status", "title", "owner", "stage", "age"] as const;
@@ -123,7 +123,7 @@ export function EntryTable({
               <TypeBadge type={e.type} />
             </TableCell>
             <TableCell>
-              <StatusBadge status={e.status} />
+              <StatusBadge status={shownStatus(e)} />
             </TableCell>
             <TableCell className="max-w-0 w-full truncate" title={e.title}>
               {e.title}

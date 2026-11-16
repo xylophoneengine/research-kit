@@ -5,6 +5,9 @@ import {
   age,
   backlinks,
   backlog,
+  shownStatus,
+  statusCounts,
+  underStages,
   BOARD_COLS,
   boardCol,
   byId,
@@ -502,6 +505,43 @@ test("backlog: entries without a stage, stage entries are never backlog (T-60)",
   expect(ids(visible(LB, route("#/list?stage=-&status=all")))).toEqual(ids(sortDefault(backlog(LB.entries), LB.types)));
   expect(ids(visible(LB, route("#/list?stage=-&status=all")))).not.toContain("S-1");
   expect(ids(visible(LB, route("#/list?status=all")))).toContain("S-1"); // no stage filter: stages stay
+});
+
+test("shown status: the kit's `shown` is displayed, `status` when it is missing (T-64)", () => {
+  const sp: Entry = { ...s1, id: "S-2", status: "planned" };
+  const sh: Entry = { ...s1, id: "S-3", status: "shelved" };
+  const inP: Entry = { ...t2, id: "T-8", stage: "S-2", shown: "planned" };   // open, in a planned stage
+  const inS: Entry = { ...t2, id: "T-9", stage: "S-3", shown: "shelved" };   // open, in a shelved stage
+  const df: Entry = { ...t2, id: "DF-1", type: "deferred", stage: "S-2", shown: "planned" };
+  const old: Entry = { ...t2, id: "T-10", stage: "S-2" };                    // older kit: no `shown`
+  const LP: Ledger = { ...L, entries: [t1, t2, sp, sh, inP, inS, df, old] };
+  expect(shownStatus(inP)).toBe("planned");
+  expect(shownStatus(old)).toBe("open");
+  // default list (open + running + staged): shown planned / shelved are out, stored open without `shown` stays
+  expect(ids(visible(LP, route("#/list")))).toEqual(["T-1", "T-2", "T-10"]);
+  expect(ids(visible(LP, route("#/list?status=planned")))).toEqual(["T-8", "S-2", "DF-1"]); // default order: type, then id
+  expect(ids(visible(LP, route("#/list?status=shelved")))).toEqual(["T-9", "S-3"]);
+  expect(ids(visible(LP, route("#/list?status=open")))).toEqual(["T-2", "T-10"]);
+  // board column and counts follow the shown status; the deferred column only holds open/running shown
+  expect(boardCol(inP)).toBe("planned");
+  expect(boardCol(inS)).toBe("shelved");
+  expect(boardCol(df)).toBe("planned");
+  expect(boardCol(old)).toBe("open");
+  expect(statusCounts([t2, inP, inS, old, sp])).toEqual([["open", 2], ["shelved", 1], ["planned", 2]]);
+  // sort: shown planned ranks with the rest, after open; the status column sorts by shown
+  expect(sortDefault([inP, t2], LP.types).map((e) => e.id)).toEqual(["T-2", "T-8"]);
+  expect(sortBy([inP, t2, t1], "status", false).map((e) => e.id)).toEqual(["T-2", "T-8", "T-1"]);
+});
+
+test("underStages: stage cards in no. order, each followed by its entries by id (T-64)", () => {
+  const st = (id: string, status: string, title: string): Entry => ({ ...s1, id, status, title });
+  const e = (id: string, stage: string): Entry => ({ ...t2, id, stage, shown: "planned" });
+  const a = st("S-2", "planned", "paper-b"), b = st("S-3", "planned", "paper-c");
+  const fc = { "S-2": "~03", "S-3": "~02" };
+  const col = [e("T-9", "S-2"), a, e("T-4", "S-3"), b, e("T-3", "S-2"), e("T-7", "S-9")];
+  expect(ids(underStages(col, fc))).toEqual(["S-3", "T-4", "S-2", "T-3", "T-9", "T-7"]); // T-7: no stage card here, last
+  expect(ids(underStages([e("T-1", "S-2")], undefined))).toEqual(["T-1"]);
+  expect(ids(underStages([], fc))).toEqual([]);
 });
 
 test("status planned: own status, never open (T-45)", () => {

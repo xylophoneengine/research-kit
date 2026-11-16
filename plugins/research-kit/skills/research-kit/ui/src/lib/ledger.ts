@@ -3,6 +3,7 @@ export type Entry = {
   owner: string; stage: string; note: string; links: string[]; refs: string[];
   created: string; updated: string; started: string;
   extra: Record<string, string | boolean>; lines: number[];
+  shown?: string; // the kit's status to display (an open entry of a planned stage: planned); see shownStatus
 };
 export type Ev = {
   line: number; ts: string; who: string; ev: "add" | "set";
@@ -41,12 +42,25 @@ export const STATUSES = ["open", "running", "staged", "done", "dropped", "supers
 
 export const BOARD_COLS = ["running", "open", "deferred", "planned", "shelved", "staged", "done", "dropped", "superseded"];
 
-// Board column of an entry: its status, except that an open or running
+// The status shown for an entry (badge, filter, counts, board, sort): the kit's
+// `shown`, which differs from `status` for an open entry in a planned or shelved
+// stage; `status` when the kit sends none. Nothing is inherited here.
+export function shownStatus(e: Entry): string {
+  return e.shown ?? e.status;
+}
+
+// [status, entries shown with it] for each status in STATUSES that has entries
+export function statusCounts(es: Entry[]): [string, number][] {
+  return STATUSES.map((s): [string, number] => [s, es.filter((e) => shownStatus(e) === s).length]).filter(
+    ([, n]) => n > 0,
+  );
+}
+
+// Board column of an entry: its shown status, except that an open or running
 // `deferred` entry goes to the "deferred" column (it is parked, not open).
 export function boardCol(e: Entry): string {
-  return e.type === "deferred" && (e.status === "open" || e.status === "running")
-    ? "deferred"
-    : e.status;
+  const s = shownStatus(e);
+  return e.type === "deferred" && (s === "open" || s === "running") ? "deferred" : s;
 }
 
 const TABS: readonly string[] = ["list", "board", "stages", "timeline"];
@@ -182,6 +196,18 @@ export function orderStages(
     .map((x) => x.e);
 }
 
+// A board column's entries with the stages grouped: the stage entries in no. order
+// (orderStages, lowest first), each followed directly by the entries of that stage
+// by id number; entries whose stage card is not in `es` come last in their order.
+export function underStages(es: Entry[], forecast: Record<string, string> | undefined): Entry[] {
+  const stages = orderStages(es.filter((e) => e.type === "stage"), forecast, 1);
+  const rest = es.filter((e) => e.type !== "stage");
+  const own = (s: Entry): Entry[] =>
+    rest.filter((e) => e.stage === s.id).sort((a, b) => num(a.id) - num(b.id));
+  const placed = new Set(stages.flatMap(own));
+  return [...stages.flatMap((s) => [s, ...own(s)]), ...rest.filter((e) => !placed.has(e))];
+}
+
 // the earlier titles of entry `id` from its events (in file order), newest first;
 // each with the day it was replaced
 export function earlierTitles(events: Ev[], id: string): { title: string; until: string }[] {
@@ -235,7 +261,7 @@ export function visible(l: Ledger, r: Route): Entry[] {
     r.status ?? (r.tab === "list" && !q ? DEFAULT_STATUS : null);
   const out = l.entries.filter(
     (e) =>
-      (st === null || st.length === 0 || st.includes(e.status)) &&
+      (st === null || st.length === 0 || st.includes(shownStatus(e))) &&
       (r.type.length === 0 || r.type.includes(e.type)) &&
       (r.stage.length === 0 || e.type !== "stage" || e.stage !== "") && // a stage entry is never "-" (see backlog)
       pick(r.stage, e.stage) &&
@@ -269,7 +295,7 @@ export function sortBy(es: Entry[], key: SortKey, desc: boolean): Entry[] {
     id: (a, b) => pre(a.id).localeCompare(pre(b.id)) || num(a.id) - num(b.id),
     label: text(labelOf),
     type: text((e) => e.type),
-    status: text((e) => e.status),
+    status: text(shownStatus),
     title: text((e) => e.title),
     owner: text((e) => e.owner),
     stage: text((e) => e.stage),
@@ -314,7 +340,7 @@ function num(id: string): number {
 export function sortDefault(es: Entry[], types: Record<string, string>): Entry[] {
   const order: string[] = Object.keys(types);
   const rank = (e: Entry): number =>
-    e.status === "running" ? 0 : e.status === "open" ? 1 : 2;
+    shownStatus(e) === "running" ? 0 : shownStatus(e) === "open" ? 1 : 2;
   const tIdx = (e: Entry): number => {
     const i = order.indexOf(e.type);
     return i < 0 ? order.length : i;

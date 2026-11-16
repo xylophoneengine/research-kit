@@ -9,19 +9,16 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { IdLink } from "@/components/IdLink";
-import { NONE, STATUSES, backlog, orderStages, stageNumber, type Entry, type Route } from "@/lib/ledger";
+import { NONE, backlog, orderStages, shownStatus, stageNumber, statusCounts, type Entry, type Route } from "@/lib/ledger";
 
 function Counts({ es }: { es: Entry[] }) {
   return (
     <div className="flex flex-wrap gap-1">
-      {STATUSES.map((s) => {
-        const n = es.filter((e) => e.status === s).length;
-        return n > 0 ? (
-          <StatusBadge key={s} status={s}>
-            {s} {n}
-          </StatusBadge>
-        ) : null;
-      })}
+      {statusCounts(es).map(([s, n]) => (
+        <StatusBadge key={s} status={s}>
+          {s} {n}
+        </StatusBadge>
+      ))}
     </div>
   );
 }
@@ -82,7 +79,7 @@ export function Stages({
             </TableCell>
             <TableCell>{st.title}</TableCell>
             <TableCell>
-              <StatusBadge status={st.status} />
+              <StatusBadge status={shownStatus(st)} />
             </TableCell>
             <TableCell>
               <Counts es={entries.filter((e) => e.stage === st.id)} />

@@ -361,7 +361,11 @@ its first column `no.` holds the order number (the real NN, or for a planned sta
 the kit's `~NN` forecast, not computed in the viewer) and sorts the rows, lowest
 first, stages without a number last; the status `staged` (done, not
 landed) has its own amber badge, filter entry and board column between running and
-done, is in the default list filter with open and running, and is not counted as open. It reads the ledger fresh on
+done, is in the default list filter with open and running, and is not counted as open.
+Every badge, filter, count and board column uses the status the kit shows for an
+entry (`shown`): an open entry of a planned stage reads `planned`, of a shelved
+stage `shelved` (the detail pane says what is stored), and the planned and shelved
+board columns list each stage card followed by its entries. It reads the ledger fresh on
 every request and reloads when the tab regains focus; it never writes the ledger
 or `pm/STATUS.md`. It listens on 127.0.0.1 only and has no login, so any user
 logged in on the same machine can read the ledger while it runs. Port 8765 by

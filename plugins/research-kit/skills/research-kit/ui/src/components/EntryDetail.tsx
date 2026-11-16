@@ -9,6 +9,7 @@ import {
   byId,
   earlierTitles,
   evMeta,
+  shownStatus,
   stageCodeOf,
   type Entry,
   type Ev,
@@ -126,7 +127,7 @@ export function EntryDetail({ ledger, id }: { ledger: Ledger; id: string }) {
         {t && (
           <>
             {" "}
-            <StatusBadge status={t.status} /> <Linked text={t.title} ledgerIds={ids} own={own} />
+            <StatusBadge status={shownStatus(t)} /> <Linked text={t.title} ledgerIds={ids} own={own} />
           </>
         )}
         {t && shown && (
@@ -188,9 +189,14 @@ export function EntryDetail({ ledger, id }: { ledger: Ledger; id: string }) {
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-mono text-lg font-semibold">{e.id}</span>
         <TypeBadge type={e.type} />
-        <StatusBadge status={e.status} />
+        <StatusBadge status={shownStatus(e)} />
         {e.extra.imported === true && <Badge variant="outline">imported</Badge>}
       </div>
+      {shownStatus(e) !== e.status && (
+        <p className="mt-1 text-xs text-muted-foreground">
+          stored: {e.status} (stage {e.stage} is {shownStatus(e)})
+        </p>
+      )}
       <h2 className="mt-2 text-base font-medium">
         <Linked text={e.title} ledgerIds={ids} own={own} />
       </h2>

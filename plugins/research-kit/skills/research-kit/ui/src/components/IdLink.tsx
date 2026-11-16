@@ -3,7 +3,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { TypeBadge } from "@/components/TypeBadge";
 import { typeClasses } from "@/lib/typeColor";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
-import { formatRoute, labelOf, linkify, parseRoute, type Entry } from "@/lib/ledger";
+import { formatRoute, labelOf, linkify, parseRoute, shownStatus, type Entry } from "@/lib/ledger";
 
 // provided once by App: id -> entry (hover preview, link colour) and stage
 // code -> stage id (see stageCodes), label -> entry id (see labelIndex)
@@ -26,7 +26,7 @@ function Preview({ e }: { e: Entry }) {
         <span className="font-mono font-semibold">{e.id}</span>
         {labelOf(e) && <span className="font-mono text-muted-foreground">{labelOf(e)}</span>}
         <TypeBadge type={e.type} />
-        <StatusBadge status={e.status} />
+        <StatusBadge status={shownStatus(e)} />
       </div>
       <div className="font-medium break-words">{e.title}</div>
       <div className="text-muted-foreground">

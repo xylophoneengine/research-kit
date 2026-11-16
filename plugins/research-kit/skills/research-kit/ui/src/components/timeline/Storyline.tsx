@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { typeClasses } from "@/lib/typeColor";
-import { byType, entryDay, shortDay, sortGroups, stageGroups, type Entry, type Group, type SortKey } from "@/lib/ledger";
+import { byType, entryDay, shortDay, shownStatus, sortGroups, stageGroups, type Entry, type Group, type SortKey } from "@/lib/ledger";
 import { Chev, Id, PAGE, StatusBadge, plural, statusClass, type TimelineProps } from "./parts";
 
 const FIRST_LINE = 40; // cards rendered in a collapsed (one line) branch
@@ -176,12 +176,12 @@ function Block({
             <>
               <Id id={g.stage.id} ledgerIds={ledgerIds} />
               <span
-                className={"min-w-0 truncate " + (holds ? "font-semibold text-foreground" : statusClass(g.stage.status))}
+                className={"min-w-0 truncate " + (holds ? "font-semibold text-foreground" : statusClass(shownStatus(g.stage)))}
                 title={g.stage.title}
               >
                 {g.stage.title}
               </span>
-              <StatusBadge status={g.stage.status} />
+              <StatusBadge status={shownStatus(g.stage)} />
             </>
           ) : (
             <span className="font-semibold">unstaged / backlog</span>
@@ -320,10 +320,10 @@ function Card({
         <Id id={e.id} ledgerIds={ledgerIds} />
         <span className="text-[0.8em] whitespace-nowrap text-muted-foreground">{shortDay(entryDay(e))}</span>
       </div>
-      <div className={"line-clamp-2 break-words " + statusClass(e.status)} title={e.title}>
+      <div className={"line-clamp-2 break-words " + statusClass(shownStatus(e))} title={e.title}>
         {e.title}
       </div>
-      <div className="text-[0.8em] text-muted-foreground">{e.status}</div>
+      <div className="text-[0.8em] text-muted-foreground">{shownStatus(e)}</div>
     </div>
   );
 }

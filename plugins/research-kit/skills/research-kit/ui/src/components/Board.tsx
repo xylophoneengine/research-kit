@@ -2,7 +2,7 @@ import { EyeOffIcon } from "lucide-react";
 import { useState } from "react";
 import { TypeBadge } from "@/components/TypeBadge";
 import { Button } from "@/components/ui/button";
-import { BOARD_COLS, boardCol, sortBy, type Entry, type SortKey } from "@/lib/ledger";
+import { BOARD_COLS, boardCol, sortBy, underStages, type Entry, type SortKey } from "@/lib/ledger";
 
 const KEY = "rk-ui-board-folded";
 const COLLAPSED = ["shelved", "dropped", "superseded"]; // hidden until the user shows them
@@ -41,10 +41,12 @@ function Cards({
   entries,
   sort,
   desc,
+  grouped,
   selected,
   onSelect,
 }: {
   entries: Entry[];
+  grouped: boolean; // already in the column's own order (stage cards with their entries): no sort
   sort: SortKey;
   desc: boolean;
   selected: string | null;
@@ -53,7 +55,7 @@ function Cards({
   const [n, setN] = useState(PAGE);
   // the board's own default: newest `updated` first (descending sort reverses it);
   // any other sort key arrives already applied in `entries` (see visible())
-  const sorted = sort === "default" ? sortBy(entries, "updated", !desc) : entries;
+  const sorted = !grouped && sort === "default" ? sortBy(entries, "updated", !desc) : entries;
   return (
     <div className="space-y-2">
       {sorted.slice(0, n).map((e) => (
@@ -94,9 +96,11 @@ export function Board({
   sort,
   desc,
   statusFilter,
+  forecast,
   selected,
   onSelect,
 }: {
+  forecast: Record<string, string> | undefined; // the kit's plan.forecast, for the stage order
   entries: Entry[];
   sort: SortKey;
   desc: boolean;
@@ -147,7 +151,9 @@ export function Board({
       )}
       <div className="flex gap-3 overflow-x-auto">
         {visibleCols.map((c) => {
-          const es = entries.filter((e) => boardCol(e) === c);
+          const col = entries.filter((e) => boardCol(e) === c);
+          const grouped = c === "planned" || c === "shelved"; // each stage card, then its entries
+          const es = grouped ? underStages(col, forecast) : col;
           return (
             <div key={c} className="min-w-[12rem] flex-1">
               <div className="mb-2 flex items-center justify-between gap-1 text-xs font-semibold text-muted-foreground uppercase">
@@ -164,7 +170,7 @@ export function Board({
                   <EyeOffIcon className="size-3.5" />
                 </button>
               </div>
-              <Cards entries={es} sort={sort} desc={desc} selected={selected} onSelect={onSelect} />
+              <Cards entries={es} sort={sort} desc={desc} grouped={grouped} selected={selected} onSelect={onSelect} />
             </div>
           );
         })}
