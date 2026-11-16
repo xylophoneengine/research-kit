@@ -490,6 +490,17 @@ def test_help_usage_lists_ledger_commands() -> None:
     assert "rk.py shelve ID --note TEXT" in r.stdout, r.stdout  # the reference
 
 
+def test_help_usage_lists_staged_and_land() -> None:  # spec-staged-status, D-50/51
+    r: subprocess.CompletedProcess[str] = subprocess.run(
+        [sys.executable, "-I", str(RK_PY), "--help"], capture_output=True, text=True
+    )
+    usage: str = r.stdout.split("\n\n", 1)[0]
+    for cmd in ("staged", "land"):
+        assert re.search(rf"[{{,]{cmd}[,}}]", usage), usage
+    assert "rk.py staged ID [ID ...] --note TEXT [--ref PATH]..." in r.stdout
+    assert "rk.py land --note TEXT [--ref PATH]... [--stage S] [ID ...]" in r.stdout
+
+
 # ---- Tasks 5-8: real template content (other teammates deliver it) -----------
 
 

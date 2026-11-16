@@ -38,6 +38,13 @@ entries are exempt):
   python3 -I rk.py shelve ID --note TEXT [--ref PATH]... [--link ID]...
       (known, not planned now; out of it: reopen or drop)
   python3 -I rk.py reopen ID --note TEXT [--ref PATH]...
+  python3 -I rk.py staged ID [ID ...] --note TEXT [--ref PATH]...
+      (work done, not landed: open or running -> staged; the note says where it
+      sits; not for stages and decisions, not in a planned or shelved stage;
+      out of it: land or close (done), start (more work), reopen)
+  python3 -I rk.py land --note TEXT [--ref PATH]... [--stage S] [ID ...]
+      (staged -> done: every staged entry, the named ones, or one stage's; a
+      named entry that is not staged refuses the whole call)
   python3 -I rk.py set ID [--title T] [--owner N] [--label L] [--stage S]
       [--note T | --note-replace T] [--link ID]... [--ref PATH]...
       [--ref-drop PATH]... [--status planned|shelved|dropped]

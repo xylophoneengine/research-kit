@@ -4563,7 +4563,9 @@ def test_reason_field_of_close_drop_reopen() -> None:
 
 
 def test_shelve_cycle() -> None:  # R1-R3, R8, R9, I1, I3
-    assert L.STATUSES[-1] == "shelved" and L.OPEN_STATUSES == ("open", "running")
+    assert L.STATUSES[-1] == "shelved" and L.OPEN_STATUSES == (
+        "open", "running", "staged"
+    )
     with tempfile.TemporaryDirectory() as d:
         repo: Path = new_repo(Path(d))
         (repo / "notes").mkdir()
@@ -5270,6 +5272,196 @@ def test_import_keeps_history_past_m4_guards() -> None:
         # not imported: the guard holds
         out = refused(repo, "add", "debt", "new", "--stage", "S-1")
         assert out.startswith("error: S-1 is dropped and takes no entry"), out
+
+
+# ---- staged (spec-staged-status, D-49 to D-51) --------------------------------
+
+
+def work_repo(root: Path) -> Path:
+    """Open stage S-1 (01-paper-x), T-1 running, DB-1 open, both in S-1."""
+    repo: Path = new_repo(root)
+    assert lrun(repo, "add", "stage", "paper-x", "--open")[0] == 0
+    assert lrun(repo, "add", "task", "run", "--note", "n")[0] == 0
+    assert lrun(repo, "start", "T-1")[0] == 0
+    assert lrun(repo, "add", "debt", "fix it")[0] == 0
+    return repo
+
+
+# spec table rows open/running -> staged; several ids, one write; the refusals
+def test_staged_command() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = work_repo(Path(d))
+        (repo / "notes.md").write_text("x")
+        out: str = refused(repo, "staged", "DB-1")
+        assert out == "error: staged needs --note\n", out
+        n: int = len(jl(repo))
+        code, out = lrun(
+            repo, "staged", "T-1", "DB-1", "--note", "on w1 at abc1234",
+            "--ref", "notes.md",
+        )  # fmt: skip
+        assert code == 0 and out == (
+            "staged T-1: on w1 at abc1234 (stage S-1)\n"
+            "staged DB-1: on w1 at abc1234 (stage S-1)\n"
+        ), out
+        assert len(jl(repo)) == n + 2
+        st: Any = L.load(repo)
+        for i in ("T-1", "DB-1"):
+            assert st[i].status == "staged" and st[i].extra["reason"] == (
+                "on w1 at abc1234"
+            ), i
+            assert st[i].note.endswith("on w1 at abc1234") and "notes.md" in st[i].refs
+        # not again, not a stage, not a decision, not done; the whole call refused
+        assert lrun(repo, "add", "decision", "use x", "--owner", "user")[0] == 0
+        assert lrun(repo, "add", "debt", "other")[0] == 0  # DB-2, open
+        for argv, want in (
+            (("DB-2", "DB-1"), "cannot stage DB-1: it is staged"),
+            (("S-1",), "S-1 is a stage: a stage closes with stage-close"),
+            (("D-1",), "D-1 is a decision: decisions are in force when logged"),
+        ):
+            out = refused(repo, "staged", *argv, "--note", "x")
+            assert out == f"error: {want}\n", (argv, out)
+        assert L.load(repo)["DB-2"].status == "open"
+        # one way in: not by set, not by add
+        out = refused(repo, "set", "DB-2", "--status", "staged")
+        assert out.startswith("error: --status staged: set gives a status"), out
+        out = refused(repo, "add", "debt", "y", "--status", "staged")
+        assert out == (
+            "error: --status staged: an entry is staged by rk staged ID --note "
+            "TEXT, no add sets it\n"
+        ), out
+
+
+# spec table rows staged -> done (close), -> running (start, brief-check),
+# -> open (reopen)
+def test_staged_ways_out() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = work_repo(Path(d))
+        assert lrun(repo, "add", "task", "two", "--note", "n")[0] == 0  # T-2
+        assert lrun(repo, "staged", "T-1", "T-2", "DB-1", "--note", "w1")[0] == 0
+        code, out = lrun(repo, "close", "DB-1", "--note", "landed on dev")
+        assert code == 0 and out == "closed DB-1: landed on dev (stage S-1)\n", out
+        code, out = lrun(repo, "start", "T-1")
+        assert code == 0 and out == "started T-1: run\n", out
+        assert L.load(repo)["T-1"].status == "running"
+        code, out = bcheck(repo, "DELIVERABLE: x\nTASK: T-2\n")
+        assert code == 0 and out == "started T-2: two\n", out
+        assert lrun(repo, "staged", "T-2", "--note", "w1 again")[0] == 0
+        code, out = lrun(repo, "reopen", "T-2", "--note", "not done after all")
+        assert code == 0 and out.startswith("reopened T-2: not done after all"), out
+        assert L.load(repo)["T-2"].status == "open"
+
+
+# spec Landing: all, named, --stage, refusal, landed 0
+def test_land() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = work_repo(Path(d))
+        code, out = lrun(repo, "land", "--note", "nothing yet")
+        assert code == 0 and out == "landed 0\n", out
+        assert lrun(repo, "add", "debt", "d2")[0] == 0  # DB-2
+        assert lrun(repo, "add", "stage", "software-y", "--open")[0] == 0  # S-2
+        assert lrun(repo, "add", "debt", "d3", "--stage", "S-2")[0] == 0  # DB-3
+        assert lrun(repo, "add", "debt", "d4", "--stage", "S-2")[0] == 0  # DB-4
+        assert lrun(
+            repo, "staged", "T-1", "DB-1", "DB-2", "DB-3", "DB-4", "--note", "w1"
+        )[0] == 0
+        # a named entry that is not staged refuses the whole call
+        assert lrun(repo, "add", "debt", "d5")[0] == 0  # DB-5, open
+        out: str = refused(repo, "land", "DB-1", "DB-5", "--note", "dev")
+        assert out == "error: cannot land DB-5: it is open, not staged\n", out
+        out = refused(repo, "land", "--stage", "S-2", "DB-1", "--note", "dev")
+        assert out == "error: cannot land DB-1: it is in S-1, not S-2\n", out
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "land", "DB-2", "DB-1", "--note", "on dev 1a2b")
+        assert code == 0 and out == (
+            "landed DB-2: on dev 1a2b (stage S-1)\n"
+            "landed DB-1: on dev 1a2b (stage S-1)\n"
+        ), out
+        assert len(jl(repo)) == n + 2
+        code, out = lrun(repo, "land", "--stage", "S-2", "--note", "on dev 3c4d")
+        assert code == 0 and out == (
+            "landed DB-3: on dev 3c4d (stage S-2)\n"
+            "landed DB-4: on dev 3c4d (stage S-2)\n"
+        ), out
+        code, out = lrun(repo, "land", "--note", "on dev 5e6f")
+        assert code == 0 and out == "landed T-1: on dev 5e6f (stage S-1)\n", out
+        st: Any = L.load(repo)
+        assert [st[i].status for i in ("T-1", "DB-1", "DB-2", "DB-3", "DB-4")] == [
+            "done"
+        ] * 5
+        assert st["DB-1"].extra["reason"] == "on dev 1a2b"
+        assert st["DB-5"].status == "open"
+        out = refused(repo, "land", "--note", "")
+        assert out == "error: land needs --note\n", out
+
+
+# spec "What staged counts as": not done for stage-close (text names rk land)
+# and for the drop of a planned stage; no staging in a planned or shelved stage
+def test_staged_blocks_and_guards() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = work_repo(Path(d))
+        assert lrun(repo, "staged", "T-1", "--note", "w1")[0] == 0
+        assert lrun(repo, "add", "decision", "sign-off", "--owner", "user")[0] == 0
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 1 and (
+            "T-1 staged: land them (rk land --stage S-1), close, drop, shelve, "
+            "re-stage"
+        ) in out, out
+        plan_stages(repo, "software-p")  # S-2
+        assert lrun(repo, "add", "debt", "p", "--stage", "S-2")[0] == 0  # DB-2
+        out = refused(repo, "staged", "DB-2", "--note", "w1")
+        assert out.startswith(
+            "error: S-2 is planned: a staged debt cannot go into it (work runs "
+            "only in an open stage)"
+        ), out
+        out = refused(repo, "set", "T-1", "--stage", "S-2")
+        assert out.startswith("error: S-2 is planned: a staged task cannot go"), out
+        # a staged entry in a planned stage (only by a hand edit) blocks its drop
+        ev: dict[str, Any] = L.make_event("hand", "set", "T-1", {"stage": "S-2"})
+        with (repo / L.LEDGER_REL).open("a") as fh:
+            fh.write(json.dumps(ev) + "\n")
+        assert lrun(repo, "close", "DB-2", "--note", "x")[0] == 0
+        out = refused(repo, "set", "S-2", "--status", "dropped", "--note", "no")
+        assert out.startswith(
+            "error: cannot drop S-2: open entries are in it: T-1 staged;"
+        ), out
+
+
+# spec Display: list head line, --status staged, STATUS.md block
+def test_staged_display() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = work_repo(Path(d))
+        before: str = lrun(repo, "list")[1]
+        assert before.splitlines()[0] == "open 3 (running 1): task 1, debt 1, stage 1"
+        assert "Staged" not in (repo / L.STATUS_REL).read_text()
+        assert lrun(repo, "add", "debt", "mine", "--owner", "user")[0] == 0  # DB-2
+        assert lrun(repo, "staged", "DB-1", "DB-2", "--note", "w1 at abc")[0] == 0
+        lines: list[str] = lrun(repo, "list")[1].splitlines()
+        assert lines[0] == "open 4 (running 1, staged 2): task 1, debt 2, stage 1"
+        assert any(ln.startswith("DB-1  staged ") for ln in lines), lines
+        lines = lrun(repo, "list", "--status", "staged")[1].splitlines()
+        assert [ln.split()[0] for ln in lines[1:]] == ["DB-2", "DB-1"], lines
+        sec: dict[str, str] = sections((repo / L.STATUS_REL).read_text())
+        block: str = sec["## Staged (done, not landed)"]
+        assert "DB-1" in block and "fix it" in block and "w1 at abc" in block, block
+        assert "DB-2" in block and "DB-2" not in sec.get("## Needs you", "")
+        assert "DB-1" not in sec.get("## Open debt", ""), sec
+        st: str = (repo / L.STATUS_REL).read_text()
+        assert st.index("## Staged") < st.index("## Running"), st
+
+
+# spec "Done when" 4: the probe
+def test_staged_probe() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "debt", "dB-29 style fix")[0] == 0
+        code, out = lrun(repo, "staged", "DB-1", "--note", "on w1-planned-stages")
+        assert code == 0 and out == "staged DB-1: on w1-planned-stages (no stage)\n"
+        out = lrun(repo, "list")[1]
+        assert out.splitlines()[0] == "open 1 (running 0, staged 1): debt 1", out
+        assert "DB-1  staged " in out, out
+        code, out = lrun(repo, "land", "--note", "merged to dev")
+        assert code == 0 and out == "landed DB-1: merged to dev (no stage)\n", out
+        assert L.load(repo)["DB-1"].status == "done"
 
 
 def main() -> int:

@@ -39,9 +39,10 @@ RECORD_MARK_RE: re.Pattern[str] = re.compile(
     r"^<!-- rk:stage-record \S+ close [0-9]+ -->$", re.M
 )
 STATUSES: tuple[str, ...] = (
-    "open", "running", "done", "dropped", "superseded", "planned", "shelved"
+    "open", "running", "staged", "done", "dropped", "superseded", "planned",
+    "shelved",
 )
-OPEN_STATUSES: tuple[str, ...] = ("open", "running")
+OPEN_STATUSES: tuple[str, ...] = ("open", "running", "staged")  # not done
 BUILTIN_TYPES: dict[str, str] = {
     "task": "T",
     "decision": "D",
@@ -75,7 +76,7 @@ COMMANDS: frozenset[str] = frozenset(
     {
         "add", "start", "close", "drop", "shelve", "reopen", "set", "supersede",
         "list", "show", "search", "recent", "render", "stage-close", "brief-check",
-        "import", "doctor", "reref", "stage-open", "stage-rename",
+        "import", "doctor", "reref", "stage-open", "stage-rename", "staged", "land",
     }
 )
 BRIEF_RE: re.Pattern[str] = re.compile(r"^[ \t]*DELIVERABLE:", re.M)
@@ -682,14 +683,15 @@ def _check_stage_open(
     "raised in", and an open one may sit in (or be set into) a closed stage. A
     stage entry keeps the old rule: no open stage inside a done one. D-32 (work
     runs only in an open stage): a dropped stage takes no entry, a planned or
-    shelved one no running entry; both not for `imported` history (as it was)."""
+    shelved one no running or staged entry; both not for `imported` history (as
+    it was)."""
     st: Entry | None = state.get(sid) if sid else None
     if st is not None and not imported and st.status == "dropped":
         raise LedgerError(f"{sid} is dropped and takes no entry: {fix}")
     if (
         st is not None
         and not imported
-        and status == "running"
+        and status in ("running", "staged")
         and st.status in ("planned", "shelved")
     ):
         way: str = "open the stage: " + (
@@ -699,7 +701,7 @@ def _check_stage_open(
         if _imported(st):  # an imported shelved stage is not planned again
             way = fix
         raise LedgerError(
-            f"{sid} is {st.status}: a running {typ} cannot go into it (work runs "
+            f"{sid} is {st.status}: a {status} {typ} cannot go into it (work runs "
             f"only in an open stage): close or shelve it first, or {way}"
         )
     if (
@@ -982,11 +984,22 @@ def render_status(state: dict[str, Entry], now: datetime) -> str:
             out.extend(["", f"## {title}", *lines])
 
     section("Stages", [_stage_line(e, state, now) for e in stages])
+    section(  # D-49: work done, not on the base branch yet; the note says where
+        "Staged (done, not landed)",
+        [
+            _clip(f"{_item(e, now)} -- {_cut(str(e.extra.get('reason') or '-'))}")
+            for e in rest
+            if e.status == "staged"
+        ],
+    )
     section(
         "Running",
         [_item(e, now) for e in rest if e.status == "running" and e.owner != "user"],
     )
-    section("Needs you", [_item(e, now) for e in rest if e.owner == "user"])
+    section(
+        "Needs you",
+        [_item(e, now) for e in rest if e.owner == "user" and e.status != "staged"],
+    )
     fixed: dict[str, str] = {
         "task": "Open tasks",
         "fetch": "Open fetches",
@@ -1088,11 +1101,13 @@ def format_list(
     for e in sorted(opens, key=_sort_key):
         counts[e.type] = counts.get(e.type, 0) + 1
     running: int = sum(1 for e in opens if e.status == "running")
+    staged: int = sum(1 for e in opens if e.status == "staged")
     parts: list[str] = [f"{t} {c}" for t, c in counts.items()]
     head: str = ""
     for k in range(len(parts), -1, -1):  # within LINE_MAX, cut between counts
         shown_parts: list[str] = parts[:k] + (["..."] if k < len(parts) else [])
-        head = f"open {len(opens)} (running {running})"
+        head = f"open {len(opens)} (running {running}"
+        head += f", staged {staged})" if staged else ")"
         head += ": " + ", ".join(shown_parts) if shown_parts else ""
         if len(head) <= LINE_MAX:
             break
@@ -1146,6 +1161,11 @@ def _add_step(
         raise LedgerError(
             "--status planned: a stage is planned by add stage <kind>-<topic> "
             "without --status; no other add and no import row sets it"
+        )
+    if a.status == "staged":  # D-50: one way in
+        raise LedgerError(
+            "--status staged: an entry is staged by rk staged ID --note TEXT, no "
+            "add sets it"
         )
     if a.status in ("superseded", "shelved"):  # shelved needs a reason: rk shelve
         import_only.append(f"--status {a.status}")
@@ -1541,7 +1561,7 @@ def _cmd_start(a: argparse.Namespace) -> int:
         if e.status == "running":
             out.append(f"{e.id} already running")
             return []
-        if e.status != "open":
+        if e.status not in ("open", "staged"):  # staged: more work, a fix round
             raise LedgerError(f"{e.id} is {e.status}: use reopen first")
         _check_stage_startable(state, e)  # first: its text names stage-open
         _check_stage_open(
@@ -1591,7 +1611,8 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
             + (("done",) if e.type == "decision" else ()),
             "shelve": OPEN_STATUSES,
             "reopen": (
-                ("done",) if e.type == "stage" else ("done", "dropped", "shelved")
+                ("done",) if e.type == "stage"
+                else ("done", "dropped", "shelved", "staged")
             ),
         }[cmd]
         if e.status not in allowed:
@@ -1626,6 +1647,67 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
         "close": "closed", "drop": "dropped", "shelve": "shelved", "reopen": "reopened"
     }[cmd]
     print(f"{verb} {ids[0]}: {_cut(note)}{_in_stage(state[ids[0]])}")
+    return 0
+
+
+def _cmd_staged_land(a: argparse.Namespace) -> int:
+    """`staged ID...`: open or running -> staged (D-49/D-50, work done, not
+    landed). `land [ID...] [--stage S]`: staged -> done, all staged entries or
+    the named ones, within one stage with --stage (D-51). One locked write, one
+    receipt line per entry; any refusal refuses the whole call."""
+    repo: Path = _repo(a)
+    who: str = _name(a.who, "--who")
+    note: str = _need_note(a)
+    a.ref = _check_refs(repo, a.ref)
+    staging: bool = a.cmd == "staged"
+    ids: list[str] = []
+
+    def build(state: dict[str, Entry]) -> list[dict[str, object]]:
+        sid: str = resolve(state, a.stage, stage=True) if a.stage else ""
+        named: list[str] = list(dict.fromkeys(resolve(state, i) for i in a.ids))
+        if not staging and not named:
+            named = [
+                e.id
+                for e in sorted(state.values(), key=lambda x: x.lines[0])
+                if e.status == "staged" and (not sid or e.stage == sid)
+            ]
+        for i in named:
+            e: Entry = state[i]
+            if staging and e.type == "stage":
+                raise LedgerError(f"{i} is a stage: a stage closes with stage-close")
+            if staging and e.type == "decision":
+                raise LedgerError(
+                    f"{i} is a decision: decisions are in force when logged"
+                )
+            if staging and e.status not in ("open", "running"):
+                raise LedgerError(f"cannot stage {i}: it is {e.status}")
+            if not staging and e.status != "staged":
+                raise LedgerError(f"cannot land {i}: it is {e.status}, not staged")
+            if not staging and sid and e.stage != sid:
+                raise LedgerError(
+                    f"cannot land {i}: it is in {e.stage or 'no stage'}, not {sid}"
+                )
+            if staging:  # D-32: no work in a planned or shelved stage
+                _check_stage_open(
+                    state, e.stage, e.type, "staged", "pick an open stage"
+                )
+        ids[:] = named
+        return [
+            make_event(who, "set", i, {
+                "status": "staged" if staging else "done",
+                "note": _note_plus(state[i].note, note),
+                "reason": note,  # where the work sits / where it landed
+                **({"refs": _union(state[i].refs, a.ref)} if a.ref else {}),
+            })
+            for i in named
+        ]  # fmt: skip
+
+    state: dict[str, Entry] = append(repo, build)
+    verb: str = "staged" if staging else "landed"
+    for i in ids:
+        print(f"{verb} {i}: {_cut(note)}{_in_stage(state[i])}")
+    if not ids:
+        print(f"{verb} 0")
     return 0
 
 
@@ -2572,9 +2654,13 @@ def _cmd_stage_close(a: argparse.Namespace) -> int:
         )
         if busy:
             t: str = busy[0].id
+            land: str = (
+                f"land them (rk land --stage {sid}), "
+                if any(e.status == "staged" for e in busy) else ""
+            )
             problems.append(
                 ", ".join(f"{e.id} {e.status}" for e in busy)
-                + f": close, drop, shelve, re-stage (set {t} --stage S-<x>) or "
+                + f": {land}close, drop, shelve, re-stage (set {t} --stage S-<x>) or "
                 f"defer them (add deferred ... --link {t}, then drop {t} --note"
                 ' "deferred as DF-<k>")'
             )
@@ -3081,14 +3167,16 @@ def _cmd_brief_check(a: argparse.Namespace) -> int:
                 problems.append(f"{eid} is not a task")
             elif not _is_open(e):
                 problems.append(f"{eid} is {e.status}")
-            elif e.status == "open":  # the one this call would start
+            elif e.status in ("open", "staged"):  # the one this call would start
                 try:
                     _check_stage_startable(state, e)
                 except LedgerError as err:
                     problems.append(f"{eid}: {err}")
         if problems:
             return []
-        started: list[Entry] = [state[i] for i in ids if state[i].status == "open"]
+        started: list[Entry] = [
+            state[i] for i in ids if state[i].status in ("open", "staged")
+        ]
         out.extend(f"started {e.id}: {e.title}" for e in started)
         return [make_event(who, "set", e.id, {"status": "running"}) for e in started]
 
@@ -3156,6 +3244,19 @@ def _parser() -> argparse.ArgumentParser:
         pc.add_argument("--ref", action="append", default=[])
         if name != "reopen":
             pc.add_argument("--link", action="append", default=[])
+    for name in ("staged", "land"):  # D-50, D-51
+        pg: argparse.ArgumentParser = sub.add_parser(name, parents=[common])
+        pg.add_argument("ids", nargs="+" if name == "staged" else "*", metavar="ID")
+        pg.add_argument(
+            "--note", default=None,
+            help="required: where the work sits (staged) or landed (land); "
+            "added to the note and stored as `reason`",
+        )
+        pg.add_argument("--ref", action="append", default=[])
+        if name == "land":
+            pg.add_argument("--stage", default=None, help="only this stage's")
+        else:
+            pg.set_defaults(stage=None)
     pt: argparse.ArgumentParser = sub.add_parser("set", parents=[common])
     pt.add_argument("id")
     pt.add_argument("--title", default=None)
@@ -3266,6 +3367,8 @@ HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "drop": _close_drop_reopen,
     "shelve": _close_drop_reopen,
     "reopen": _close_drop_reopen,
+    "staged": _cmd_staged_land,
+    "land": _cmd_staged_land,
     "set": _cmd_set,
     "supersede": _cmd_supersede,
     "list": _cmd_list,
