@@ -353,7 +353,8 @@ a detail pane shows one entry with its history. It reads the ledger fresh on
 every request and reloads when the tab regains focus; it never writes the ledger
 or `pm/STATUS.md`. It listens on 127.0.0.1 only and has no login, so any user
 logged in on the same machine can read the ledger while it runs. Port 8765 by
-default, or the next free one up to 8774 when it is taken (`--port N` names
+default, or the next free one up to 8774 when it is taken, but the start stops if a viewer of
+the same repo already answers on one of those ports (`--port N` names
 one; `--no-open`
 skips the browser; `--repo DIR` names the repo). `/rk-viewer stop` ends the
 viewer this session started; as a background task of the session it is expected

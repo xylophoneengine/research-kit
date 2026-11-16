@@ -184,16 +184,15 @@ export function clickSort(sort: SortKey, desc: boolean, col: SortKey): { sort: S
 
 // `es` is in default order; ties of a key keep it, also when descending; `default` descending reverses all
 export function sortBy(es: Entry[], key: SortKey, desc: boolean): Entry[] {
-  const day = (e: Entry): number => Date.parse(key === "created" ? e.created : e.updated) || 0;
+  // the timestamp of the age / updated / created column; NaN when missing or unusable
+  const stamp = (e: Entry): number =>
+    Date.parse(
+      key === "age" ? (e.status === "running" && e.started ? e.started : e.created)
+        : key === "created" ? e.created : e.updated,
+    );
   const pre = (id: string): string => id.slice(0, id.lastIndexOf("-"));
   const text = (f: (e: Entry) => string) => (a: Entry, b: Entry): number =>
     f(a).localeCompare(f(b), undefined, { numeric: true });
-  // the age column as it always sorted: ascending = youngest first (running: since
-  // it started), an entry without a usable timestamp last
-  const ageKey = (e: Entry): number => {
-    const t = Date.parse(e.status === "running" && e.started ? e.started : e.created);
-    return Number.isNaN(t) ? Infinity : -t;
-  };
   const cmp: Record<SortKey, (a: Entry, b: Entry) => number> = {
     default: () => 0,
     id: (a, b) => pre(a.id).localeCompare(pre(b.id)) || num(a.id) - num(b.id),
@@ -203,12 +202,15 @@ export function sortBy(es: Entry[], key: SortKey, desc: boolean): Entry[] {
     title: text((e) => e.title),
     owner: text((e) => e.owner),
     stage: text((e) => e.stage),
-    age: (a, b) => (ageKey(a) < ageKey(b) ? -1 : ageKey(a) > ageKey(b) ? 1 : 0),
-    updated: (a, b) => day(a) - day(b),
-    created: (a, b) => day(a) - day(b),
+    age: (a, b) => stamp(b) - stamp(a), // ascending = youngest first (running: since it started)
+    updated: (a, b) => stamp(a) - stamp(b),
+    created: (a, b) => stamp(a) - stamp(b),
   };
   if (key === "default") return desc ? [...es].reverse() : [...es]; // its comparator ties everything
-  return [...es].sort((a, b) => (desc ? -1 : 1) * cmp[key](a, b));
+  const dated = key === "age" || key === "updated" || key === "created";
+  // a missing timestamp sorts last in both directions
+  const miss = (e: Entry): number => (dated && Number.isNaN(stamp(e)) ? 1 : 0);
+  return [...es].sort((a, b) => miss(a) - miss(b) || (desc ? -1 : 1) * (miss(a) ? 0 : cmp[key](a, b)));
 }
 
 // an entry whose id or label equals the query (case-insensitive) goes first; stable otherwise

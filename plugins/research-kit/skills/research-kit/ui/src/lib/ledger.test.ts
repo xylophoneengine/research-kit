@@ -111,7 +111,7 @@ test("column sorts live in the route; header click cycles; pinning stays", () =>
   expect(s("sort=title")).toEqual(["T-2", "T-1", "T-4", "T-3"]);
   expect(s("sort=status")).toEqual(["T-1", "T-2", "T-4", "T-3"]);              // open < running
   expect(s("sort=age")).toEqual(["T-3", "T-2", "T-1", "T-4"]);                 // youngest first; running by start; bad date last
-  expect(s("sort=age&dir=desc")).toEqual(["T-4", "T-1", "T-2", "T-3"]);
+  expect(s("sort=age&dir=desc")).toEqual(["T-1", "T-2", "T-3", "T-4"]);        // oldest first; bad date still last
   expect(s("sort=title&q=t-4")).toEqual(["T-4"]);
   expect(ids(pinExact(sortBy([a, b, c, bad], "title", false), "t-3"))).toEqual(["T-3", "T-2", "T-1", "T-4"]);
   expect(clickSort("default", false, "id")).toEqual({ sort: "id", desc: false });
@@ -119,13 +119,22 @@ test("column sorts live in the route; header click cycles; pinning stays", () =>
   expect(clickSort("id", true, "id")).toEqual({ sort: "default", desc: false });
   expect(clickSort("id", true, "owner")).toEqual({ sort: "owner", desc: false });
 });
-test("sortBy: a missing timestamp sorts first, ties keep the incoming order (also descending)", () => {
+test("sortBy: a missing timestamp sorts last for updated, created and age, both directions; ties keep the incoming order", () => {
   const mk = (id: string, upd: string): Entry =>
-    ({ ...base, id, type: "task", title: id, status: "done", owner: "", stage: "", updated: upd });
+    ({ ...base, id, type: "task", title: id, status: "done", owner: "", stage: "", updated: upd,
+      created: upd });
   const none = mk("T-3", "");
+  const none2 = mk("T-4", "");
   const x = mk("T-1", "2026-11-01T10:00:00+01:00");
   const y = mk("T-2", "2026-11-01T10:00:00+01:00");
-  expect(ids(sortBy([x, y, none], "updated", false))).toEqual(["T-3", "T-1", "T-2"]);
+  const old = mk("T-5", "2026-10-01T10:00:00+01:00");
+  for (const k of ["updated", "created"] as const) {
+    expect(ids(sortBy([none, none2, x, old], k, false))).toEqual(["T-5", "T-1", "T-3", "T-4"]);
+    expect(ids(sortBy([none, none2, x, old], k, true))).toEqual(["T-1", "T-5", "T-3", "T-4"]);
+  }
+  expect(ids(sortBy([none, none2, x, old], "age", false))).toEqual(["T-1", "T-5", "T-3", "T-4"]);
+  expect(ids(sortBy([none, none2, x, old], "age", true))).toEqual(["T-5", "T-1", "T-3", "T-4"]);
+  expect(ids(sortBy([x, y, none], "updated", false))).toEqual(["T-1", "T-2", "T-3"]);
   expect(ids(sortBy([y, x], "updated", false))).toEqual(["T-2", "T-1"]); // tie: unchanged
   expect(ids(sortBy([x, y, none], "updated", true))).toEqual(["T-1", "T-2", "T-3"]); // tie kept, none last
   expect(ids(sortBy([y, x], "updated", true))).toEqual(["T-2", "T-1"]);

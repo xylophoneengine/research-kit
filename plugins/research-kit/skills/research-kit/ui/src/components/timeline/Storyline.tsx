@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { typeClasses } from "@/lib/typeColor";
-import { byType, entryDay, shortDay, sortGroups, stageGroups, type Entry, type Group } from "@/lib/ledger";
+import { byType, entryDay, shortDay, sortGroups, stageGroups, type Entry, type Group, type SortKey } from "@/lib/ledger";
 import { Chev, Id, PAGE, StatusBadge, plural, statusClass, type TimelineProps } from "./parts";
 
 const FIRST_LINE = 40; // cards rendered in a collapsed (one line) branch
@@ -84,6 +84,8 @@ export function Storyline({ all, entries, ledgerIds, selected, onSelect, sort, d
               g={g}
               holds={g.key === selKey}
               selected={selected}
+              sort={sort}
+              desc={desc}
               ledgerIds={ledgerIds}
               onSelect={onSelect}
             />
@@ -103,12 +105,16 @@ function Block({
   g,
   holds,
   selected,
+  sort,
+  desc,
   ledgerIds,
   onSelect,
 }: {
   g: Group;
   holds: boolean; // the selected entry is this stage or one of its entries
   selected: string | null;
+  sort: SortKey;
+  desc: boolean;
   ledgerIds: Set<string>;
   onSelect: (id: string) => void;
 }) {
@@ -119,7 +125,8 @@ function Block({
 
   // When the selection changes to something in this stage: open the stage and,
   // if the card is clipped out of its one-line branch, expand that branch and
-  // scroll the card into view. Nothing is closed; nothing runs on other renders.
+  // scroll the card into view. Nothing is closed; it runs again only when the sort
+  // changes (the card moved), not on reloads, typing or filters.
   useEffect(() => {
     if (!holds || selected === null) return;
     const sel = selected;
@@ -147,7 +154,7 @@ function Block({
       });
     });
     return () => cancelAnimationFrame(frame);
-  }, [selected, g.items]); // when the selection or the items' order changes (a re-sort); it only expands
+  }, [selected, sort, desc]); // not g.items: that is a new array on every reload, keystroke and filter change
 
   const dot = holds
     ? "bg-primary ring-4 ring-primary/25"
