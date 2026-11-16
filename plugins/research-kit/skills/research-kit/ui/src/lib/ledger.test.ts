@@ -497,6 +497,11 @@ test("backlog: entries without a stage, stage entries are never backlog (T-60)",
   const un: Entry = { ...t2, id: "T-7", stage: "" };
   expect(ids(backlog([t1, t2, d1, s1, st, un]))).toEqual(["T-1", "D-1", "T-7"]);
   expect(backlog([s1, st])).toEqual([]);
+  // the row's click opens the List with stage "-": it shows exactly the backlog, no stage entry
+  const LB: Ledger = { ...L, entries: [t1, t2, d1, s1, st, un] };
+  expect(ids(visible(LB, route("#/list?stage=-&status=all")))).toEqual(ids(sortDefault(backlog(LB.entries), LB.types)));
+  expect(ids(visible(LB, route("#/list?stage=-&status=all")))).not.toContain("S-1");
+  expect(ids(visible(LB, route("#/list?status=all")))).toContain("S-1"); // no stage filter: stages stay
 });
 
 test("status planned: own status, never open (T-45)", () => {

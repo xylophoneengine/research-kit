@@ -53,7 +53,7 @@ export function Stages({
   );
   // keep every active filter so the row's counts and the List agree; null
   // status means "no status filter" here, but on the List it would mean the
-  // open + running default, so pin it to "all"
+  // open + running + staged default, so pin it to "all"
   const go = (stage: string): void => patch({ tab: "list", stage: [stage], status: status ?? [] });
   const noStage = backlog(entries);
   return (

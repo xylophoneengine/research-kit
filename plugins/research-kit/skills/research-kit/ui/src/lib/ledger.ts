@@ -237,6 +237,7 @@ export function visible(l: Ledger, r: Route): Entry[] {
     (e) =>
       (st === null || st.length === 0 || st.includes(e.status)) &&
       (r.type.length === 0 || r.type.includes(e.type)) &&
+      (r.stage.length === 0 || e.type !== "stage" || e.stage !== "") && // a stage entry is never "-" (see backlog)
       pick(r.stage, e.stage) &&
       pick(r.owner, e.owner) &&
       matches(e, q, r.idOnly, r.exact),

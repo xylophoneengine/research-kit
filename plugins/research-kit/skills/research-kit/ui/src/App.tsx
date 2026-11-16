@@ -70,7 +70,8 @@ export default function App() {
     () => ({
       entries: ledger ? byId(ledger) : new Map(),
       codes: ledger ? stageCodes(ledger.entries) : new Map(),
-      labels: ledger ? labelIndex(ledger.entries) : new Map(),    }),
+      labels: ledger ? labelIndex(ledger.entries) : new Map(),
+    }),
     [ledger],
   );
   const ids = useMemo(() => new Set(ledger?.entries.map((e) => e.id)), [ledger]);
