@@ -7,6 +7,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  DEFAULT_STATUS,
   NONE,
   STATUSES,
   byId,
@@ -19,7 +20,7 @@ type Key = "status" | "type" | "stage" | "owner";
 
 // the status filter that visible() applies when route.status is null
 function effectiveStatus(r: Route): string[] {
-  return r.status ?? (r.tab === "list" && !r.q.trim() ? ["open", "running"] : []);
+  return r.status ?? (r.tab === "list" && !r.q.trim() ? DEFAULT_STATUS : []);
 }
 
 function Multi({

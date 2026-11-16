@@ -219,10 +219,20 @@ function pick(sel: string[], v: string): boolean {
   return sel.length === 0 || sel.includes(v === "" ? NONE : v);
 }
 
+// the list's status filter when the route names none: the kit's open list (staged is
+// work done but not landed; the red open badge does not count it)
+export const DEFAULT_STATUS = ["open", "running", "staged"];
+
+// the entries of the Stages table's "unstaged / backlog" row: no stage, and a stage
+// entry is never backlog
+export function backlog(es: Entry[]): Entry[] {
+  return es.filter((e) => e.stage === "" && e.type !== "stage");
+}
+
 export function visible(l: Ledger, r: Route): Entry[] {
   const q = r.q.trim();
   const st: string[] | null =
-    r.status ?? (r.tab === "list" && !q ? ["open", "running"] : null);
+    r.status ?? (r.tab === "list" && !q ? DEFAULT_STATUS : null);
   const out = l.entries.filter(
     (e) =>
       (st === null || st.length === 0 || st.includes(e.status)) &&

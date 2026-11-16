@@ -9,7 +9,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { IdLink } from "@/components/IdLink";
-import { NONE, STATUSES, orderStages, stageNumber, type Entry, type Route } from "@/lib/ledger";
+import { NONE, STATUSES, backlog, orderStages, stageNumber, type Entry, type Route } from "@/lib/ledger";
 
 function Counts({ es }: { es: Entry[] }) {
   return (
@@ -27,8 +27,9 @@ function Counts({ es }: { es: Entry[] }) {
 }
 
 // `entries` = the entries the filters (except stage) let through; stage rows are always all
-// stage entries, so a filter never removes a row, only its counts. Planned stages sit among
-// the opened ones by number (see orderStages); `forecast` is the kit's plan.forecast.
+// stage entries, so a filter never removes a row, only its counts. The first column is the
+// order number (real NN or the kit's forecast, see stageNumber); the rows are sorted by it
+// (orderStages) and planned stages sit among the opened ones; `forecast` is plan.forecast.
 export function Stages({
   all,
   entries,
@@ -44,7 +45,7 @@ export function Stages({
   forecast: Record<string, string> | undefined;
   patch: (p: Partial<Route>) => void;
 }) {
-  const [dir, setDir] = useState<1 | -1>(-1); // highest number first by default
+  const [dir, setDir] = useState<1 | -1>(1); // lowest number first by default
   const stages = orderStages(
     all.filter((e) => e.type === "stage"),
     forecast,
@@ -54,7 +55,7 @@ export function Stages({
   // status means "no status filter" here, but on the List it would mean the
   // open + running default, so pin it to "all"
   const go = (stage: string): void => patch({ tab: "list", stage: [stage], status: status ?? [] });
-  const noStage = entries.filter((e) => e.stage === ""); // stage entries too: the List shows them
+  const noStage = backlog(entries);
   return (
     <Table className="text-xs">
       <TableHeader>
@@ -64,8 +65,9 @@ export function Stages({
             title="click to reverse the order"
             onClick={() => setDir(dir === 1 ? -1 : 1)}
           >
-            id{dir === 1 ? " \u25B2" : " \u25BC"}
+            no.{dir === 1 ? " \u25B2" : " \u25BC"}
           </TableHead>
+          <TableHead>id</TableHead>
           <TableHead>title</TableHead>
           <TableHead>status</TableHead>
           <TableHead>entries</TableHead>
@@ -74,15 +76,11 @@ export function Stages({
       <TableBody>
         {stages.map((st) => (
           <TableRow key={st.id} className="cursor-pointer" onClick={() => go(st.id)}>
+            <TableCell className="font-mono">{stageNumber(st, forecast)}</TableCell>
             <TableCell onClick={(ev) => ev.stopPropagation()}>
               <IdLink id={st.id} ledgerIds={ledgerIds} />
             </TableCell>
-            <TableCell>
-              {st.status === "planned" && stageNumber(st, forecast) && (
-                <span className="font-mono">{stageNumber(st, forecast)} </span>
-              )}
-              {st.title}
-            </TableCell>
+            <TableCell>{st.title}</TableCell>
             <TableCell>
               <StatusBadge status={st.status} />
             </TableCell>
@@ -92,6 +90,7 @@ export function Stages({
           </TableRow>
         ))}
         <TableRow className="cursor-pointer" onClick={() => go(NONE)}>
+          <TableCell />
           <TableCell />
           <TableCell className="text-muted-foreground">unstaged / backlog</TableCell>
           <TableCell />

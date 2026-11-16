@@ -4,6 +4,7 @@ import {
   NONE,
   age,
   backlinks,
+  backlog,
   BOARD_COLS,
   boardCol,
   byId,
@@ -482,13 +483,20 @@ test("status staged: own status, filter entry and board column between running a
   expect(boardCol(mk("DF-1", "deferred", "staged"))).toBe("staged");
   expect(BOARD_COLS.indexOf("staged")).toBeGreaterThan(BOARD_COLS.indexOf("running"));
   expect(BOARD_COLS.indexOf("staged")).toBeLessThan(BOARD_COLS.indexOf("done"));
-  // not open: the default open+running filter leaves it out, status=staged shows it
+  // the default list filter is open + running + staged (the kit's open list), after the open ones
   const db = mk("DB-1", "debt", "staged");
   const LS: Ledger = { ...L, entries: [...L.entries, db] };
-  expect(ids(visible(LS, route("#/list")))).toEqual(["T-1", "T-2", "S-1"]);
+  expect(ids(visible(LS, route("#/list")))).toEqual(["T-1", "T-2", "S-1", "DB-1"]);
   expect(ids(visible(LS, route("#/list?status=staged")))).toEqual(["DB-1"]);
   expect(ids(visible(LS, route("#/list?status=all")))).toContain("DB-1");
   expect(sortDefault([db, t2], LS.types).map((e) => e.id)).toEqual(["T-2", "DB-1"]); // after open
+});
+
+test("backlog: entries without a stage, stage entries are never backlog (T-60)", () => {
+  const st: Entry = { ...s1, id: "S-2", status: "planned" };
+  const un: Entry = { ...t2, id: "T-7", stage: "" };
+  expect(ids(backlog([t1, t2, d1, s1, st, un]))).toEqual(["T-1", "D-1", "T-7"]);
+  expect(backlog([s1, st])).toEqual([]);
 });
 
 test("status planned: own status, never open (T-45)", () => {
