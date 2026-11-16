@@ -112,6 +112,17 @@ export default function App() {
             >
               id
             </InputGroupButton>
+            {route.idOnly && (
+              <InputGroupButton
+                aria-label="exact match only: whole ids"
+                aria-pressed={route.exact}
+                title="exact match only: whole ids, not prefixes"
+                className={route.exact ? "bg-primary text-primary-foreground hover:bg-primary/90" : "text-muted-foreground"}
+                onClick={() => patch({ exact: !route.exact })}
+              >
+                exact
+              </InputGroupButton>
+            )}
           </InputGroupAddon>
         </InputGroup>
         {(route.tab === "list" || route.tab === "board") && (
@@ -140,7 +151,7 @@ export default function App() {
           {theme === "dark" ? <SunIcon /> : <MoonIcon />}
         </Button>
       </header>
-      {ledger && <Palette entries={ledger.entries} idOnly={route.idOnly} onOpen={open} />}
+      {ledger && <Palette entries={ledger.entries} idOnly={route.idOnly} exact={route.exact} onOpen={open} />}
       {error && (
         <div role="alert" className="bg-destructive/10 px-3 py-2 text-destructive">
           {error}

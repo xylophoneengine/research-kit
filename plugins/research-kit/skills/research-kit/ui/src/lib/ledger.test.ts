@@ -401,6 +401,24 @@ test("id-only search: a prefix of an id lists every id that starts with it (T-34
   expect(es.filter((e) => matches(e, "db-3", false)).map((e) => e.id)).toEqual(["DB-3", "DB-30", "DB-31"]); // text mode unchanged
 });
 
+test("id-only search with exact on: the whole id or label, as before the prefix change (T-34)", () => {
+  const t12: Entry = { ...base, id: "T-12", type: "task", title: "twelve", status: "open",
+    owner: "x", stage: "", extra: { legacy_id: "03b/W1" } };
+  const L12: Ledger = { ...L, entries: [t1, t12, d1] };
+  const r = (q: string): string[] =>
+    ids(visible(L12, { ...route("#/board"), q, idOnly: true, exact: true }));
+  expect(r("T-1")).toEqual(["T-1"]);                      // not T-12
+  expect(r("t-12, D-1 03B/W1")).toEqual(["T-12", "D-1"]);
+  expect(r("D-07")).toEqual(["D-1"]);                     // legacy_id of d1
+  expect(r("03b")).toEqual([]);
+  expect(matches(t12, "T-1", true, false)).toBe(true);    // exact off: prefix
+  expect(matches(t12, "tw", false, true)).toBe(true);     // not in id mode: exact is ignored
+  expect(parseRoute("#/list?idonly=1").exact).toBe(false);
+  expect(parseRoute("#/list?q=T-1&idonly=1&exact=1")).toMatchObject({ idOnly: true, exact: true });
+  expect(formatRoute(parseRoute("#/list?q=T-1&idonly=1&exact=1"))).toBe("#/list?q=T-1&idonly=1&exact=1");
+  expect(formatRoute(parseRoute("#/list?q=T-1&idonly=1"))).toBe("#/list?q=T-1&idonly=1");
+});
+
 test("status planned: own status, never open (T-45)", () => {
   const p: Entry = { ...s1, id: "P-1", status: "planned", extra: { queue: "3/2", follows: "S-1" } };
   const LP: Ledger = { ...L, entries: [...L.entries, p] };

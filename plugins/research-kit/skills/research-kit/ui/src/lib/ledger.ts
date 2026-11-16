@@ -16,7 +16,7 @@ export type Ledger = {
 export type Tab = "list" | "board" | "stages" | "timeline";
 export type Route = {
   tab: Tab; status: string[] | null; type: string[];
-  stage: string[]; owner: string[]; q: string; idOnly: boolean;
+  stage: string[]; owner: string[]; q: string; idOnly: boolean; exact: boolean;
   sort: SortKey; desc: boolean; e: string | null;
 };
 // the table's columns (same names), then the two timestamps that have no column
@@ -100,6 +100,7 @@ export function parseRoute(hash: string): Route {
     owner: multi("owner"),
     q: dec(raw("q") ?? ""),
     idOnly: raw("idonly") === "1",
+    exact: raw("exact") === "1",
     sort: SORT_KEYS.find((k) => k === raw("sort")) ?? "default",
     desc: raw("dir") === "desc",
     e: eq ? dec(eq) : ID_ONLY.test(path) ? path : null,
@@ -115,6 +116,7 @@ export function formatRoute(r: Route): string {
   if (r.owner.length) p.push(`owner=${enc(r.owner)}`);
   if (r.q) p.push(`q=${encodeURIComponent(r.q)}`);
   if (r.idOnly) p.push("idonly=1");
+  if (r.exact) p.push("exact=1");
   if (r.sort !== "default") p.push(`sort=${r.sort}`);
   if (r.desc) p.push("dir=desc");
   if (r.e) p.push(`e=${encodeURIComponent(r.e)}`);
@@ -143,14 +145,15 @@ export function backlinks(l: Ledger): Map<string, string[]> {
 }
 
 // idOnly: the query is a list of ids / labels (split on spaces and commas);
-// an entry matches when its id starts with one of them or its label equals one exactly
-export function matches(e: Entry, q: string, idOnly = false): boolean {
+// an entry matches when its id starts with one of them (equals one, with `exact`)
+// or its label equals one exactly
+export function matches(e: Entry, q: string, idOnly = false, exact = false): boolean {
   const n = q.trim().toLowerCase();
   if (!n) return true;
   if (idOnly) {
     const terms = n.split(/[\s,]+/).filter(Boolean);
     const id = e.id.toLowerCase();
-    return terms.some((t) => id.startsWith(t)) || terms.includes(labelOf(e).toLowerCase());
+    return terms.some((t) => (exact ? id === t : id.startsWith(t))) || terms.includes(labelOf(e).toLowerCase());
   }
   const hay = [e.id, e.title, e.note, e.extra.legacy_id, e.extra.source];
   return hay.some((h) => typeof h === "string" && h.toLowerCase().includes(n));
@@ -170,7 +173,7 @@ export function visible(l: Ledger, r: Route): Entry[] {
       (r.type.length === 0 || r.type.includes(e.type)) &&
       pick(r.stage, e.stage) &&
       pick(r.owner, e.owner) &&
-      matches(e, q, r.idOnly),
+      matches(e, q, r.idOnly, r.exact),
   );
   // the sort (header click and menu alike) applies on the list and board tabs; the others keep the default order
   const s = r.tab === "list" || r.tab === "board" ? sortBy(sortDefault(out, l.types), r.sort, r.desc) : sortDefault(out, l.types);
