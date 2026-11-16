@@ -17,6 +17,7 @@ import fcntl
 import functools
 import itertools
 import json
+import math
 import os
 import re
 import shutil
@@ -26,6 +27,7 @@ import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date, datetime
+from fractions import Fraction
 from pathlib import Path
 
 LEDGER_REL: str = "pm/ledger.jsonl"
@@ -696,17 +698,70 @@ def _stage_dir(e: Entry) -> str:
     return f"pm/stages/{e.title}/"
 
 
+def _queue(state: dict[str, Entry]) -> list[Entry]:
+    """The plan queue: the planned stages by their `queue` value (a Fraction as
+    a string), then by id. A shelved stage's stale value is not looked at."""
+    return sorted(
+        (x for x in state.values() if x.type == "stage" and x.status == "planned"),
+        key=lambda x: (Fraction(str(x.extra.get("queue", "0"))), _num(x.id)),
+    )
+
+
 def _queue_end(state: dict[str, Entry]) -> str:
     """The queue value of a newly planned stage: after the last planned one."""
-    last: float = max(
-        (
-            float(str(x.extra["queue"]))
-            for x in state.values()
-            if x.type == "stage" and x.status == "planned" and "queue" in x.extra
-        ),
-        default=0.0,
-    )
-    return str(int(last) + 1)
+    q: list[Entry] = _queue(state)
+    if not q:
+        return "1"
+    return str(math.floor(Fraction(str(q[-1].extra.get("queue", "0")))) + 1)
+
+
+def _queue_slot(
+    state: dict[str, Entry], before: str | None, after: str | None
+) -> str:
+    """The queue value for a place: midway between planned stage `before` and its
+    predecessor (its value - 1 when it is first), or between `after` and its
+    successor (its value + 1 when it is last); the end when neither is given.
+    The caller leaves the moved stage out of `state`."""
+    ref: str | None = before if before is not None else after
+    if ref is None:
+        return _queue_end(state)
+    flag: str = "--before" if before is not None else "--after"
+    tid: str = resolve(state, ref, stage=True)
+    if state[tid].status != "planned":
+        raise LedgerError(
+            f"{flag} {ref}: {tid} is {state[tid].status}; the target must be a "
+            "planned stage"
+        )
+    q: list[Entry] = _queue(state)
+    vals: list[Fraction] = [Fraction(str(x.extra.get("queue", "0"))) for x in q]
+    i: int = [x.id for x in q].index(tid)
+    if before is not None:
+        return str((vals[i - 1] + vals[i]) / 2 if i else vals[i] - 1)
+    return str((vals[i] + vals[i + 1]) / 2 if i + 1 < len(vals) else vals[i] + 1)
+
+
+def _forecast(state: dict[str, Entry]) -> dict[str, str]:
+    """`~NN` of each planned stage in queue order, as stage-open would give it
+    now: the next free NN after `_max_nn` per plain stage; a follow-up (field
+    `follows`, a stage with an NN) takes the next free letter of that NN and no
+    place in the count. Shelved stages have none. Nothing is stored."""
+    used: set[str] = set()
+    out: dict[str, str] = {}
+    for e in _queue(state):
+        t: Entry | None = state.get(str(e.extra.get("follows", "")))
+        codes: Iterator[str] = (
+            f"{n:02d}" for n in itertools.count(_max_nn(state) + 1)
+        )
+        if t is not None and STAGE_RE.match(t.title):
+            nn: str = t.title.split("-", 1)[0].rstrip(string.ascii_lowercase)
+            codes = iter([nn + c for c in string.ascii_lowercase[1:]])
+        code: str | None = next(
+            (c for c in codes if c not in used and not _matches(state, c)), None
+        )
+        if code is not None:  # none: the letters b to z are all taken
+            used.add(code)
+            out[e.id] = f"~{code}"
+    return out
 
 
 def _open_title(state: dict[str, Entry], topic: str, follows: str | None) -> str:
@@ -720,6 +775,11 @@ def _open_title(state: dict[str, Entry], topic: str, follows: str | None) -> str
             raise LedgerError(
                 f"--follows {follows}: {st.id} ({st.title}) is planned and has no NN "
                 "yet; follow an opened stage"
+            )
+        if st.status not in ("open", "done"):
+            raise LedgerError(
+                f"--follows {follows}: {st.id} ({st.title}) is {st.status}; follow an "
+                "open or done stage"
             )
         if not STAGE_RE.match(st.title):
             raise LedgerError(
@@ -1010,12 +1070,15 @@ def _add_step(
         )
     if typ == "task" and not a.imported and not a.note.strip():
         raise LedgerError(TASK_NOTE)
-    if (a.open and (typ != "stage" or a.imported)) or (
-        a.follows is not None and not a.open
-    ):
+    if (a.open or a.follows is not None) and not new_stage:
         raise LedgerError(
             "--open and --follows: only on a new stage, add stage <kind>-<topic> "
-            "--open [--follows S-m]"
+            "[--open] [--follows S-m]"
+        )
+    if (a.before is not None or a.after is not None) and (not new_stage or a.open):
+        raise LedgerError(
+            "--before/--after: only when a stage is planned (add stage "
+            "<kind>-<topic>, without --open)"
         )
     if a.open and not PLAN_RE.match(title):
         raise LedgerError(
@@ -1072,7 +1135,10 @@ def _add_step(
         if label is not None:
             f["legacy_id"] = label
         if status == "planned":
-            f["queue"] = _queue_end(state)
+            f["queue"] = _queue_slot(state, a.before, a.after)
+            if a.follows is not None:  # stage-open falls back to it
+                _open_title(state, name, a.follows)  # the target must have an NN
+                f["follows"] = resolve(state, a.follows, stage=True)
         if a.imported:
             f["imported"] = True
             f["source"] = a.source
@@ -1200,7 +1266,8 @@ def _import_row(obj: object, who: str) -> argparse.Namespace:
     fields: dict[str, object] = {
         "who": who, "imported": True, "owner": None, "stage": None, "note": "",
         "link": [], "ref": [], "status": None, "legacy_id": None, "label": None,
-        "date": None, "key": None, "open": False, "follows": None,
+        "date": None, "key": None, "open": False, "follows": None, "before": None,
+        "after": None,
     }
     return argparse.Namespace(**{**fields, **row})
 
@@ -1452,6 +1519,55 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
     return 0
 
 
+def _stage_status(
+    state: dict[str, Entry], e: Entry, status: str
+) -> dict[str, object]:
+    """The fields of `set S-n --status`: planned -> shelved, shelved -> planned
+    (at the queue end, the old reason cleared), planned or shelved -> dropped (no
+    open entry left in the stage). Anything else is refused with the command that
+    does it; the caller adds the note as `reason`."""
+    if e.type != "stage":
+        raise LedgerError(
+            f"--status {status}: set gives a status to a stage only; for {e.id} "
+            "use close, drop, shelve or reopen"
+        )
+    if status == "open":
+        raise LedgerError(f"--status open: only stage-open opens: rk stage-open {e.id}")
+    if status == "done":
+        raise LedgerError(
+            f"--status done: a stage closes with its sign-off: use stage-close {e.id}"
+        )
+    if (e.status, status) not in (
+        ("planned", "shelved"), ("shelved", "planned"),
+        ("planned", "dropped"), ("shelved", "dropped"),
+    ):
+        raise LedgerError(
+            f"cannot set {e.id} from {e.status} to {status}: set --status takes "
+            "planned -> shelved, shelved -> planned, planned or shelved -> dropped"
+        )
+    if status == "planned" and _imported(e):  # Q5: a legacy path, no P- folder
+        raise LedgerError(
+            f"{e.id} is imported: it has no P- folder and is not planned again; "
+            "drop it or plan a new stage"
+        )
+    if status == "dropped":
+        busy: list[Entry] = sorted(
+            (x for x in state.values() if x.stage == e.id and _is_open(x)),
+            key=lambda x: x.lines[0],
+        )
+        if busy:
+            raise LedgerError(
+                f"cannot drop {e.id}: open entries are in it: "
+                + ", ".join(f"{x.id} {x.status}" for x in busy)
+                + "; close, drop or re-stage each (set ID --stage S-x) first"
+            )
+    f: dict[str, object] = {"status": status}
+    if status == "planned":
+        f["queue"] = _queue_end(state)
+        f["reason"] = ""
+    return f
+
+
 def _cmd_set(a: argparse.Namespace) -> int:
     repo: Path = _repo(a)
     who: str = _name(a.who, "--who")
@@ -1468,10 +1584,17 @@ def _cmd_set(a: argparse.Namespace) -> int:
         or a.link
         or a.ref
         or a.ref_drop
+        or a.before is not None
+        or a.after is not None
+        or a.status is not None
     ):
         raise LedgerError(
-            "nothing to set (give --title, --owner, --label, --stage, --note, "
-            "--note-replace, --link, --ref or --ref-drop)"
+            "nothing to set (give --title, --owner, --label, --stage, --status, "
+            "--note, --note-replace, --link, --ref, --ref-drop, --before or --after)"
+        )
+    if a.status in ("shelved", "dropped") and a.note is None:  # Q4
+        raise LedgerError(
+            f"--status {a.status} needs --note: why (it is stored as the reason)"
         )
     a.ref = _check_refs(repo, a.ref)
     a.ref_drop = _rel_refs(repo, a.ref_drop, "--ref-drop", strict=False)
@@ -1487,6 +1610,18 @@ def _cmd_set(a: argparse.Namespace) -> int:
         e: Entry = _entry(state, a.id)
         ids.append(e.id)
         f: dict[str, object] = {}
+        if a.status is not None:
+            f.update(_stage_status(state, e, a.status))
+            if a.note is not None:
+                f["reason"] = a.note  # why it has this status now
+        if a.before is not None or a.after is not None:
+            if e.type != "stage" or e.status != "planned":
+                what: str = e.status if e.type == "stage" else f"a {e.type}"
+                raise LedgerError(
+                    f"{e.id} is {what}: --before/--after move a planned stage"
+                )
+            others: dict[str, Entry] = {k: v for k, v in state.items() if k != e.id}
+            f["queue"] = _queue_slot(others, a.before, a.after)
         if title is not None:
             if e.type == "stage" and not _imported(e):
                 raise LedgerError(
@@ -1640,7 +1775,12 @@ def _cmd_stage_open(a: argparse.Namespace) -> int:
         st: Entry = state[sid]
         if st.status != "planned":
             raise LedgerError(f"{sid} is {st.status}: only a planned stage opens")
-        title: str = _title(_open_title(state, st.title, a.follows))
+        kept: object = st.extra.get("follows")  # given at plan time
+        follows: str | None = (
+            a.follows if a.follows is not None
+            else kept if isinstance(kept, str) else None
+        )
+        title: str = _title(_open_title(state, st.title, follows))
         _check_names(state, "stage", title, a)
         _check_one_per_kind(state, title, f"stage-open {sid}")
         old: str = _stage_dir(st)
@@ -2769,6 +2909,9 @@ def _parser() -> argparse.ArgumentParser:
     pa.add_argument("--date", default=None)
     pa.add_argument("--open", action="store_true")
     pa.add_argument("--follows", default=None)
+    place = pa.add_mutually_exclusive_group()
+    place.add_argument("--before", default=None, metavar="S")
+    place.add_argument("--after", default=None, metavar="S")
     ps: argparse.ArgumentParser = sub.add_parser("start", parents=[common])
     ps.add_argument("id")
     ps.add_argument("--owner", default=None)
@@ -2789,6 +2932,7 @@ def _parser() -> argparse.ArgumentParser:
     pt.add_argument("--owner", default=None)
     pt.add_argument("--label", default=None, help="unique; e.g. 03b/W4")
     pt.add_argument("--stage", default=None)
+    pt.add_argument("--status", choices=STATUSES, default=None)
     notes = pt.add_mutually_exclusive_group()
     notes.add_argument("--note", default=None, help="added as a new line of the note")
     notes.add_argument(
@@ -2800,6 +2944,9 @@ def _parser() -> argparse.ArgumentParser:
         "--ref-drop", action="append", default=[], metavar="PATH",
         help="removes this ref (exactly as shown by show); the history keeps it",
     )
+    moveto = pt.add_mutually_exclusive_group()
+    moveto.add_argument("--before", default=None, metavar="S")
+    moveto.add_argument("--after", default=None, metavar="S")
     pu: argparse.ArgumentParser = sub.add_parser("supersede", parents=[common])
     pu.add_argument("id")
     pu.add_argument("title")

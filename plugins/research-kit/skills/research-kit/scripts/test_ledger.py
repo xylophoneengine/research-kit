@@ -2390,7 +2390,7 @@ def test_add_stage_open_refuses_nn_title() -> None:  # W1 T1, Q1
             ("stage", "03-paper-x", "--open"),
             ("stage", "paper", "--open"),
             ("task", "x", "--note", "n", "--open"),
-            ("stage", "paper-x", "--follows", "S-1"),  # --follows needs --open
+            ("task", "x", "--note", "n", "--follows", "S-1"),  # a stage only
         ):
             code, out = lrun(repo, "add", *argv)
             assert code == 1 and out.startswith("error: "), (argv, out)
@@ -2907,6 +2907,387 @@ def test_signoff_while_planned_accepted_at_close() -> None:
         assert lrun(repo, "reopen", "S-1", "--note", "closed too early")[0] == 0
         code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
         assert code == 1 and "D-1 was logged before S-1 was reopened" in out, out
+
+
+def plan_stages(repo: Path, *titles: str) -> None:
+    """Plan each `<kind>-<topic>` (T3 form); each add must succeed."""
+    for t in titles:
+        code, out = lrun(repo, "add", "stage", t)
+        assert code == 0, (t, out)
+
+
+def queue_ids(repo: Path) -> list[str]:
+    return [e.id for e in L._queue(L.load(repo))]
+
+
+def queue_values(repo: Path) -> dict[str, str]:
+    return {e.id: e.extra["queue"] for e in L._queue(L.load(repo))}
+
+
+def forecast_of(repo: Path) -> dict[str, str]:
+    return L._forecast(L.load(repo))
+
+
+def lrun_exit(repo: Path, *argv: str) -> int:
+    """Exit code of an argv that argparse or the handler may refuse: the
+    SystemExit code of an argparse error (stderr swallowed), else the return."""
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            code, _ = lrun(repo, *argv)
+    except SystemExit as e:
+        return e.code if isinstance(e.code, int) else 1
+    return code
+
+
+def refused(repo: Path, *argv: str) -> str:
+    """argv must be refused by the handler (code 1) and write nothing."""
+    before: bytes = (repo / L.LEDGER_REL).read_bytes()
+    code, out = lrun(repo, *argv)
+    assert code == 1 and out.startswith("error: "), (argv, code, out)
+    assert (repo / L.LEDGER_REL).read_bytes() == before, argv
+    return out
+
+
+def plan_row(eid: str, title: str, queue: str, status: str = "planned") -> str:
+    """A hand-written stage add line carrying a queue value (no CLI needed)."""
+    f: dict[str, object] = {
+        "type": "stage", "title": title, "status": status, "owner": "lead",
+        "stage": "", "note": "", "links": [], "refs": [], "queue": queue,
+    }
+    return json.dumps(L.make_event("lead", "add", eid, f)) + "\n"
+
+
+# T6 / D-27, plan 3.1; red: --before/--after, `queue`, ._queue, ._queue_slot missing
+def test_queue_append_and_moves() -> None:
+    target: str = "; the target must be a planned stage\n"
+    mover: str = ": --before/--after move a planned stage\n"
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        plan_stages(repo, "paper-a", "paper-b", "paper-c")  # S-1 S-2 S-3
+        st: dict[str, Any] = L.load(repo)
+        assert [st[s].extra["queue"] for s in ("S-1", "S-2", "S-3")] == [
+            "1", "2", "3",
+        ]
+        assert L._queue_slot(st, "S-2", None) == "3/2"  # midpoint of 1 and 2
+        assert L._queue_slot(st, None, "S-1") == "3/2"
+        assert L._queue_slot(st, None, "S-2") == "5/2"
+        assert L._queue_slot(st, None, None) == "4"  # no place given: the end
+        # insert: one add event carries the value, nobody else is touched
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "add", "stage", "paper-d", "--before", "S-2")
+        assert code == 0 and out.startswith("logged S-4: paper-d (planned)\n"), out
+        assert len(jl(repo)) == n + 1
+        ev: dict[str, Any] = jl(repo)[-1]
+        assert ev["ev"] == "add" and ev["id"] == "S-4", ev
+        assert ev["f"]["status"] == "planned" and ev["f"]["queue"] == "3/2", ev
+        assert queue_ids(repo) == ["S-1", "S-4", "S-2", "S-3"]
+        code, out = lrun(repo, "add", "stage", "paper-e", "--before", "S-2")
+        assert code == 0, out  # S-2's neighbour is now S-4 (3/2): 2 and 3/2
+        assert queue_values(repo)["S-5"] == "7/4"
+        assert queue_ids(repo) == ["S-1", "S-4", "S-5", "S-2", "S-3"]
+        # move: ONE set event holding only `queue`; no other value changes
+        before: dict[str, str] = queue_values(repo)
+        n = len(jl(repo))
+        code, out = lrun(repo, "set", "S-3", "--after", "S-1")
+        assert code == 0 and out == "updated S-3: queue\n", out
+        assert len(jl(repo)) == n + 1
+        ev = jl(repo)[-1]
+        assert ev["ev"] == "set" and ev["id"] == "S-3", ev
+        assert ev["f"] == {"queue": "5/4"}, ev  # midpoint of 1 and 3/2
+        after: dict[str, str] = queue_values(repo)
+        assert {k: v for k, v in after.items() if k != "S-3"} == {
+            k: v for k, v in before.items() if k != "S-3"
+        }, (before, after)
+        assert queue_ids(repo) == ["S-1", "S-3", "S-4", "S-5", "S-2"]
+        # to the end, to the front: X+1 after the last, X-1 before the first
+        assert lrun(repo, "set", "S-1", "--after", "S-2")[0] == 0
+        assert queue_values(repo)["S-1"] == "3"  # 2 + 1 (S-1 itself left out)
+        assert queue_ids(repo) == ["S-3", "S-4", "S-5", "S-2", "S-1"]
+        assert lrun(repo, "add", "stage", "paper-f", "--before", "S-3")[0] == 0
+        assert lrun(repo, "add", "stage", "paper-g", "--after", "S-1")[0] == 0
+        assert queue_values(repo)["S-6"] == "1/4"  # 5/4 - 1
+        assert queue_values(repo)["S-7"] == "4"  # 3 + 1
+        assert queue_ids(repo) == [
+            "S-6", "S-3", "S-4", "S-5", "S-2", "S-1", "S-7",
+        ]
+        vals: dict[str, str] = queue_values(repo)
+        assert len(set(vals.values())) == len(vals), vals  # all distinct
+        # refusals: target or mover not planned; each writes nothing
+        assert lrun(repo, "add", "stage", "software-o", "--open")[0] == 0  # S-8
+        assert lrun(repo, "add", "task", "t", "--note", "n")[0] == 0  # T-1
+        lrun(repo, "add", "stage", "05-paper-old", "--imported", "--source",
+             "A:1", "--status", "shelved")  # S-9
+        out = refused(repo, "add", "stage", "paper-x", "--before", "S-8")
+        assert out == f"error: --before S-8: S-8 is open{target}", out
+        out = refused(repo, "add", "stage", "paper-x", "--after", "S-9")
+        assert out == f"error: --after S-9: S-9 is shelved{target}", out
+        out = refused(repo, "add", "stage", "paper-x", "--before", "S-99")
+        assert out == "error: no stage 'S-99'\n", out
+        out = refused(repo, "add", "stage", "paper-x", "--before", "T-1")
+        assert out == "error: T-1 is a task, not a stage\n", out
+        out = refused(repo, "set", "S-2", "--before", "S-8")
+        assert out == f"error: --before S-8: S-8 is open{target}", out
+        out = refused(repo, "set", "S-8", "--before", "S-2")  # mover open
+        assert out == f"error: S-8 is open{mover}", out
+        out = refused(repo, "set", "S-9", "--after", "S-2")  # mover shelved
+        assert out == f"error: S-9 is shelved{mover}", out
+        out = refused(repo, "set", "T-1", "--before", "S-2")  # mover a task
+        assert out == f"error: T-1 is a task{mover}", out
+        # --before/--after with --open: refused, no line, no folder
+        stages: dict[str, bytes | None] = snapshot(repo / "pm" / "stages")
+        n = len(jl(repo))
+        for flag in ("--before", "--after"):
+            code, out = lrun(repo, "add", "stage", "paper-x", "--open", flag, "S-2")
+            assert code == 1 and out == (
+                "error: --before/--after: only when a stage is planned (add stage "
+                "<kind>-<topic>, without --open)\n"
+            ), (flag, out)
+        assert len(jl(repo)) == n and snapshot(repo / "pm" / "stages") == stages
+        # --before with --after: mutually exclusive (argparse), add and set
+        assert lrun_exit(
+            repo, "add", "stage", "paper-x", "--before", "S-2", "--after", "S-3"
+        ) == 2
+        assert lrun_exit(repo, "set", "S-2", "--before", "S-3", "--after", "S-4") == 2
+        assert len(jl(repo)) == n
+    # numeric order, not string order: "10" sorts before "9" as text
+    with tempfile.TemporaryDirectory() as d:
+        repo = new_repo(Path(d))
+        plan_stages(repo, *[f"paper-t{i:02d}" for i in range(1, 11)])
+        assert L.load(repo)["S-10"].extra["queue"] == "10"
+        assert queue_ids(repo) == [f"S-{i}" for i in range(1, 11)]
+    # _queue: planned only, by Fraction(queue) then id; a shelved stage keeps a
+    # stale value that is ignored
+    with tempfile.TemporaryDirectory() as d:
+        repo = new_repo(Path(d))
+        (repo / L.LEDGER_REL).write_text(
+            plan_row("S-1", "paper-a", "1")
+            + plan_row("S-2", "paper-b", "1")
+            + plan_row("S-3", "paper-c", "1/2")
+            + plan_row("S-4", "paper-d", "1/4", "shelved")
+        )
+        assert queue_ids(repo) == ["S-3", "S-1", "S-2"]
+
+
+# T6 / D-26, D-31, spec Numbering; red: ._forecast missing
+def test_forecast_shift_and_fix() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "paper-x", "--open")[0] == 0  # 01
+        plan_stages(repo, "software-a", "thesis-b", "experiment-c")  # S-2 S-3 S-4
+        assert forecast_of(repo) == {"S-2": "~02", "S-3": "~03", "S-4": "~04"}
+        # a stage is inserted and opened: the forecasts shift, nothing is written
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "add", "stage", "experiment-i", "--open")  # S-5
+        assert code == 0, out
+        new: list[dict[str, Any]] = jl(repo)[n:]
+        assert [(x["ev"], x["id"]) for x in new] == [("add", "S-5")], new
+        assert L.load(repo)["S-5"].title == "02-experiment-i"
+        assert forecast_of(repo) == {"S-2": "~03", "S-3": "~04", "S-4": "~05"}
+        # its own open fixes the NN; the others keep theirs
+        code, out = lrun(repo, "stage-open", "S-2")
+        assert code == 0, out
+        assert L.load(repo)["S-2"].title == "03-software-a"
+        assert forecast_of(repo) == {"S-3": "~04", "S-4": "~05"}
+        # imported NN titles count (Q2), shelved or not; same base as stage-open
+        lrun(repo, "add", "stage", "07-paper-old", "--imported", "--source",
+             "A:1", "--status", "shelved")  # S-6
+        assert forecast_of(repo) == {"S-3": "~08", "S-4": "~09"}
+        assert lrun(repo, "stage-open", "S-3")[0] == 0
+        assert L.load(repo)["S-3"].title == "08-thesis-b"  # = its forecast
+        # two digits pad, three do not
+        lrun(repo, "add", "stage", "98-paper-huge", "--imported", "--source",
+             "A:2", "--status", "shelved")  # S-7
+        plan_stages(repo, "paper-d")  # S-8
+        assert forecast_of(repo) == {"S-4": "~99", "S-8": "~100"}
+
+
+# T6 / D-31, plan 3.2; red: `--follows` on a planned add unknown (SystemExit 2)
+def test_forecast_follows() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "paper-x", "--open")[0] == 0  # 01, S-1
+        for title in ("software-y", "thesis-w"):  # S-2 S-3: follow-ups of S-1
+            code, out = lrun(repo, "add", "stage", title, "--follows", "S-1")
+            assert code == 0, out
+        plan_stages(repo, "software-z")  # S-4, a plain planned stage
+        st: dict[str, Any] = L.load(repo)
+        assert st["S-2"].status == "planned" and st["S-2"].extra["follows"] == "S-1"
+        assert st["S-3"].extra["follows"] == "S-1"
+        assert "follows" not in st["S-4"].extra
+        # a follow-up takes no place: S-4 is still the first plain planned stage
+        assert forecast_of(repo) == {"S-2": "~01b", "S-3": "~01c", "S-4": "~02"}
+        plan_stages(repo, "paper-q")  # S-5
+        assert forecast_of(repo)["S-5"] == "~03"
+        # S-3 opens as 01b (follows kept from plan time): S-2 moves to the next
+        # free letter, the plain stages keep their numbers
+        code, out = lrun(repo, "stage-open", "S-3")
+        assert code == 0, out
+        assert L.load(repo)["S-3"].title == "01b-thesis-w"
+        assert forecast_of(repo) == {"S-2": "~01c", "S-4": "~02", "S-5": "~03"}
+        # the target must be open or done
+        n: int = len(jl(repo))
+        out = refused(repo, "add", "stage", "paper-r", "--follows", "S-4")  # planned
+        assert out == (
+            "error: --follows S-4: S-4 (software-z) is planned and has no NN yet; "
+            "follow an opened stage\n"
+        ), out
+        lrun(repo, "add", "stage", "05-paper-old", "--imported", "--source",
+             "A:1", "--status", "shelved")  # S-6
+        out = refused(repo, "add", "stage", "paper-r", "--follows", "S-6")  # shelved
+        assert out == (
+            "error: --follows S-6: S-6 (05-paper-old) is shelved; follow an open "
+            "or done stage\n"
+        ), out
+        assert lrun(repo, "add", "task", "t", "--note", "n")[0] == 0  # T-1
+        out = refused(repo, "add", "stage", "paper-r", "--follows", "T-1")
+        assert out == "error: T-1 is a task, not a stage\n", out
+        out = refused(repo, "add", "stage", "paper-r", "--follows", "S-99")
+        assert out == "error: no stage 'S-99'\n", out
+        assert len(jl(repo)) == n + 2  # only the import row and T-1
+    with tempfile.TemporaryDirectory() as d:  # a done target is fine
+        repo = new_repo(Path(d))
+        lrun(repo, "add", "stage", "paper-x", "--open")  # S-1
+        lrun(repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1")
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 0 and out.startswith("closed S-1"), out
+        code, out = lrun(repo, "add", "stage", "software-y", "--follows", "S-1")
+        assert code == 0, out
+        assert L.load(repo)["S-2"].extra["follows"] == "S-1"
+        assert forecast_of(repo) == {"S-2": "~01b"}
+
+
+# T7 / D-28, D-34, lead Q4 Q5; red: `set --status` unknown (SystemExit 2)
+def test_set_status_stage_transitions() -> None:
+    table: str = (
+        ": set --status takes planned -> shelved, shelved -> planned, planned "
+        "or shelved -> dropped\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        plan_stages(repo, "paper-a", "paper-b", "paper-c")  # S-1 S-2 S-3
+        assert lrun(repo, "add", "stage", "software-o", "--open")[0] == 0  # S-4
+        assert lrun(repo, "add", "task", "t", "--note", "n")[0] == 0  # T-1, in S-4
+        lrun(repo, "add", "stage", "05-paper-old", "--imported", "--source",
+             "A:1", "--status", "shelved")  # S-5
+        # planned -> shelved: the note is required and stored as `reason`
+        out: str = refused(repo, "set", "S-1", "--status", "shelved")
+        assert out == (
+            "error: --status shelved needs --note: why (it is stored as the "
+            "reason)\n"
+        ), out
+        why: str = "not now: waiting for data"
+        code, out = lrun(repo, "set", "S-1", "--status", "shelved", "--note", why)
+        assert code == 0 and out == "updated S-1: status, reason, note\n", out
+        st: dict[str, Any] = L.load(repo)
+        assert st["S-1"].status == "shelved" and st["S-1"].extra["reason"] == why
+        ev: dict[str, Any] = jl(repo)[-1]
+        assert ev["ev"] == "set" and ev["id"] == "S-1", ev
+        assert ev["f"]["status"] == "shelved" and ev["f"]["reason"] == why, ev
+        assert queue_ids(repo) == ["S-2", "S-3"]  # a shelved stage is out of it
+        # no forecast for S-1; the base is 5 (the imported 05-paper-old counts)
+        assert forecast_of(repo) == {"S-2": "~06", "S-3": "~07"}
+        assert (repo / "pm/stages/P-1-paper-a").is_dir()  # folder untouched
+        # shelved -> planned: no note, back at the queue end
+        code, out = lrun(repo, "set", "S-1", "--status", "planned")
+        assert code == 0 and out == "updated S-1: status, queue, reason\n", out
+        assert L.load(repo)["S-1"].status == "planned"
+        assert jl(repo)[-1]["f"]["status"] == "planned", jl(repo)[-1]
+        assert jl(repo)[-1]["f"]["queue"] == "4", jl(repo)[-1]  # floor(max) + 1
+        assert L.load(repo)["S-1"].extra["reason"] == ""  # the shelve's is cleared
+        assert queue_ids(repo) == ["S-2", "S-3", "S-1"]
+        assert forecast_of(repo) == {"S-2": "~06", "S-3": "~07", "S-1": "~08"}
+        # the three refusals of the plan (text pinned), the S-n being the real id
+        out = refused(repo, "set", "S-1", "--status", "open", "--note", "x")
+        assert out == "error: --status open: only stage-open opens: rk stage-open S-1\n"
+        for sid in ("S-1", "S-4"):
+            out = refused(repo, "set", sid, "--status", "done", "--note", "x")
+            assert out == (
+                "error: --status done: a stage closes with its sign-off: use "
+                f"stage-close {sid}\n"
+            ), out
+        for status in ("shelved", "planned", "dropped"):
+            out = refused(repo, "set", "T-1", "--status", status, "--note", "x")
+            assert out == (
+                f"error: --status {status}: set gives a status to a stage only; "
+                "for T-1 use close, drop, shelve or reopen\n"
+            ), out
+        # imported shelved -> planned (Q5), and what the table does not list
+        out = refused(repo, "set", "S-5", "--status", "planned")
+        assert out == (
+            "error: S-5 is imported: it has no P- folder and is not planned "
+            "again; drop it or plan a new stage\n"
+        ), out
+        for status in ("shelved", "dropped", "planned"):  # an open stage
+            out = refused(repo, "set", "S-4", "--status", status, "--note", "x")
+            assert out == f"error: cannot set S-4 from open to {status}{table}", out
+        # planned -> dropped: note required, stored as reason, folder stays
+        refused(repo, "set", "S-2", "--status", "dropped")
+        code, out = lrun(repo, "set", "S-2", "--status", "dropped", "--note", "no")
+        assert code == 0, out
+        st = L.load(repo)
+        assert st["S-2"].status == "dropped" and st["S-2"].extra["reason"] == "no"
+        assert queue_ids(repo) == ["S-3", "S-1"]
+        assert forecast_of(repo) == {"S-3": "~06", "S-1": "~07"}
+        assert (repo / "pm/stages/P-2-paper-b").is_dir()
+        # shelved -> dropped: the new reason replaces the old
+        code, out = lrun(repo, "set", "S-3", "--status", "shelved", "--note", "later")
+        assert code == 0, out
+        code, out = lrun(repo, "set", "S-3", "--status", "dropped", "--note", "never")
+        assert code == 0, out
+        assert L.load(repo)["S-3"].extra["reason"] == "never"
+        code, out = lrun(repo, "set", "S-5", "--status", "dropped", "--note", "old")
+        assert code == 0, out  # an imported shelved stage may be dropped
+        assert L.load(repo)["S-5"].status == "dropped"
+        # a dropped stage does not come back
+        for status in ("planned", "shelved"):
+            out = refused(repo, "set", "S-2", "--status", status, "--note", "x")
+            assert out == f"error: cannot set S-2 from dropped to {status}{table}"
+        # `nothing to set` names the new flags
+        out = refused(repo, "set", "S-1")
+        assert out == (
+            "error: nothing to set (give --title, --owner, --label, --stage, "
+            "--status, --note, --note-replace, --link, --ref, --ref-drop, --before "
+            "or --after)\n"
+        ), out
+
+
+# T7 / D-34 (drop refusal lists the open entries); red: `set --status` unknown
+def test_drop_planned_stage_with_open_entries() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "paper-x", "--open")[0] == 0  # S-1
+        assert lrun(repo, "add", "task", "run", "--note", "n")[0] == 0  # T-1, S-1
+        assert lrun(repo, "start", "T-1")[0] == 0
+        plan_stages(repo, "software-p")  # S-2, folder P-2-software-p
+        assert lrun(repo, "add", "debt", "flaky", "--stage", "S-2")[0] == 0  # DB-1
+        assert lrun(repo, "set", "T-1", "--stage", "S-2")[0] == 0  # running in it
+        assert L.load(repo)["T-1"].status == "running"
+        busy: str = (
+            "error: cannot drop S-2: open entries are in it: T-1 running, DB-1 "
+            "open; close, drop or re-stage each (set ID --stage S-x) first\n"
+        )  # in ledger order
+        out: str = refused(
+            repo, "set", "S-2", "--status", "dropped", "--note", "not needed"
+        )
+        assert out == busy, out
+        assert L.load(repo)["S-2"].status == "planned"
+        # shelving is allowed with open entries; the drop is still refused
+        code, out = lrun(repo, "set", "S-2", "--status", "shelved", "--note", "later")
+        assert code == 0, out
+        out = refused(repo, "set", "S-2", "--status", "dropped", "--note", "x")
+        assert out == busy, out
+        # closed or shelved entries do not block
+        assert lrun(repo, "close", "DB-1", "--note", "done")[0] == 0
+        assert lrun(repo, "close", "T-1", "--note", "done")[0] == 0
+        assert lrun(repo, "add", "debt", "later", "--stage", "S-2")[0] == 0  # DB-2
+        assert lrun(repo, "shelve", "DB-2", "--note", "later")[0] == 0
+        folders: dict[str, bytes | None] = snapshot(repo / "pm" / "stages")
+        code, out = lrun(repo, "set", "S-2", "--status", "dropped", "--note", "gone")
+        assert code == 0, out
+        st: dict[str, Any] = L.load(repo)
+        assert st["S-2"].status == "dropped" and st["S-2"].extra["reason"] == "gone"
+        assert snapshot(repo / "pm" / "stages") == folders  # waste step is later
+        assert (repo / "pm/stages/P-2-software-p").is_dir()
 
 
 def test_reopen_stage_without_folder() -> None:  # brief 025 fix 4
