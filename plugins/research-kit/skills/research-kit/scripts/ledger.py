@@ -670,18 +670,28 @@ def _note_plus(old: str, text: str) -> str:
 
 
 def _check_stage_open(
-    state: dict[str, Entry], sid: str, typ: str, status: str, fix: str
+    state: dict[str, Entry],
+    sid: str,
+    typ: str,
+    status: str,
+    fix: str,
+    imported: bool = False,
 ) -> None:
     """Refuse putting an open or running task (or stage) into a stage that is
     done. Only tasks block a stage close; for any other type `stage` means
     "raised in", and an open one may sit in (or be set into) a closed stage. A
     stage entry keeps the old rule: no open stage inside a done one. D-32 (work
     runs only in an open stage): a dropped stage takes no entry, a planned or
-    shelved one no running entry."""
+    shelved one no running entry; both not for `imported` history (as it was)."""
     st: Entry | None = state.get(sid) if sid else None
-    if st is not None and st.status == "dropped":
+    if st is not None and not imported and st.status == "dropped":
         raise LedgerError(f"{sid} is dropped and takes no entry: {fix}")
-    if st is not None and status == "running" and st.status in ("planned", "shelved"):
+    if (
+        st is not None
+        and not imported
+        and status == "running"
+        and st.status in ("planned", "shelved")
+    ):
         way: str = "open the stage: " + (
             f"rk stage-open {sid}" if st.status == "planned"
             else f"rk set {sid} --status planned, then rk stage-open {sid}"
@@ -1208,8 +1218,8 @@ def _add_step(
             if a.stage
             else _default_stage(state, typ, a.imported)
         )
-        _check_stage_open(
-            state, stage, typ, status, "pass --stage with an open stage"
+        _check_stage_open(  # imported history: as it was
+            state, stage, typ, status, "pass --stage with an open stage", a.imported
         )
         if label is not None:
             _check_label(state, label, eid)

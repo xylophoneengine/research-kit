@@ -5239,6 +5239,39 @@ def test_planned_stage_texts() -> None:
         assert (repo / "pm/stages/P-1-paper-x").is_dir()  # the waste step is later
 
 
+# fix r2, crit1 N1: imported history loads as it was (as 0.2.4): the m4 guards
+# (dropped stage takes no entry, no running entry in a planned or shelved stage)
+# do not apply to import rows and --imported adds
+def test_import_keeps_history_past_m4_guards() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        rows: Path = write_rows(root, [
+            {"type": "stage", "title": "03-paper-old", "source": "L:1",
+             "status": "dropped"},
+            {"type": "task", "title": "t", "source": "L:2", "status": "done",
+             "stage": "03"},
+            {"type": "stage", "title": "04-paper-later", "source": "L:3",
+             "status": "shelved"},
+            {"type": "task", "title": "r", "source": "L:4", "status": "running",
+             "stage": "04"},
+        ])
+        code, out = lrun(repo, "import", str(rows))
+        assert code == 0, out
+        st: Any = L.load(repo)
+        assert st["T-1"].stage == "S-1" and st["S-1"].status == "dropped"
+        assert st["T-2"].stage == "S-2" and st["T-2"].status == "running"
+        code, out = lrun(
+            repo, "add", "debt", "old", "--imported", "--source", "L:5",
+            "--stage", "S-1",
+        )  # fmt: skip
+        assert code == 0, out
+        assert L.load(repo)["DB-1"].stage == "S-1"
+        # not imported: the guard holds
+        out = refused(repo, "add", "debt", "new", "--stage", "S-1")
+        assert out.startswith("error: S-1 is dropped and takes no entry"), out
+
+
 def main() -> int:
     tests: list[tuple[str, Callable[[], None]]] = [
         (n, f) for n, f in globals().items() if n.startswith("test_") and callable(f)
