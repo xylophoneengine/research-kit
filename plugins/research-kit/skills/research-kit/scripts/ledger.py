@@ -2655,7 +2655,7 @@ def _cmd_stage_close(a: argparse.Namespace) -> int:
         if busy:
             t: str = busy[0].id
             land: str = (
-                f"land them (rk land --stage {sid}), "
+                "land the staged ones once merged (rk land T-<n>...), "
                 if any(e.status == "staged" for e in busy) else ""
             )
             problems.append(

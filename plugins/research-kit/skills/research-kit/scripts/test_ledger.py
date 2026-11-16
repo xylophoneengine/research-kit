@@ -5403,8 +5403,8 @@ def test_staged_blocks_and_guards() -> None:
         assert lrun(repo, "add", "decision", "sign-off", "--owner", "user")[0] == 0
         code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
         assert code == 1 and (
-            "T-1 staged: land them (rk land --stage S-1), close, drop, shelve, "
-            "re-stage"
+            "T-1 staged: land the staged ones once merged (rk land T-<n>...), "
+            "close, drop, shelve, re-stage"
         ) in out, out
         plan_stages(repo, "software-p")  # S-2
         assert lrun(repo, "add", "debt", "p", "--stage", "S-2")[0] == 0  # DB-2
