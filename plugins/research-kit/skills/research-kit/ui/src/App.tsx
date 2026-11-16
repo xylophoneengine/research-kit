@@ -17,7 +17,7 @@ import { Palette } from "@/components/Palette";
 import { Split } from "@/components/Split";
 import { Stages } from "@/components/Stages";
 import { Timeline } from "@/components/Timeline";
-import { byId, exactHit, idHint, labelIndex, planRows, projectName, stageCodes, stagedIds, visible, type Tab } from "@/lib/ledger";
+import { byId, exactHit, idHint, labelIndex, projectName, stageCodes, stagedIds, visible, type Tab } from "@/lib/ledger";
 import { MoonIcon, RefreshCwIcon, SearchIcon, SunIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { applyTheme, initialTheme, storeTheme, type Theme } from "@/theme";
@@ -198,7 +198,7 @@ export default function App() {
                     entries={rows}
                     ledgerIds={ids}
                     status={route.status}
-                    plan={planRows(ledger)}
+                    forecast={ledger.plan?.forecast}
                     patch={patch}
                   />
                 )}

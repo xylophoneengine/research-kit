@@ -147,28 +147,39 @@ export function backlinks(l: Ledger): Map<string, string[]> {
   return m;
 }
 
-// open + running entries of a stage
-const openIn = (l: Ledger, stage: string): number =>
-  l.entries.filter((e) => e.stage === stage && (e.status === "open" || e.status === "running")).length;
+// The number a stage shows in the Stages table: the kit's forecast string as sent
+// (`~02`) for a planned stage ("" when `forecast` lacks it), else the NN[letter]
+// code of its title ("03b-paper-x" -> "03b"), "" when it has none. Nothing is computed.
+export function stageNumber(e: Entry, forecast: Record<string, string> | undefined): string {
+  if (e.status === "planned") return forecast?.[e.id] ?? "";
+  const c = stageCodeOf(e.title) ?? "";
+  return /^\d+[a-z]?$/.test(c) ? c : "";
+}
 
-export type PlanRow = { stage: Entry; forecast: string; open: number };
-
-// The Stages view's plan block: planned stages in the kit's queue order with its
-// forecast string (shown as sent, nothing computed here), shelved stages apart
-// by id number without forecast; `open` = open + running entries of the stage.
-export function planRows(l: Ledger): { planned: PlanRow[]; shelved: PlanRow[] } {
-  const idx = byId(l);
-  const forecast = l.plan?.forecast ?? {};
-  const planned: PlanRow[] = [];
-  for (const id of l.plan?.queue ?? []) {
-    const stage = idx.get(id);
-    if (stage) planned.push({ stage, forecast: forecast[id] ?? "", open: openIn(l, id) });
-  }
-  const shelved = l.entries
-    .filter((e) => e.type === "stage" && e.status === "shelved")
-    .sort((a, b) => num(a.id) - num(b.id))
-    .map((stage) => ({ stage, forecast: "", open: openIn(l, stage.id) }));
-  return { planned, shelved };
+// Stages by number (the "~" ignored): NN, then letter (none before b); `dir` -1
+// reverses that. Stages without a number come last, by id number in the same
+// direction. Ties by id number. Does not change its input.
+export function orderStages(
+  stages: Entry[],
+  forecast: Record<string, string> | undefined,
+  dir: 1 | -1,
+): Entry[] {
+  const key = (e: Entry): [number, string] | null => {
+    const m = /^~?(\d+)([a-z]?)$/.exec(stageNumber(e, forecast));
+    return m ? [Number(m[1]), m[2]] : null;
+  };
+  return stages
+    .map((e) => ({ e, k: key(e) }))
+    .sort((a, b) => {
+      if (a.k && b.k) {
+        const c = a.k[0] - b.k[0] || (a.k[1] < b.k[1] ? -1 : a.k[1] > b.k[1] ? 1 : 0);
+        if (c) return c * dir;
+      } else if (a.k || b.k) {
+        return a.k ? -1 : 1;
+      }
+      return (num(a.e.id) - num(b.e.id)) * dir;
+    })
+    .map((x) => x.e);
 }
 
 // the earlier titles of entry `id` from its events (in file order), newest first;

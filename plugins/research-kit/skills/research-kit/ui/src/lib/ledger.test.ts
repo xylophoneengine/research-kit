@@ -26,7 +26,8 @@ import {
   projectName,
   sortBy,
   earlierTitles,
-  planRows,
+  orderStages,
+  stageNumber,
   sortDefault,
   sortGroups,
   stagedIds,
@@ -429,24 +430,26 @@ test("exact does not outlive id mode: id off drops exact=1 from the route (T-34)
   expect(parseRoute(formatRoute({ ...on, idOnly: false })).exact).toBe(false);
 });
 
-test("planRows: planned stages in plan.queue order with the kit's forecast, shelved apart (T-54)", () => {
+test("stageNumber / orderStages: opened and planned stages in one order by number (T-56)", () => {
   const st = (id: string, status: string, title: string): Entry => ({ ...s1, id, status, title });
-  const stages = [st("S-2", "planned", "paper-b"), st("S-3", "planned", "paper-c"),
-    st("S-4", "planned", "paper-d"), st("S-5", "shelved", "paper-e"), st("S-1", "open", "01-x")];
-  const work = (id: string, stage: string, status: string): Entry => ({ ...t2, id, stage, status });
-  const entries = [...stages, work("T-1", "S-2", "open"), work("T-2", "S-2", "running"),
-    work("T-3", "S-2", "done"), work("T-4", "S-3", "dropped"), work("DB-1", "S-5", "open")];
-  const l: Ledger = { ...L, entries, plan: { queue: ["S-3", "S-2", "S-4", "S-9"], forecast: { "S-3": "~02", "S-2": "~03", "S-4": "~01b" } } };
-  const r = planRows(l);
-  expect(r.planned.map((x) => [x.stage.id, x.forecast, x.open])).toEqual([
-    ["S-3", "~02", 0], ["S-2", "~03", 2], ["S-4", "~01b", 0],  // unknown S-9 skipped
-  ]);
-  expect(r.shelved.map((x) => [x.stage.id, x.forecast, x.open])).toEqual([["S-5", "", 1]]);
-  // an older kit sends no plan: loads, no planned block rows, shelved still listed
-  const old: Ledger = { ...l, plan: undefined };
-  expect(planRows(old).planned).toEqual([]);
-  expect(planRows(old).shelved).toHaveLength(1);
-  expect(planRows({ ...L, entries: [t1] })).toEqual({ planned: [], shelved: [] });
+  const s = [
+    st("S-1", "done", "01-software-a"), st("S-2", "open", "02-paper-b"),
+    st("S-3", "planned", "paper-c"), st("S-4", "planned", "paper-d"),
+    st("S-5", "planned", "paper-e"), st("S-6", "shelved", "paper-f"),
+    st("S-7", "dropped", "old-name"), st("S-8", "planned", "paper-g"),
+    st("S-9", "done", "02b-paper-h"),
+  ];
+  // the kit's forecast: S-5 is a follow-up of 01, S-8 is planned but missing from it
+  const fc = { "S-3": "~03", "S-4": "~04", "S-5": "~01b" };
+  expect(s.map((e) => stageNumber(e, fc))).toEqual(["01", "02", "~03", "~04", "~01b", "", "", "", "02b"]);
+  const ids = (es: Entry[]): string[] => es.map((e) => e.id);
+  // number first, then letter (none before b); no number last, by id number
+  expect(ids(orderStages(s, fc, 1))).toEqual(["S-1", "S-5", "S-2", "S-9", "S-3", "S-4", "S-6", "S-7", "S-8"]);
+  // descending: the numbers reversed, numberless still last, in the same direction
+  expect(ids(orderStages(s, fc, -1))).toEqual(["S-4", "S-3", "S-9", "S-2", "S-5", "S-1", "S-8", "S-7", "S-6"]);
+  // an older kit sends no plan: planned stages have no number, they go last
+  expect(ids(orderStages(s, undefined, 1))).toEqual(["S-1", "S-2", "S-9", "S-3", "S-4", "S-5", "S-6", "S-7", "S-8"]);
+  expect(s.map((e) => e.id)).toEqual(["S-1", "S-2", "S-3", "S-4", "S-5", "S-6", "S-7", "S-8", "S-9"]); // input untouched
 });
 
 test("earlierTitles: one line per earlier name of an entry, newest first (T-52)", () => {
