@@ -44,7 +44,8 @@ does not count); titles are one line, 160 characters at most. `add task` without
 `stage-open S-n [--follows S-m]` gives it the next NN and renames the folder;
 `--before S-n` / `--after S-n` order planned stages; `stage-rename S-n
 "<kind>-<topic>" [--note N]` renames a stage; `set S-n --status
-planned|shelved|dropped --note ...`; `start` is refused for an entry of a
+planned|shelved|dropped` (`--note` required for shelved and dropped only);
+`start` is refused for an entry of a
 planned or shelved stage). Every `--ref` (add, set, close, drop,
 shelve, reopen, supersede, stage-close) must name an existing file, relative to the repo
 root (a `://` URL, `doi:` or `arXiv:` passes; a path outside the repo is refused;
