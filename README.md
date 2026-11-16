@@ -10,6 +10,11 @@ a `/team` skill (named workers, an optional architect and two opus critics with 
 worker agents pinned to an effort level, a "waste, don't delete" helper,
 compaction handoff hooks and a read-only ledger viewer.
 
+![The ledger viewer's board: running, open, deferred and done entries of this repo](assets/viewer-board.png)
+
+The project ledger is one file the agents keep; the viewer shows it as list,
+board, stages and timeline (see [The ledger viewer](#the-ledger-viewer)).
+
 License: MIT (see `LICENSE`).
 
 ## Contents

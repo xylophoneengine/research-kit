@@ -16,3 +16,5 @@ t@example.invalid
 pat@example.invalid
 # Geist web fonts (OFL) bundled with the ledger browser UI; compressed binary.
 binary:plugins/research-kit/skills/research-kit/ui/dist/assets/geist-*.woff2
+# README screenshot of the ledger viewer (PNG); visible words checked by hand against the denylist.
+binary:assets/viewer-board.png
