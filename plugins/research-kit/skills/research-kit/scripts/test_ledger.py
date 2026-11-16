@@ -4767,6 +4767,230 @@ def test_stage_record_odd_folder_names() -> None:
             assert found == [], found  # nothing written above or into pm/stages
 
 
+# T8 / D-32, lead Q6 Q10; red: start succeeds in a planned stage today
+def test_start_refused_in_planned_stage() -> None:
+    planned: str = "stage S-1 is planned: rk stage-open S-1 first"
+    shelved: str = (
+        "stage S-1 is shelved: rk set S-1 --status planned, then rk stage-open S-1"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        plan_stages(repo, "paper-a")  # S-1
+        for argv in (
+            ("task", "t1", "--note", "n"),  # T-1
+            ("task", "free", "--note", "n"),  # T-2: no stage (planned is no default)
+            ("task", "t3", "--note", "n"),  # T-3
+            ("task", "free2", "--note", "n"),  # T-4
+            ("debt", "d"), ("fetch", "f"), ("deferred", "x"),  # DB-1 F-1 DF-1
+        ):
+            staged: bool = argv[1] not in ("free", "free2")
+            extra: tuple[str, ...] = ("--stage", "S-1") if staged else ()
+            code, out = lrun(repo, "add", *argv, *extra)
+            assert code == 0, (argv, out)
+        st: dict[str, Any] = L.load(repo)
+        assert st["T-1"].stage == "S-1" and st["T-2"].stage == "", st
+        # unit: the check raises the T8 sentence, or returns None
+        try:
+            L._check_stage_startable(st, st["T-1"])
+            raise AssertionError("planned stage accepted")
+        except L.LedgerError as err:
+            assert str(err) == planned, str(err)
+        assert L._check_stage_startable(st, st["T-2"]) is None
+        # every type start accepts, exact error, ledger unchanged
+        for eid in ("T-1", "DB-1", "F-1", "DF-1"):
+            assert refused(repo, "start", eid) == f"error: {planned}\n", eid
+        # brief-check: rc 2, nothing started, all or nothing
+        raw: bytes = (repo / L.LEDGER_REL).read_bytes()
+        code, out = bcheck(repo, "DELIVERABLE: x\nTASK: T-1\n")
+        assert code == 2 and planned in out, out
+        code, out = bcheck(repo, "DELIVERABLE: x\nTASK: T-4, T-1\n")
+        assert code == 2 and planned in out, out
+        assert (repo / L.LEDGER_REL).read_bytes() == raw
+        assert L.load(repo)["T-4"].status == "open"
+        # an unstaged task starts as before
+        code, out = lrun(repo, "start", "T-2")
+        assert code == 0 and out == "started T-2: free\n", out
+        # shelved: the same, with its own sentence
+        assert lrun(repo, "set", "S-1", "--status", "shelved", "--note", "r")[0] == 0
+        for eid in ("T-1", "DB-1"):
+            assert refused(repo, "start", eid) == f"error: {shelved}\n", eid
+        raw = (repo / L.LEDGER_REL).read_bytes()
+        code, out = bcheck(repo, "DELIVERABLE: x\nTASK: T-3\n")
+        assert code == 2 and shelved in out, out
+        assert (repo / L.LEDGER_REL).read_bytes() == raw
+        st = L.load(repo)
+        try:
+            L._check_stage_startable(st, st["T-3"])
+            raise AssertionError("shelved stage accepted")
+        except L.LedgerError as err:
+            assert str(err) == shelved, str(err)
+        # after stage-open everything starts
+        assert lrun(repo, "set", "S-1", "--status", "planned")[0] == 0
+        assert lrun(repo, "stage-open", "S-1")[0] == 0
+        st = L.load(repo)
+        assert L._check_stage_startable(st, st["T-1"]) is None
+        code, out = lrun(repo, "start", "T-1")
+        assert code == 0 and out == "started T-1: t1\n", out
+        assert lrun(repo, "start", "DB-1")[1] == "started DB-1: d\n"
+        code, out = bcheck(repo, "DELIVERABLE: x\nTASK: T-3\n")
+        assert code == 0 and out == "started T-3: t3\n", out
+    with tempfile.TemporaryDirectory() as d:  # imported shelved: no way back, no advice
+        repo = new_repo(Path(d))
+        code, out = lrun(repo, "add", "stage", "05-paper-old", "--imported",
+                         "--source", "A:1", "--status", "shelved")  # S-1
+        assert code == 0, out
+        code, out = lrun(repo, "add", "task", "old", "--imported", "--source",
+                         "A:2", "--stage", "S-1")  # T-1
+        assert code == 0, out
+        assert refused(repo, "start", "T-1") == "error: stage S-1 is shelved\n"
+        raw = (repo / L.LEDGER_REL).read_bytes()
+        code, out = bcheck(repo, "DELIVERABLE: x\nTASK: T-1\n")
+        assert code == 2 and "stage S-1 is shelved" in out, out
+        assert "rk set S-1" not in out and (repo / L.LEDGER_REL).read_bytes() == raw
+
+
+def bullets(text: str) -> list[str]:
+    """The `- ` lines of one STATUS.md section (the blank line before the next
+    heading belongs to the section text and is dropped)."""
+    return [ln for ln in text.splitlines() if ln.startswith("- ")]
+
+
+# T9 / D-35, lead Q8; red: no `## Planned stages` section
+def test_status_md_planned_block() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "paper-x", "--open")[0] == 0  # S-1, 01
+        assert "## Planned stages" not in (repo / L.STATUS_REL).read_text()
+        plan_stages(repo, "paper-scan", "software-b", "thesis-c")  # S-2 S-3 S-4
+        assert lrun(repo, "add", "debt", "needs scan", "--stage", "S-2")[0] == 0
+        st: str = (repo / L.STATUS_REL).read_text()
+        sec: dict[str, str] = sections(st)
+        rows: list[str] = bullets(sec["## Planned stages"])
+        assert rows == [
+            "- ~02 S-2 paper-scan (open entries: 1)",
+            "- ~03 S-3 software-b (open entries: 0)",
+            "- ~04 S-4 thesis-c (open entries: 0)",
+        ], rows
+        assert "paper-scan" not in sec["## Stages"], sec["## Stages"]
+        assert "Open: 2." in st, st  # S-1 and DB-1; a planned stage is not open
+        # shelved stages leave the block and sit in `## Shelved`, which follows it
+        code, out = lrun(repo, "set", "S-3", "--status", "shelved", "--note", "later")
+        assert code == 0, out
+        st = (repo / L.STATUS_REL).read_text()
+        sec = sections(st)
+        assert [r.split()[2] for r in bullets(sec["## Planned stages"])] == [
+            "S-2", "S-4",
+        ]
+        assert "S-3" in sec["## Shelved"] and "S-3" not in sec["## Planned stages"]
+        heads: list[str] = [ln for ln in st.splitlines() if ln.startswith("## ")]
+        assert heads.index("## Shelved") == heads.index("## Planned stages") + 1, heads
+        assert heads.index("## Open debt") < heads.index("## Planned stages"), heads
+        # queue order and forecast follow a move
+        assert lrun(repo, "set", "S-4", "--before", "S-2")[0] == 0
+        rows = bullets(sections((repo / L.STATUS_REL).read_text())["## Planned stages"])
+        assert [(r.split()[1], r.split()[2]) for r in rows] == [
+            ("~02", "S-4"), ("~03", "S-2"),
+        ], rows
+        # a closed entry no longer counts
+        assert lrun(repo, "close", "DB-1", "--note", "done")[0] == 0
+        rows = bullets(sections((repo / L.STATUS_REL).read_text())["## Planned stages"])
+        assert rows[1] == "- ~03 S-2 paper-scan (open entries: 0)", rows
+        # nothing planned: no section
+        assert lrun(repo, "set", "S-2", "--status", "dropped", "--note", "x")[0] == 0
+        assert lrun(repo, "set", "S-4", "--status", "shelved", "--note", "y")[0] == 0
+        st = (repo / L.STATUS_REL).read_text()
+        assert "## Planned stages" not in st and "## Shelved" in st, st
+
+
+# T9 / D-35; red: `list --status` unknown (SystemExit 2)
+def test_list_status_filter() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "paper-x", "--open")[0] == 0  # S-1, 01
+        plan_stages(repo, "paper-scan", "software-b", "thesis-c")  # S-2 S-3 S-4
+        assert lrun(repo, "add", "debt", "d", "--stage", "S-2")[0] == 0  # DB-1
+        for title in ("open", "gone", "later"):  # T-1 T-2 T-3, in S-1
+            assert lrun(repo, "add", "task", title, "--note", "n")[0] == 0
+        assert lrun(repo, "close", "T-2", "--note", "ok")[0] == 0
+        assert lrun(repo, "shelve", "T-3", "--note", "later")[0] == 0
+        assert lrun(repo, "set", "S-4", "--status", "shelved", "--note", "x")[0] == 0
+        assert lrun(repo, "set", "S-3", "--before", "S-2")[0] == 0  # queue: S-3 S-2
+
+        def ids(*argv: str) -> list[str]:
+            code, out = lrun(repo, "list", *argv)
+            assert code == 0, out
+            return [ln.split()[0] for ln in out.splitlines()[1:]]
+
+        code, out = lrun(repo, "list", "--status", "planned")
+        lines: list[str] = out.splitlines()
+        assert lines[0] == "open 0 (running 0)", lines
+        assert [ln.split()[0] for ln in lines[1:]] == ["S-3", "S-2"], lines
+        assert lines[1].split()[:3] == ["S-3", "planned", "lead"], lines
+        assert lines[1].endswith("  ~02 software-b (0 open)"), lines
+        assert lines[2].endswith("  ~03 paper-scan (1 open)"), lines  # DB-1
+        assert set(ids("--status", "shelved")) == {"T-3", "S-4"}
+        assert "~" not in lrun(repo, "list", "--status", "shelved")[1]
+        assert set(ids("--status", "open")) == {"S-1", "T-1", "DB-1"}
+        assert ids("--status", "done") == ["T-2"]
+        assert ids("--status", "planned", "--type", "task") == []
+        assert lrun_exit(repo, "list", "--status", "bogus") == 2
+        # the default list leaves planned stages out of its rows
+        assert not {"S-2", "S-3", "S-4"} & set(ids())
+
+
+# T9 / D-35, plan 3.3, lead Q9; red: `_planned_line` missing
+def test_list_planned_line() -> None:
+    exp: str = "planned 3: ~03 paper-scan, ~04 paper-draft, ~05 paper-review"
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert L._planned_line(L.load(repo)) == ""
+        assert lrun(repo, "add", "stage", "paper-x", "--open")[0] == 0  # S-1, 01
+        assert lrun(repo, "add", "stage", "software-y", "--open")[0] == 0  # S-2, 02
+        assert "planned" not in lrun(repo, "list")[1]  # none planned: no line
+        plan_stages(repo, "paper-scan", "paper-draft", "paper-review")  # S-3 S-4 S-5
+        assert L._planned_line(L.load(repo)) == exp
+        lines: list[str] = lrun(repo, "list")[1].splitlines()
+        assert lines[0].startswith("open 2 (running 0)"), lines  # planned not counted
+        assert lines[1] == exp, lines  # line 2, right after the head line
+        assert lines[2].startswith("S-1") and lines[3].startswith("S-2"), lines
+        # only the unfiltered list carries it (Q9)
+        for argv in (
+            ("--type", "stage"), ("--owner", "lead"), ("--stage", "S-1"),
+            ("--status", "planned"), ("--type", "task"),
+        ):
+            out: str = lrun(repo, "list", *argv)[1]
+            assert not any(ln.startswith("planned ") for ln in out.splitlines()), argv
+        # a planned follow-up counts and shows `~NNx`, in queue order
+        assert lrun(repo, "add", "stage", "paper-fu", "--follows", "S-1")[0] == 0
+        assert L._planned_line(L.load(repo)) == (
+            "planned 4: ~03 paper-scan, ~04 paper-draft, ~05 paper-review, "
+            "~01b paper-fu"
+        )
+        # shelved or dropped stages are not planned
+        for sid in ("S-3", "S-4", "S-5"):
+            assert lrun(repo, "set", sid, "--status", "shelved", "--note", "x")[0] == 0
+        assert lrun(repo, "set", "S-6", "--status", "dropped", "--note", "x")[0] == 0
+        assert L._planned_line(L.load(repo)) == ""
+        assert not any(
+            ln.startswith("planned ") for ln in lrun(repo, "list")[1].splitlines()
+        )
+    # a long queue: cut to LINE_MAX between items, ending `+k more`
+    with tempfile.TemporaryDirectory() as d:
+        repo = new_repo(Path(d))
+        plan_stages(repo, *[f"paper-t{i:02d}" for i in range(1, 13)])  # S-1..S-12
+        out = lrun(repo, "list")[1]
+        assert all(len(ln) <= L.LINE_MAX for ln in out.splitlines()), out
+        line: str = out.splitlines()[1]
+        assert line.startswith("planned 12: ~01 paper-t01, ~02 paper-t02"), line
+        tail: list[str] = line.split()[-2:]
+        assert tail[1] == "more" and tail[0][1:].isdigit(), line  # "+k more"
+        k: int = int(tail[0][1:])
+        body: str = line.split(": ", 1)[1].rsplit("+", 1)[0].rstrip(", ")
+        shown: list[str] = body.split(", ")
+        assert shown == [f"~{i:02d} paper-t{i:02d}" for i in range(1, len(shown) + 1)]
+        assert len(shown) >= 3 and len(shown) + k == 12, (shown, k)
+
+
 def main() -> int:
     tests: list[tuple[str, Callable[[], None]]] = [
         (n, f) for n, f in globals().items() if n.startswith("test_") and callable(f)

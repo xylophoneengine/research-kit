@@ -671,6 +671,22 @@ def _check_stage_open(
         )
 
 
+def _check_stage_startable(state: dict[str, Entry], e: Entry) -> None:
+    """Refuse starting `e` (rk start, brief-check) while its stage is planned or
+    shelved: work runs only in an open stage. An imported shelved stage cannot
+    be planned again, so its text gives no way back."""
+    st: Entry | None = state.get(e.stage) if e.stage else None
+    if st is None or st.status not in ("planned", "shelved"):
+        return
+    if st.status == "planned":
+        raise LedgerError(f"stage {st.id} is planned: rk stage-open {st.id} first")
+    way: str = (
+        "" if _imported(st)
+        else f": rk set {st.id} --status planned, then rk stage-open {st.id}"
+    )
+    raise LedgerError(f"stage {st.id} is shelved{way}")
+
+
 def _stage_kind(title: str) -> str | None:
     """The <kind> of a stage title NN[letter]-<kind>-<topic>; None for another
     title (an imported stage may have any)."""
@@ -884,6 +900,26 @@ def _stage_line(e: Entry, state: dict[str, Entry], now: datetime) -> str:
     )
 
 
+def _open_entries(state: dict[str, Entry], stage: Entry) -> int:
+    """How many open or running entries (any type) belong to `stage`."""
+    return sum(1 for x in state.values() if x.stage == stage.id and _is_open(x))
+
+
+def _planned_line(state: dict[str, Entry]) -> str:
+    """`planned 3: ~03 paper-scan, ~04 paper-draft, ...` in queue order, cut
+    between items to LINE_MAX with `+k more`; "" when no stage is planned."""
+    fc: dict[str, str] = _forecast(state)
+    items: list[str] = [f"{fc.get(e.id, '~?')} {e.title}" for e in _queue(state)]
+    n: int = len(items)
+    line: str = ""
+    for k in range(n, -1, -1):  # k = items shown; k = 0 always fits
+        more: list[str] = [f"+{n - k} more"] if k < n else []
+        line = f"planned {n}: " + ", ".join(items[:k] + more)
+        if len(line) <= LINE_MAX:
+            break
+    return line if n else ""
+
+
 def render_status(state: dict[str, Entry], now: datetime) -> str:
     open_: list[Entry] = sorted(
         (e for e in state.values() if _is_open(e)), key=_sort_key
@@ -925,6 +961,17 @@ def render_status(state: dict[str, Entry], now: datetime) -> str:
                 if e.type == typ and e.status == "open" and e.owner != "user"
             ],
         )
+    fc: dict[str, str] = _forecast(state)
+    section(
+        "Planned stages",
+        [
+            _clip(
+                f"- {fc.get(e.id, '~?')} {e.id} {e.title} "
+                f"(open entries: {_open_entries(state, e)})"
+            )
+            for e in _queue(state)
+        ],
+    )
     shelved: list[Entry] = sorted(  # known, not planned now: not in the open view
         (e for e in state.values() if e.status == "shelved"), key=_sort_key
     )
@@ -976,6 +1023,7 @@ def format_list(
     stage: str | None,
     limit: int,
     include_closed: bool,
+    status: str | None = None,
 ) -> str:
     rows: list[Entry] = [
         e
@@ -983,9 +1031,16 @@ def format_list(
         if (type_ is None or e.type == type_)
         and (owner is None or e.owner == owner)
         and (stage is None or e.stage == stage)
+        and (status is None or e.status == status)
     ]
     opens: list[Entry] = [e for e in rows if _is_open(e)]
-    shown: list[Entry] = sorted(rows if include_closed else opens, key=_list_key)
+    shown: list[Entry] = sorted(
+        rows if include_closed or status is not None else opens, key=_list_key
+    )
+    fc: dict[str, str] = _forecast(state)
+    if status == "planned":  # the queue order, not the id order
+        queue: list[str] = [x.id for x in _queue(state)]
+        shown.sort(key=lambda e: queue.index(e.id))
     counts: dict[str, int] = {}
     for e in sorted(opens, key=_sort_key):
         counts[e.type] = counts.get(e.type, 0) + 1
@@ -999,9 +1054,15 @@ def format_list(
         if len(head) <= LINE_MAX:
             break
     lines: list[str] = [head]
+    unfiltered: bool = type_ is None and owner is None and stage is None
+    planned: str = _planned_line(state) if unfiltered and status is None else ""
+    if planned:  # line 2: the session-start hook prints this list as it is
+        lines.append(planned)
     cap: list[Entry] = shown[:limit] if limit else shown
     for e in cap:
         title: str = ("[imp] " if _imported(e) else "") + e.title
+        if e.status == "planned":  # forecast and open entries, as in STATUS.md
+            title = f"{fc.get(e.id, '~?')} {title} ({_open_entries(state, e)} open)"
         lines.append(
             _clip(
                 f"{e.id:<5} {e.status:<7} {e.owner[:8]:<8} "
@@ -1443,6 +1504,7 @@ def _cmd_start(a: argparse.Namespace) -> int:
             state, e.stage, e.type, "running",
             f"re-stage it first: set {e.id} --stage S-<x>",
         )
+        _check_stage_startable(state, e)
         f: dict[str, object] = {"status": "running"}
         if owner is not None:
             f["owner"] = owner
@@ -1982,6 +2044,7 @@ def _cmd_list(a: argparse.Namespace) -> int:
             stage=stage,
             limit=_nonneg(a.limit, "--limit"),
             include_closed=a.all,
+            status=a.status,
         )
     )
     return 0
@@ -2960,6 +3023,11 @@ def _cmd_brief_check(a: argparse.Namespace) -> int:
                 problems.append(f"{eid} is not a task")
             elif not _is_open(e):
                 problems.append(f"{eid} is {e.status}")
+            elif e.status == "open":  # the one this call would start
+                try:
+                    _check_stage_startable(state, e)
+                except LedgerError as err:
+                    problems.append(f"{eid}: {err}")
         if problems:
             return []
         started: list[Entry] = [state[i] for i in ids if state[i].status == "open"]
@@ -3062,6 +3130,7 @@ def _parser() -> argparse.ArgumentParser:
     pl.add_argument("--type", default=None)
     pl.add_argument("--owner", default=None)
     pl.add_argument("--stage", default=None)
+    pl.add_argument("--status", choices=STATUSES, default=None)
     pl.add_argument("--limit", type=int, default=LIST_LIMIT)
     pl.add_argument("--all", action="store_true")
     ph: argparse.ArgumentParser = sub.add_parser("show", parents=[common])
