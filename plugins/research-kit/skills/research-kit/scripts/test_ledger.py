@@ -2575,6 +2575,340 @@ def test_doctor_planned_stage_folder() -> None:
         assert group(out, "missing ref") == [], out  # its own folder ref: once
 
 
+def sign_off_close(repo: Path, sid: str) -> None:
+    """Log a user decision linked to `sid`, then stage-close `sid` on it."""
+    code, out = lrun(
+        repo, "add", "decision", f"ok {sid}", "--owner", "user", "--link", sid
+    )
+    assert code == 0, out
+    did: str = out.split()[1].rstrip(":")  # "logged D-1: ok S-1 (stage S-1)"
+    code, out = lrun(repo, "stage-close", sid, "--sign-off", did)
+    assert code == 0 and f"closed {sid}: sign-off {did}\n" in out, out
+
+
+# T4, D-29/D-33: receipt, status, rename, ref rewrite, rules; red: stage-open unknown
+def test_stage_open_basic() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        agents: Path = repo / "AGENTS.md"
+        agents.write_text("<!-- research-kit: 2026-01-01a -->\n# x\n")
+        assert lrun(repo, "add", "stage", "paper-scan")[0] == 0  # S-1, P-1-paper-scan
+        old: str = "pm/stages/P-1-paper-scan"
+        new: str = "pm/stages/01-paper-scan"
+        (repo / old / "notes/a.md").write_text("a")
+        near: Path = repo / "pm/stages/P-1-paper-scan2"  # same prefix, not the folder
+        near.mkdir()
+        (near / "x.md").write_text("x")
+        (repo / "keep.md").write_text("k")
+        debts: tuple[tuple[str, ...], ...] = (
+            ("--stage", "S-1", "--ref", f"{old}/notes/a.md", "--ref", "keep.md"),
+            ("--ref", "pm/stages/P-1-paper-scan2/x.md"),  # DB-2: not under the folder
+            ("--ref", "keep.md"),  # DB-3: no ref under the folder
+        )
+        for i, argv in enumerate(debts, 1):  # DB-1, DB-2, DB-3
+            code, out = lrun(repo, "add", "debt", f"d{i}", "--owner", "lead", *argv)
+            assert code == 0, out
+        n: int = len(jl(repo))
+        agents.write_text("<!-- research-kit: 2026-01-05c -->\n# x\n")
+        code, out = lrun(repo, "stage-open", "S-1")
+        assert code == 0 and out == (
+            "opened S-1: 01-paper-scan\n"
+            f"folder {old}/ -> {new}/\n"
+            "refs: 2 rewritten\n"  # the stage's own ref and DB-1's
+        ), out
+        st: Any = L.load(repo)
+        assert st["S-1"].status == "open" and st["S-1"].title == "01-paper-scan"
+        assert st["S-1"].refs == [f"{new}/"], st["S-1"].refs
+        assert st["DB-1"].refs == [f"{new}/notes/a.md", "keep.md"], st["DB-1"].refs
+        assert st["DB-2"].refs == ["pm/stages/P-1-paper-scan2/x.md"], st["DB-2"].refs
+        assert st["DB-3"].refs == ["keep.md"] and st["DB-1"].stage == "S-1"
+        assert not (repo / old).exists(), "P folder must be gone"
+        assert (repo / new / "notes/a.md").read_text() == "a"
+        assert sorted(p.name for p in (repo / new).iterdir()) == sorted(L.STAGE_DIRS)
+        evs: list[dict[str, Any]] = jl(repo)[n:]  # one set on the stage, one per ref
+        by_id: dict[str, dict[str, Any]] = {e["id"]: e for e in evs}
+        assert sorted(by_id) == ["DB-1", "S-1"] and len(evs) == 2, evs
+        assert by_id["S-1"]["ev"] == "set", evs
+        assert set(by_id["S-1"]["f"]) == {"status", "title", "refs"}, evs
+        assert by_id["S-1"]["rules"] == {"AGENTS.md": "2026-01-05c"}, evs  # at open
+        assert by_id["DB-1"]["ev"] == "set" and list(by_id["DB-1"]["f"]) == ["refs"]
+        assert "rules" not in by_id["DB-1"], evs
+        commit_all(repo)
+        code, out = doctor(repo)
+        assert code == 0 and "HARD" not in out, out
+
+
+# T4, D-29/Q7: only a planned stage opens, one per kind, no merge of folders; red: same
+def test_stage_open_refusals() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        stages: Path = repo / "pm/stages"
+        only: str = ": only a planned stage opens\n"
+
+        def refuse(argv: list[str], *want: str) -> None:
+            """Refused with code 1, `want` in the message, nothing changed."""
+            before: dict[str, bytes | None] = snapshot(root)
+            code, out = lrun(repo, *argv)
+            assert code == 1 and all(w in out for w in want), (argv, out)
+            assert snapshot(root) == before, argv
+
+        for title in ("paper-a", "paper-b"):  # S-1, S-2
+            assert lrun(repo, "add", "stage", title)[0] == 0
+        assert lrun(repo, "stage-open", "S-1")[0] == 0  # 01-paper-a
+        refuse(["stage-open", "S-1"], f"error: S-1 is open{only}")
+        refuse(  # the form of _check_one_per_kind, what = "stage-open S-2"
+            ["stage-open", "S-2"],
+            "error: cannot stage-open S-2: S-1 (01-paper-a) is open, and at most "
+            "one paper stage may be open: stage-close S-1 first\n",
+        )
+        sign_off_close(repo, "S-1")
+        refuse(["stage-open", "S-1"], f"error: S-1 is done{only}")
+        code, out = lrun(
+            repo, "add", "stage", "old3", "--imported", "--source", "a:1",
+            "--status", "shelved",
+        )  # fmt: skip
+        assert code == 0 and out == "logged S-3: old3\n", out
+        refuse(["stage-open", "S-3"], f"error: S-3 is shelved{only}")
+        assert lrun(repo, "add", "task", "t", "--note", "n")[0] == 0  # T-1
+        refuse(["stage-open", "T-1"], "error: T-1 is a task, not a stage\n")
+        (stages / "02-paper-b").mkdir()  # the NN S-2 would take exists: no merge
+        refuse(
+            ["stage-open", "S-2"],
+            "error: cannot stage-open S-2: pm/stages/02-paper-b/ is there already; "
+            "folders are not merged: move it away first\n",
+        )
+        (stages / "02-paper-b").rmdir()
+        (stages / "P-2-paper-b").rename(root / "moved")  # the P folder is missing
+        refuse(
+            ["stage-open", "S-2"],
+            "error: cannot stage-open S-2: no folder pm/stages/P-2-paper-b/; "
+            "restore it first\n",
+        )
+        (root / "moved").rename(stages / "P-2-paper-b")
+        code, out = lrun(repo, "stage-open", "S-2")  # the refusals were all of it
+        assert code == 0 and out.startswith("opened S-2: 02-paper-b\n"), out
+
+
+# T4, D-26/D-31: the next free NN at open, not at plan; red: stage-open unknown
+def test_stage_open_takes_next_nn() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        for title in ("paper-a", "software-b"):  # S-1, S-2: planned in this order
+            assert lrun(repo, "add", "stage", title)[0] == 0
+        code, out = lrun(repo, "stage-open", "S-2")
+        assert code == 0 and out.splitlines()[:2] == [
+            "opened S-2: 01-software-b",
+            "folder pm/stages/P-2-software-b/ -> pm/stages/01-software-b/",
+        ], out
+        code, out = lrun(repo, "stage-open", "S-1")
+        assert code == 0 and out.splitlines()[:2] == [
+            "opened S-1: 02-paper-a",
+            "folder pm/stages/P-1-paper-a/ -> pm/stages/02-paper-a/",
+        ], out
+        st: Any = L.load(repo)
+        assert (st["S-1"].title, st["S-1"].status) == ("02-paper-a", "open")
+        assert (st["S-2"].title, st["S-2"].status) == ("01-software-b", "open")
+        assert sorted(p.name for p in (repo / "pm/stages").iterdir()) == [
+            "01-software-b", "02-paper-a"
+        ]
+
+
+# T4, D-31 (+ lead's answers Q3): letter b first, c next, no number used; red: same
+def test_stage_open_follows() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "paper-x", "--open")[0] == 0  # S-1 01-paper-x
+        sign_off_close(repo, "S-1")
+        for title in ("paper-y", "paper-z", "software-w", "experiment-v"):
+            assert lrun(repo, "add", "stage", title)[0] == 0  # S-2 .. S-5, planned
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "stage-open", "S-4", "--follows", "S-3")  # S-3 planned
+        assert code == 1 and out == (
+            "error: --follows S-3: S-3 (paper-z) is planned and has no NN yet; "
+            "follow an opened stage\n"
+        ), out
+        assert len(jl(repo)) == n
+        assert sorted(p.name for p in (repo / "pm/stages").iterdir()) == [
+            "01-paper-x", "P-2-paper-y", "P-3-paper-z", "P-4-software-w",
+            "P-5-experiment-v",
+        ]  # nothing renamed or made by the refusal
+        code, out = lrun(repo, "stage-open", "S-2", "--follows", "S-1")
+        assert code == 0 and out.splitlines()[:2] == [
+            "opened S-2: 01b-paper-y",
+            "folder pm/stages/P-2-paper-y/ -> pm/stages/01b-paper-y/",
+        ], out
+        code, out = lrun(repo, "stage-open", "S-4", "--follows", "S-1")
+        assert code == 0 and out.splitlines()[0] == "opened S-4: 01c-software-w", out
+        code, out = lrun(repo, "stage-open", "S-5")  # a letter uses up no number
+        assert code == 0 and out.splitlines()[0] == "opened S-5: 02-experiment-v", out
+        st: Any = L.load(repo)
+        assert [st[f"S-{i}"].title for i in (1, 2, 3, 4, 5)] == [
+            "01-paper-x", "01b-paper-y", "paper-z", "01c-software-w",
+            "02-experiment-v",
+        ]
+        assert st["S-3"].status == "planned"
+        assert sorted(p.name for p in (repo / "pm/stages").iterdir()) == [
+            "01-paper-x", "01b-paper-y", "01c-software-w", "02-experiment-v",
+            "P-3-paper-z",
+        ]
+
+
+# T4, D-33 (rename is undone if the write fails); red: stage-open unknown
+def test_stage_open_rolls_back_rename() -> None:
+    with tempfile.TemporaryDirectory() as d:  # injected in fold (plan section 11)
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "paper-scan")[0] == 0
+        pdir: Path = repo / "pm/stages/P-1-paper-scan"
+        (pdir / "notes/a.md").write_text("a")
+        code, out = lrun(
+            repo, "add", "debt", "d", "--stage", "S-1",
+            "--ref", "pm/stages/P-1-paper-scan/notes/a.md",
+        )  # fmt: skip
+        assert code == 0, out
+        before: dict[str, bytes | None] = snapshot(Path(d))
+        real: Any = L.fold
+
+        def fold_fails_after_rename(events: Any) -> Any:
+            """append folds the new lines before it writes them; at that point the
+            folder has been renamed, so this is the write failing after the rename."""
+            if not pdir.exists():
+                raise OSError(28, "injected: no space left on device")
+            return real(events)
+
+        L.fold = fold_fails_after_rename
+        try:
+            try:
+                code, out = lrun(repo, "stage-open", "S-1")
+            except OSError:  # re-raised, as the plan says
+                pass
+            else:
+                raise AssertionError(f"no OSError: {code} {out}")
+        finally:
+            L.fold = real
+        assert snapshot(Path(d)) == before  # P folder and file back, ledger as was
+        assert (pdir / "notes/a.md").read_text() == "a"
+        assert not (repo / "pm/stages/01-paper-scan").exists()
+        st: Any = L.load(repo)
+        assert st["S-1"].status == "planned" and st["S-1"].title == "paper-scan"
+        code, out = lrun(repo, "stage-open", "S-1")  # a retry works
+        assert code == 0 and out.startswith("opened S-1: 01-paper-scan\n"), out
+
+
+# T4, spec Folder (doctor flags a ref into a gone P- folder); no new code, pins it
+def test_doctor_ref_into_gone_p_folder() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        for title in ("paper-x", "software-y"):  # S-1 stays planned, S-2 opens
+            assert lrun(repo, "add", "stage", title)[0] == 0
+        assert lrun(repo, "stage-open", "S-2")[0] == 0  # pm/stages/01-software-y/
+        ghost: Path = repo / "pm/stages/P-9-x"  # a P folder no stage owns
+        ghost.mkdir(parents=True)
+        (ghost / "a.md").write_text("a")
+        code, out = lrun(repo, "add", "debt", "d", "--ref", "pm/stages/P-9-x/a.md")
+        assert code == 0, out  # DB-1
+        assert doctor(repo)[0] == 0  # the ref holds; P-1-paper-x of S-1 is there
+        shutil.rmtree(ghost)
+        code, out = doctor(repo)
+        assert code == 1, out
+        assert group(out, "missing ref") == ["DB-1 pm/stages/P-9-x/a.md"], out
+        assert group(out, "missing stage folder") == [], out
+        # the real case: a ref left on the P path after stage-open renamed it
+        stale: Path = repo / "pm/stages/P-2-software-y/notes"
+        stale.mkdir(parents=True)
+        (stale / "b.md").write_text("b")
+        code, out = lrun(
+            repo, "add", "debt", "late", "--ref", "pm/stages/P-2-software-y/notes/b.md"
+        )
+        assert code == 0, out  # DB-2
+        shutil.rmtree(repo / "pm/stages/P-2-software-y")
+        code, out = doctor(repo)
+        assert code == 1, out
+        assert sorted(group(out, "missing ref")) == [
+            "DB-1 pm/stages/P-9-x/a.md",
+            "DB-2 pm/stages/P-2-software-y/notes/b.md",
+        ], out
+        assert group(out, "missing stage folder") == [], out  # S-2 is at 01-
+
+
+# T5, D-33 (a planned add is no reopen); red: record has `Reopened (1)`, add-line window
+def test_record_of_planned_stage() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        agents: Path = repo / "AGENTS.md"
+        agents.write_text("<!-- research-kit: 2026-01-01a -->\n")
+        assert lrun(repo, "add", "stage", "paper-x")[0] == 0  # line 1, planned
+        lrun(repo, "add", "debt", "while planned", "--owner", "lead", "--stage", "S-1")
+        lrun(repo, "add", "debt", "unrelated", "--owner", "lead")  # DB-2: no stage
+        lrun(repo, "add", "task", "unrelated too", "--note", "n")  # T-1: no stage
+        agents.write_text("<!-- research-kit: 2026-01-05c -->\n")
+        code, out = lrun(repo, "stage-open", "S-1")
+        assert code == 0 and out.startswith("opened S-1: 01-paper-x\n"), out
+        assert lrun(repo, "add", "task", "t", "--note", "n")[0] == 0  # T-2, in S-1
+        assert lrun(repo, "close", "T-2", "--note", "ok")[0] == 0
+        agents.write_text("<!-- research-kit: 2026-01-09d -->\n")
+        sign_off_close(repo, "S-1")  # D-1, closes
+        rec: Path = repo / "pm/stages/01-paper-x/LEDGER.md"
+        text: str = rec.read_text()
+        events: list[tuple[int, dict[str, object]]] = L.read_events(repo)
+        assert text == L.render_stage_record(events, "S-1"), text
+        opened: list[tuple[int, dict[str, object]]] = []  # the stage-open event
+        for n, ev in events:
+            f: Any = ev.get("f")
+            if (
+                ev.get("id") == "S-1" and ev.get("ev") == "set"
+                and isinstance(f, dict) and "title" in f
+            ):
+                opened.append((n, ev))
+        assert len(opened) == 1 and opened[0][0] > 1, opened  # not the add line
+        open_n, open_ev = opened[0]
+        end, close_ev = events[-1]
+        assert text.startswith("# Ledger of stage S-1 01-paper-x (generated)\n"), text
+        assert "Reopened" not in text and "rk:stage-record" not in text, text
+        assert L.RECORD_MARK_RE.search(text) is None, text
+        assert text.count("Window: ledger lines") == 1, text  # one span, 0.2.3 form
+        assert (
+            f"Window: ledger lines {open_n} to {end}, "
+            f"{open_ev['ts']} to {close_ev['ts']}.\n"
+        ) in text, text  # starts at the open line and its time, not the add line
+        assert "rules at open: AGENTS.md 2026-01-05c\n" in text, text
+        assert text.endswith("rules at close: AGENTS.md 2026-01-09d\n"), text
+        assert (
+            "## Entries of the stage (3)\n"
+            "- DB-1 debt open (lead) while planned\n"
+            "- T-2 task done (lead) t\n"
+            "- D-1 decision done (user) ok S-1\n"
+        ) in text, text
+        assert (
+            "## Entries touched in the window, not of the stage (0)\nnone\n" in text
+        ), text
+        assert "DB-2" not in text and "T-1" not in text, text
+        first: bytes = rec.read_bytes()
+        code, out = lrun(repo, "stage-close", "S-1")  # the record is current: refusal
+        assert code == 1 and "S-1 is done, not open" in out, out
+        assert rec.read_bytes() == first
+
+
+# T5, D-33: planned -> open is no reopen; red: _reopen_line counts it, close refused
+def test_signoff_while_planned_accepted_at_close() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "paper-x")[0] == 0  # S-1, planned
+        code, out = lrun(
+            repo, "add", "decision", "ok S-1", "--owner", "user",
+            "--link", "S-1", "--stage", "S-1",
+        )  # fmt: skip
+        assert code == 0 and "D-1" in out, out  # logged while the stage is planned
+        assert lrun(repo, "stage-open", "S-1")[0] == 0
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 0 and "closed S-1: sign-off D-1\n" in out, out
+        assert "reopened" not in out, out
+        # a real reopen still needs a new sign-off (the 0.2.3 rule, unchanged)
+        assert lrun(repo, "reopen", "S-1", "--note", "closed too early")[0] == 0
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 1 and "D-1 was logged before S-1 was reopened" in out, out
+
+
 def test_reopen_stage_without_folder() -> None:  # brief 025 fix 4
     with tempfile.TemporaryDirectory() as d:
         repo: Path = new_repo(Path(d))

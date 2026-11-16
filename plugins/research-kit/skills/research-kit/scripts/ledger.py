@@ -73,7 +73,7 @@ COMMANDS: frozenset[str] = frozenset(
     {
         "add", "start", "close", "drop", "shelve", "reopen", "set", "supersede",
         "list", "show", "search", "recent", "render", "stage-close", "brief-check",
-        "import", "doctor", "reref",
+        "import", "doctor", "reref", "stage-open",
     }
 )
 BRIEF_RE: re.Pattern[str] = re.compile(r"^[ \t]*DELIVERABLE:", re.M)
@@ -716,6 +716,11 @@ def _open_title(state: dict[str, Entry], topic: str, follows: str | None) -> str
     codes: Iterator[str] = (f"{n:02d}" for n in itertools.count(_max_nn(state) + 1))
     if follows is not None:
         st: Entry = state[resolve(state, follows, stage=True)]
+        if st.status == "planned":
+            raise LedgerError(
+                f"--follows {follows}: {st.id} ({st.title}) is planned and has no NN "
+                "yet; follow an opened stage"
+            )
         if not STAGE_RE.match(st.title):
             raise LedgerError(
                 f"--follows {follows}: {st.id} ({st.title}) has no NN title "
@@ -1423,7 +1428,7 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
             folder: Path | None = _record_folder(repo, e)
             if folder is None or not folder.is_dir():
                 raise LedgerError(
-                    f"cannot reopen {e.id}: no folder pm/stages/{e.title}/ (an "
+                    f"cannot reopen {e.id}: no folder {_stage_dir(e)} (an "
                     "imported or folderless stage); restore it or add a new stage"
                 )
             _check_one_per_kind(state, e.title, f"reopen {e.id}")
@@ -1486,7 +1491,7 @@ def _cmd_set(a: argparse.Namespace) -> int:
             if e.type == "stage" and not _imported(e):
                 raise LedgerError(
                     f"{e.id} is a stage: its title is its folder name "
-                    f"(pm/stages/{e.title}/) and gives its code; it is not renamed"
+                    f"({_stage_dir(e)}) and gives its code; it is not renamed"
                 )
             f["title"] = title
         if owner is not None:
@@ -1576,6 +1581,104 @@ def _cmd_supersede(a: argparse.Namespace) -> int:
     return 0
 
 
+def _moved_ref(repo: Path, r: str, old: str, new: str) -> str | None:
+    """`r` with the leading path `old` (whole path components, compared after
+    normpath, so ./pm/x matches pm/x) replaced by `new`; None if no match. `old`
+    and `new`: normpath'd repo paths."""
+    if not _is_path(r):
+        return None
+    n: str = os.path.normpath(_rel_refs(repo, [r], strict=False)[0])
+    if n != old and not n.startswith(old + "/"):
+        return None
+    return new + n[len(old):] + ("/" if r.endswith("/") else "")
+
+
+def _refs_moved(
+    repo: Path, state: dict[str, Entry], old: str, new: str
+) -> tuple[dict[str, list[str]], int]:
+    """The new refs of each entry with a ref under folder `old` (moved to `new`),
+    by id, and how many ref strings change."""
+    out: dict[str, list[str]] = {}
+    k: int = 0
+    for e in sorted(state.values(), key=lambda x: x.lines[0]):
+        pairs: list[tuple[str, str | None]] = [
+            (r, _moved_ref(repo, r, old, new)) for r in e.refs
+        ]
+        hits: int = sum(1 for _, m in pairs if m is not None)
+        if hits:
+            k += hits
+            out[e.id] = list(dict.fromkeys(m or r for r, m in pairs))
+    return out, k
+
+
+def _append_renaming(
+    repo: Path,
+    build: Callable[[dict[str, Entry]], list[dict[str, object]]],
+    moves: list[tuple[Path, Path]],
+) -> dict[str, Entry]:
+    """`append`; the folder renames `build` made (it lists them in `moves`, as
+    its last step) are undone when the write fails, then the error goes on."""
+    try:
+        return append(repo, build)
+    except BaseException:
+        for src, dst in reversed(moves):
+            os.rename(dst, src)
+        raise
+
+
+def _cmd_stage_open(a: argparse.Namespace) -> int:
+    """Open planned stage S-n in one locked step: the next NN (a letter with
+    --follows), its P- folder renamed to the NN folder, every ref under it
+    rewritten; the rename is undone if the ledger write fails."""
+    repo: Path = _repo(a)
+    who: str = _name(a.who, "--who")
+    moves: list[tuple[Path, Path]] = []
+    said: list[str] = []
+
+    def build(state: dict[str, Entry]) -> list[dict[str, object]]:
+        sid: str = resolve(state, a.id, stage=True)
+        st: Entry = state[sid]
+        if st.status != "planned":
+            raise LedgerError(f"{sid} is {st.status}: only a planned stage opens")
+        title: str = _title(_open_title(state, st.title, a.follows))
+        _check_names(state, "stage", title, a)
+        _check_one_per_kind(state, title, f"stage-open {sid}")
+        old: str = _stage_dir(st)
+        new: str = f"pm/stages/{title}/"
+        if not (repo / old).is_dir():
+            raise LedgerError(
+                f"cannot stage-open {sid}: no folder {old}; restore it first"
+            )
+        if os.path.lexists(repo / new):
+            raise LedgerError(
+                f"cannot stage-open {sid}: {new} is there already; folders are not "
+                "merged: move it away first"
+            )
+        refs, k = _refs_moved(repo, state, old.rstrip("/"), new.rstrip("/"))
+        ev: dict[str, object] = make_event(
+            who, "set", sid,
+            {"status": "open", "title": title, "refs": refs.pop(sid, st.refs)},
+        )  # fmt: skip
+        ev["rules"] = rule_stamps(repo)
+        evs: list[dict[str, object]] = [ev] + [
+            make_event(who, "set", i, {"refs": r}) for i, r in refs.items()
+        ]
+        try:  # the last step: nothing above may fail after it
+            os.rename(repo / old, repo / new)
+        except OSError as err:
+            raise LedgerError(
+                f"cannot stage-open {sid}: {old} -> {new}: {err.strerror}"
+            ) from None
+        moves.append((repo / old, repo / new))
+        said[:] = [f"opened {sid}: {title}", f"folder {old} -> {new}"]
+        said.append(f"refs: {k} rewritten")
+        return evs
+
+    _append_renaming(repo, build, moves)
+    print("\n".join(said))
+    return 0
+
+
 def _cmd_reref(a: argparse.Namespace) -> int:
     repo: Path = _repo(a)
     who: str = _name(a.who, "--who")
@@ -1591,23 +1694,15 @@ def _cmd_reref(a: argparse.Namespace) -> int:
             "again: move to a path outside OLD"
         )
 
-    def moved(r: str) -> str | None:
-        """`r` with the leading path OLD (whole path components, compared after
-        normpath, so ./pm/x matches pm/x) replaced by NEW; None if no match."""
-        if not _is_path(r):
-            return None
-        n: str = os.path.normpath(_rel_refs(repo, [r], strict=False)[0])
-        if n != old and not n.startswith(old + "/"):
-            return None
-        return new + n[len(old):] + ("/" if r.endswith("/") else "")
-
     changed: list[tuple[str, str, str]] = []  # (id, old ref, new ref)
 
     def plan(state: dict[str, Entry]) -> list[dict[str, object]]:
         changed.clear()
         out: list[dict[str, object]] = []
         for e in sorted(state.values(), key=lambda x: x.lines[0]):
-            pairs: list[tuple[str, str | None]] = [(r, moved(r)) for r in e.refs]
+            pairs: list[tuple[str, str | None]] = [
+                (r, _moved_ref(repo, r, old, new)) for r in e.refs
+            ]
             hits: list[tuple[str, str]] = [(r, m) for r, m in pairs if m is not None]
             if not hits:
                 continue
@@ -1830,17 +1925,17 @@ def _sign_off_problems(
 
 
 def _reopen_line(events: list[tuple[int, dict[str, object]]], sid: str) -> int:
-    """Line of the last reopen of stage `sid` (a set to open); 0 if none."""
+    """Line of the last reopen of stage `sid` (a set to open); 0 if none. The
+    stage-open of a planned stage (planned -> open) is no reopen."""
     line: int = 0
+    was: object = None
     for n, ev in events:
         f: object = ev.get("f")
-        if (
-            ev.get("id") == sid
-            and ev.get("ev") == "set"
-            and isinstance(f, dict)
-            and f.get("status") == "open"
-        ):
+        if ev.get("id") != sid or not isinstance(f, dict):
+            continue
+        if ev.get("ev") == "set" and f.get("status") == "open" and was != "planned":
             line = n
+        was = f.get("status", was)
     return line
 
 
@@ -1861,7 +1956,7 @@ def _stage_checks(repo: Path, ref: str) -> None:
         raise LedgerError(
             f"stage-close {sid} refused: {n_hard} HARD finding(s) above; a missing "
             "ref: restore the file or set <id> --ref-drop <path>; a missing stage "
-            f"folder: restore pm/stages/{state[sid].title}/"
+            f"folder: restore {_stage_dir(state[sid])}"
         )
 
 
@@ -1885,17 +1980,19 @@ def render_stage_record(
     upto: list[tuple[int, dict[str, object]]] = [(n, v) for n, v in events if n <= end]
     state: dict[str, Entry] = fold(upto)
     st: Entry = state[sid]
-    found: list[tuple[int, int | None]] = _stage_spans(upto, {sid})[sid]
-    added_closed: bool = not (found and found[0][0] == st.lines[0])
     spans: list[tuple[int, int]] = [
-        (lo, end if hi is None else hi) for lo, hi in _with_add_span(found, st.lines[0])
+        (lo, end if hi is None else hi)
+        for lo, hi in _record_spans(upto, sid, st.lines[0])
     ]
+    first: int = spans[0][0]  # the add line, or the stage-open of a planned add
+    added_closed: bool = spans[0] == (first, first)  # span 0 is the add line only
     window: list[tuple[int, dict[str, object]]] = [
         (n, v) for n, v in upto if any(lo <= n <= hi for lo, hi in spans)
     ]
     by_line: dict[int, dict[str, object]] = dict(upto)
     window_line: str = (  # one span: the form of 0.2.3, byte for byte
-        f"Window: ledger lines {st.lines[0]} to {end}, {st.created} to {st.updated}."
+        f"Window: ledger lines {first} to {end}, {by_line[first].get('ts')} to "
+        f"{st.updated}."
         if len(spans) == 1
         else "Window: ledger lines " + ", ".join(  # times per span, not across gaps
             f"{lo} to {hi} ({by_line[lo].get('ts')} to {by_line[hi].get('ts')})"
@@ -1975,7 +2072,7 @@ def render_stage_record(
         "## Seen in the window",
         f"kit: {seen('kit')}",
         f"sid: {seen('sid')}",
-        f"rules at open: {_stamps(by_line[st.lines[0]])}",
+        f"rules at open: {_stamps(by_line[first])}",
         f"rules at close: {_stamps(close_ev)}",
     ]
     return "\n".join(out) + "\n"
@@ -2003,9 +2100,12 @@ def _record_current(
         now: re.Match[str] | None = RECORD_MARK_RE.search(want)
         return now is not None and now.group(0) == mark.group(0)
     end: int = _close_line(events, sid) or 0
-    st: Entry = fold([(n, v) for n, v in events if n <= end])[sid]
+    upto: list[tuple[int, dict[str, object]]] = [(n, v) for n, v in events if n <= end]
+    st: Entry = fold(upto)[sid]
+    lo: int = _record_spans(upto, sid, st.lines[0])[0][0]  # add line, or the open
     old: str = (  # 0.2.3: one span, add to close; never change this literal
-        f"Window: ledger lines {st.lines[0]} to {end}, {st.created} to {st.updated}."
+        f"Window: ledger lines {lo} to {end}, {dict(upto)[lo].get('ts')} to "
+        f"{st.updated}."
     )
     return old in text.split("\n")
 
@@ -2021,7 +2121,7 @@ def _file_text(path: Path) -> str | None:
 def _record_folder(repo: Path, st: Entry) -> Path | None:
     """The folder for the record of stage `st`; None when its title is no folder
     name (`.`, `..`, odd characters) or an imported stage has no folder."""
-    folder: Path = repo / "pm" / "stages" / st.title
+    folder: Path = repo / _stage_dir(st)
     if st.title in (".", "..") or not NAME_RE.match(st.title):
         return None
     return None if _imported(st) and not os.path.isdir(folder) else folder
@@ -2040,10 +2140,10 @@ def _write_stage_record(repo: Path, st: Entry) -> str:
     """Write LEDGER.md into the folder of the closed stage `st`; the receipt line.
     Only stage-close calls this; the file is never edited by hand. A file that
     is there without the generated header is not overwritten."""
-    rel: str = f"pm/stages/{st.title}/{STAGE_RECORD}"
+    rel: str = f"{_stage_dir(st)}{STAGE_RECORD}"
     folder: Path | None = _record_folder(repo, st)
     if folder is None:
-        return f"no {STAGE_RECORD}: {st.id} has no folder pm/stages/{st.title}/"
+        return f"no {STAGE_RECORD}: {st.id} has no folder {_stage_dir(st)}"
     tmp: Path = folder / (STAGE_RECORD + ".tmp")
     again: str = f"; then run rk stage-close {st.id} to write it"
     try:
@@ -2287,6 +2387,19 @@ def _with_add_span(
     return found if found and found[0][0] == add else [(add, add), *found]
 
 
+def _record_spans(
+    events: list[tuple[int, dict[str, object]]], sid: str, add: int
+) -> list[tuple[int, int | None]]:
+    """A stage's spans as its record counts them: a stage added planned starts
+    at its stage-open (the planned add is no close, the open no reopen); any
+    other stage as `_with_add_span`."""
+    found: list[tuple[int, int | None]] = _stage_spans(events, {sid})[sid]
+    f: object = dict(events)[add].get("f")
+    if isinstance(f, dict) and f.get("status") == "planned":
+        return found
+    return _with_add_span(found, add)
+
+
 def _ignored(repo: Path, refs: list[str]) -> set[str]:
     """Those of `refs` git ignores (`check-ignore`; works for missing files too;
     tracked files are never ignored). Empty set when git cannot tell."""
@@ -2404,7 +2517,7 @@ def _findings(
             st_r: subprocess.CompletedProcess[bytes] | None = _git(
                 repo,
                 ["status", "--porcelain", "--untracked-files=all", "--",
-                 f"pm/stages/{st.title}/"],
+                 _stage_dir(st)],
             )
             files: int = (
                 len(st_r.stdout.splitlines()) if st_r and st_r.returncode == 0 else 0
@@ -2718,6 +2831,10 @@ def _parser() -> argparse.ArgumentParser:
     pz.add_argument("id")
     pz.add_argument("--sign-off", default=None)
     pz.add_argument("--ref", action="append", default=[])
+    po: argparse.ArgumentParser = sub.add_parser("stage-open", parents=[common])
+    po.add_argument("id")
+    po.add_argument("--follows", default=None)
+    po.set_defaults(imported=False, legacy_id=None)  # for _check_names
     pv: argparse.ArgumentParser = sub.add_parser(
         "reref",
         parents=[common],
@@ -2778,6 +2895,7 @@ HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "import": _cmd_import,
     "doctor": _cmd_doctor,
     "reref": _cmd_reref,
+    "stage-open": _cmd_stage_open,
 }
 
 

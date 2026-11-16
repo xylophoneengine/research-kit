@@ -481,7 +481,8 @@ def test_help_usage_lists_ledger_commands() -> None:
     positional: str = r.stdout.split("positional arguments:", 1)[1]
     positional = positional.split("options:", 1)[0]
     cmds: tuple[str, ...] = (
-        "sync", "add", "import", "list", "stage-close", "brief-check", "shelve"
+        "sync", "add", "import", "list", "stage-close", "stage-open",
+        "brief-check", "shelve",
     )
     for cmd in cmds:
         assert re.search(rf"[{{,]{cmd}[,}}]", usage), usage
