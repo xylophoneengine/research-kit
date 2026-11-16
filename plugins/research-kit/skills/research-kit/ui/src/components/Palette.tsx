@@ -7,7 +7,7 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import { labelOf, matches, pinExact, type Entry } from "@/lib/ledger";
+import { idHint, labelOf, matches, pinExact, type Entry } from "@/lib/ledger";
 
 // Cmd-K / Ctrl-K: the same search as the header box, over the whole ledger
 // (no filters), first 50 hits
@@ -41,9 +41,9 @@ export function Palette({
   return (
     <CommandDialog open={show} onOpenChange={setShow} title="Search" description="Find an entry">
       <Command shouldFilter={false}>
-        <CommandInput value={input} onValueChange={setInput} placeholder={idOnly ? (exact ? "exact ids and labels" : "id prefixes, exact labels") : "search id, title, note..."} />
+        <CommandInput value={input} onValueChange={setInput} placeholder={idOnly ? (exact ? "whole ids and labels" : "id prefixes, whole labels") : "search id, title, note..."} />
         {idOnly && (
-          <div className="px-3 py-1 text-xs text-muted-foreground">{exact ? "id mode: exact ids and labels" : "id mode: id prefixes and exact labels"}</div>
+          <div className="px-3 py-1 text-xs text-muted-foreground">id mode: {idHint(exact)}</div>
         )}
         <CommandList>
           <CommandEmpty>no match</CommandEmpty>

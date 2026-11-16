@@ -419,6 +419,13 @@ test("id-only search with exact on: the whole id or label, as before the prefix 
   expect(formatRoute(parseRoute("#/list?q=T-1&idonly=1"))).toBe("#/list?q=T-1&idonly=1");
 });
 
+test("exact does not outlive id mode: id off drops exact=1 from the route (T-34)", () => {
+  const on = parseRoute("#/list?q=T-1&idonly=1&exact=1");
+  expect(formatRoute({ ...on, idOnly: false })).toBe("#/list?q=T-1");
+  expect(formatRoute(parseRoute("#/list?q=T-1&exact=1"))).toBe("#/list?q=T-1");
+  expect(parseRoute(formatRoute({ ...on, idOnly: false })).exact).toBe(false);
+});
+
 test("status planned: own status, never open (T-45)", () => {
   const p: Entry = { ...s1, id: "P-1", status: "planned", extra: { queue: "3/2", follows: "S-1" } };
   const LP: Ledger = { ...L, entries: [...L.entries, p] };

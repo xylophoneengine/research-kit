@@ -116,7 +116,7 @@ export function formatRoute(r: Route): string {
   if (r.owner.length) p.push(`owner=${enc(r.owner)}`);
   if (r.q) p.push(`q=${encodeURIComponent(r.q)}`);
   if (r.idOnly) p.push("idonly=1");
-  if (r.exact) p.push("exact=1");
+  if (r.idOnly && r.exact) p.push("exact=1"); // exact belongs to id mode
   if (r.sort !== "default") p.push(`sort=${r.sort}`);
   if (r.desc) p.push("dir=desc");
   if (r.e) p.push(`e=${encodeURIComponent(r.e)}`);
@@ -143,6 +143,10 @@ export function backlinks(l: Ledger): Map<string, string[]> {
   }
   return m;
 }
+
+// the one text for what id mode matches (id button, exact button, palette hint)
+export const idHint = (exact: boolean): string =>
+  `ids match ${exact ? "whole" : "by prefix"}, labels match whole`;
 
 // idOnly: the query is a list of ids / labels (split on spaces and commas);
 // an entry matches when its id starts with one of them (equals one, with `exact`)

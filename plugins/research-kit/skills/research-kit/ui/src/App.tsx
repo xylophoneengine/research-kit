@@ -17,7 +17,7 @@ import { Palette } from "@/components/Palette";
 import { Split } from "@/components/Split";
 import { Stages } from "@/components/Stages";
 import { Timeline } from "@/components/Timeline";
-import { byId, exactHit, labelIndex, projectName, stageCodes, visible, type Tab } from "@/lib/ledger";
+import { byId, exactHit, idHint, labelIndex, projectName, stageCodes, visible, type Tab } from "@/lib/ledger";
 import { MoonIcon, RefreshCwIcon, SearchIcon, SunIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { applyTheme, initialTheme, storeTheme, type Theme } from "@/theme";
@@ -104,9 +104,9 @@ export default function App() {
           />
           <InputGroupAddon align="inline-end">
             <InputGroupButton
-              aria-label="id: match id prefixes and exact labels"
+              aria-label={`id: ${idHint(route.exact)}`}
               aria-pressed={route.idOnly}
-              title="match id prefixes and exact labels"
+              title={idHint(route.exact)}
               className={route.idOnly ? "bg-primary text-primary-foreground hover:bg-primary/90" : "text-muted-foreground"}
               onClick={() => patch({ idOnly: !route.idOnly })}
             >
@@ -114,9 +114,9 @@ export default function App() {
             </InputGroupButton>
             {route.idOnly && (
               <InputGroupButton
-                aria-label="exact match only: whole ids"
+                aria-label={`exact match only: ${idHint(route.exact)}`}
                 aria-pressed={route.exact}
-                title="exact match only: whole ids, not prefixes"
+                title={idHint(route.exact)}
                 className={route.exact ? "bg-primary text-primary-foreground hover:bg-primary/90" : "text-muted-foreground"}
                 onClick={() => patch({ exact: !route.exact })}
               >
