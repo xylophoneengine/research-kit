@@ -34,9 +34,9 @@ export const DEFAULT_ORDER: Record<SortTab, string> = {
 };
 
 export const NONE = "-"; // filter token for an empty owner / stage
-export const STATUSES = ["open", "running", "done", "dropped", "superseded", "shelved"];
+export const STATUSES = ["open", "running", "done", "dropped", "superseded", "shelved", "planned"];
 
-export const BOARD_COLS = ["running", "open", "deferred", "shelved", "done", "dropped", "superseded"];
+export const BOARD_COLS = ["running", "open", "deferred", "planned", "shelved", "done", "dropped", "superseded"];
 
 // Board column of an entry: its status, except that an open or running
 // `deferred` entry goes to the "deferred" column (it is parked, not open).
@@ -143,13 +143,14 @@ export function backlinks(l: Ledger): Map<string, string[]> {
 }
 
 // idOnly: the query is a list of ids / labels (split on spaces and commas);
-// an entry matches when its id or label equals one of them exactly
+// an entry matches when its id starts with one of them or its label equals one exactly
 export function matches(e: Entry, q: string, idOnly = false): boolean {
   const n = q.trim().toLowerCase();
   if (!n) return true;
   if (idOnly) {
     const terms = n.split(/[\s,]+/).filter(Boolean);
-    return terms.includes(e.id.toLowerCase()) || terms.includes(labelOf(e).toLowerCase());
+    const id = e.id.toLowerCase();
+    return terms.some((t) => id.startsWith(t)) || terms.includes(labelOf(e).toLowerCase());
   }
   const hay = [e.id, e.title, e.note, e.extra.legacy_id, e.extra.source];
   return hay.some((h) => typeof h === "string" && h.toLowerCase().includes(n));
@@ -470,7 +471,7 @@ export function stageGroups(all: Entry[], entries: Entry[]): Group[] {
       (a, b) =>
         (entryDay(a) || "~").localeCompare(entryDay(b) || "~") || num(a.id) - num(b.id),
     );
-    const live = stage !== null && !CLOSED.has(stage.status);
+    const live = stage !== null && !CLOSED.has(stage.status) && stage.status !== "planned";
     const days = [...its, ...(stage ? [stage] : [])].map(entryDay);
     if (stage && !live && DAY_RE.test(stage.updated.slice(0, 10))) days.push(stage.updated.slice(0, 10));
     const real = days.filter(Boolean).sort();

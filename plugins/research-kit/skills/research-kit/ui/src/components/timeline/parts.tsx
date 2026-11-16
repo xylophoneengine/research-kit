@@ -17,9 +17,9 @@ export type TimelineProps = {
 
 export const PAGE = 200;
 
-// done is muted, open/running strong, dropped/superseded/shelved faint and struck
+// done and planned are muted, open/running strong, dropped/superseded/shelved faint and struck
 export function statusClass(status: string): string {
-  if (status === "done") return "text-muted-foreground";
+  if (status === "done" || status === "planned") return "text-muted-foreground";
   if (status === "open" || status === "running") return "font-medium";
   return "text-muted-foreground/60 line-through";
 }

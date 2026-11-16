@@ -39,9 +39,9 @@ export function Palette({
   return (
     <CommandDialog open={show} onOpenChange={setShow} title="Search" description="Find an entry">
       <Command shouldFilter={false}>
-        <CommandInput value={input} onValueChange={setInput} placeholder={idOnly ? "ids and labels, exact" : "search id, title, note..."} />
+        <CommandInput value={input} onValueChange={setInput} placeholder={idOnly ? "id prefixes, exact labels" : "search id, title, note..."} />
         {idOnly && (
-          <div className="px-3 py-1 text-xs text-muted-foreground">id mode: exact ids and labels</div>
+          <div className="px-3 py-1 text-xs text-muted-foreground">id mode: id prefixes and exact labels</div>
         )}
         <CommandList>
           <CommandEmpty>no match</CommandEmpty>

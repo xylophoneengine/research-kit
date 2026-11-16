@@ -104,9 +104,9 @@ export default function App() {
           />
           <InputGroupAddon align="inline-end">
             <InputGroupButton
-              aria-label="id: match ids and labels exactly"
+              aria-label="id: match id prefixes and exact labels"
               aria-pressed={route.idOnly}
-              title="match ids and labels exactly"
+              title="match id prefixes and exact labels"
               className={route.idOnly ? "bg-primary text-primary-foreground hover:bg-primary/90" : "text-muted-foreground"}
               onClick={() => patch({ idOnly: !route.idOnly })}
             >

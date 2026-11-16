@@ -25,7 +25,9 @@ import {
   parseRoute,
   projectName,
   sortBy,
+  sortDefault,
   sortGroups,
+  STATUSES,
   stageCodeOf,
   stageCodes,
   visible,
@@ -72,12 +74,12 @@ test("matches", () => {
   expect(matches(d1, "utf-8")).toBe(true);     // note
   expect(matches(d1, "zzz")).toBe(false);
 });
-test("id-only search: exact id or label, terms split on spaces and commas", () => {
+test("id-only search: id prefix or exact label, terms split on spaces and commas", () => {
   const t12: Entry = { ...base, id: "T-12", type: "task", title: "twelve", status: "open",
     owner: "x", stage: "", extra: { legacy_id: "03b/W1" } };
   const L12: Ledger = { ...L, entries: [t1, t12, d1] };
   const r = (q: string): string[] => ids(visible(L12, { ...route("#/board"), q, idOnly: true }));
-  expect(r("T-1")).toEqual(["T-1"]);                      // not T-12
+  expect(r("T-1")).toEqual(["T-1", "T-12"]);              // prefix: T-12 too
   expect(r("t-12, D-1 03B/W1")).toEqual(["T-12", "D-1"]);
   expect(r("D-07")).toEqual(["D-1"]);                     // legacy_id of d1
   expect(r("pick")).toEqual([]);                          // no substring match
@@ -375,7 +377,7 @@ test("boardCol: deferred column holds open and running deferred entries only", (
   expect(boardCol(e("decision", "superseded"))).toBe("superseded");
   // every column the board lists is reachable
   expect(new Set(["open", "running", "done", "dropped", "superseded", "shelved"].map((s) => boardCol(e("task", s)))).size).toBe(6);
-  expect(BOARD_COLS).toHaveLength(7);
+  expect(BOARD_COLS).toHaveLength(8);
 });
 
 test("byType: builtin order first, declared types after by name", () => {
@@ -385,3 +387,29 @@ test("byType: builtin order first, declared types after by name", () => {
   expect(g[0].items).toHaveLength(2);
 });
 
+
+test("id-only search: a prefix of an id lists every id that starts with it (T-34)", () => {
+  const mk = (id: string, extra: Entry["extra"] = {}): Entry => ({ ...t1, id, extra });
+  const es = [mk("DB-3"), mk("DB-30"), mk("DB-31"), mk("DB-4"), mk("T-1"), mk("T-2", { legacy_id: "03b/W1" })];
+  const r = (q: string): string[] => es.filter((e) => matches(e, q, true)).map((e) => e.id);
+  expect(r("db-")).toEqual(["DB-3", "DB-30", "DB-31", "DB-4"]);
+  expect(r("DB-3")).toEqual(["DB-3", "DB-30", "DB-31"]);
+  expect(r("db-30")).toEqual(["DB-30"]);
+  expect(r("db-3, t-")).toEqual(["DB-3", "DB-30", "DB-31", "T-1", "T-2"]); // each term is a prefix
+  expect(r("03b/w1")).toEqual(["T-2"]);                    // labels stay exact
+  expect(r("03b")).toEqual([]);                            // a label prefix is not a match
+  expect(es.filter((e) => matches(e, "db-3", false)).map((e) => e.id)).toEqual(["DB-3", "DB-30", "DB-31"]); // text mode unchanged
+});
+
+test("status planned: own status, never open (T-45)", () => {
+  const p: Entry = { ...s1, id: "P-1", status: "planned", extra: { queue: "3/2", follows: "S-1" } };
+  const LP: Ledger = { ...L, entries: [...L.entries, p] };
+  expect(STATUSES).toContain("planned");
+  expect(BOARD_COLS).toContain("planned");
+  expect(boardCol(p)).toBe("planned");
+  expect(ids(visible(LP, route("#/list")))).toEqual(["T-1", "T-2", "S-1"]); // default open+running filter
+  expect(ids(visible(LP, route("#/list?status=planned")))).toEqual(["P-1"]);
+  expect(ids(visible(LP, route("#/list?status=all")))).toContain("P-1");
+  expect(sortDefault([p, t2], LP.types).map((e) => e.id)).toEqual(["T-2", "P-1"]); // after open
+  expect(stageGroups(LP.entries, LP.entries).find((g) => g.key === "P-1")?.live).toBe(false);
+});
