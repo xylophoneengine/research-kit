@@ -102,7 +102,7 @@ STAMP_RE: re.Pattern[str] = re.compile(
     r"<!-- (?:research-kit|research-kit-kind \S+|paper-playbook): (\S+) -->"
 )
 GIT_READ: frozenset[str] = frozenset(  # the only git subcommands the tool runs
-    {"status", "diff", "ls-files", "check-ignore", "show"}
+    {"status", "diff", "ls-files", "check-ignore", "show", "rev-parse"}
 )
 WASTE_DIRS: tuple[str, ...] = ("pm/waste/", "WASTE/")
 # refs the kit prescribes into a folder its .gitignore block ignores on purpose
@@ -2412,17 +2412,18 @@ def _reopen_line(events: list[tuple[int, dict[str, object]]], sid: str) -> int:
     return line
 
 
-def _stage_checks(repo: Path, ref: str) -> None:
+def _stage_checks(repo: Path, ref: str, local: bool) -> None:
     """The doctor checks of one open stage, before it is closed: prints what
-    they find; refuses (LedgerError) on a missing ref or stage folder."""
+    they find; refuses (LedgerError) on a missing ref or stage folder.
+    `local`: pm/ is local only (`_findings`)."""
     raw: bytes = (repo / LEDGER_REL).read_bytes()
     events: list[tuple[int, dict[str, object]]] = _parse(raw)
     state: dict[str, Entry] = fold(events)
     sid: str = resolve(state, ref, stage=True)
     if state[sid].status != "open":
         return  # refused below, with the reason
-    found, notes = _findings(repo, raw, events, state, sid, ledger_wide=False)
-    if not found:  # the git note alone is not worth a line at every close
+    found, notes = _findings(repo, raw, events, state, sid, False, local)
+    if not found:  # the git and pm notes alone are not worth a line (D-73)
         return
     n_hard: int = _print_findings(found, notes, f"checks {sid}")
     if n_hard:
@@ -2665,6 +2666,7 @@ def _write_stage_record(repo: Path, st: Entry) -> str:
 
 def _cmd_stage_close(a: argparse.Namespace) -> int:
     repo: Path = _repo(a)
+    local: bool = read_config(repo)["pm"] == "local"  # broken: refused, no write
     who: str = _name(a.who, "--who")
     a.ref = _check_refs(repo, a.ref)
     state: dict[str, Entry] = load(repo)
@@ -2680,7 +2682,7 @@ def _cmd_stage_close(a: argparse.Namespace) -> int:
         print(f"{st.id} is already closed; no ledger line written")
         print(_write_stage_record(repo, st))
         return 0
-    _stage_checks(repo, a.id)
+    _stage_checks(repo, a.id, local)
     out: list[str] = []
     closed: list[str] = []
 
@@ -2793,6 +2795,37 @@ STATUS_WORD_RE: re.Pattern[str] = re.compile(r"^(open|done|todo)[:\s]", re.I)
 DONE_OPEN_RE: re.Pattern[str] = re.compile(r"^(?:(?i:open):|OPEN\s)")
 G_STAMPS: str = "rule file behind the kit (run /rk-sync)"
 G_DECISIONS: str = "decisions of the stage not owned by user (for the sign-off)"
+_CONFIG_REL: str = "pm/config.json"
+_G_CONFIG: str = f"{_CONFIG_REL} does not parse"
+_LOCAL_NOTICE: str = f"pm: local only ({_CONFIG_REL}): git checks on pm/ skipped"
+
+
+def read_config(repo: Path) -> dict[str, object]:
+    """The object of pm/config.json with `pm` always set ("tracked" without the
+    file or key). The only reader of the file; no git, no write."""
+    try:
+        raw: bytes = (repo / _CONFIG_REL).read_bytes()
+    except (FileNotFoundError, NotADirectoryError):
+        return {"pm": "tracked"}
+    except OSError:  # a folder, no permission: as unreadable JSON
+        raw = b""
+    try:
+        obj: object = json.loads(raw.decode("utf-8"))
+    except (ValueError, RecursionError):  # not UTF-8, not JSON, nested too deep
+        obj = None
+    if not isinstance(obj, dict):
+        raise LedgerError(f"{_CONFIG_REL}: not a JSON object")
+    cfg: dict[str, object] = obj
+    cfg.setdefault("pm", "tracked")
+    if cfg["pm"] not in ("local", "tracked"):
+        raise LedgerError(f'{_CONFIG_REL}: "pm" must be "local" or "tracked"')
+    return cfg
+
+
+def _under_pm(ref: str) -> bool:
+    """`ref` lies under pm/ (design I7)."""
+    p: str = os.path.normpath(ref)
+    return p == "pm" or p.startswith("pm/")
 
 
 def _git(
@@ -2827,6 +2860,33 @@ def _git_skip(repo: Path) -> str:
     if r is None or r.returncode != 0:
         return "git: not a git repo; git checks skipped"
     return ""
+
+
+def git_exclude_file(repo: Path) -> Path | None:
+    """Absolute path of git's exclude file for `repo` (a linked worktree: the
+    main checkout's); None when git cannot run or `repo` is in no git repo."""
+    r: subprocess.CompletedProcess[bytes] | None = _git(
+        repo, ["rev-parse", "--git-path", "info/exclude"]
+    )
+    out: bytes = r.stdout.rstrip(b"\n") if r is not None and r.returncode == 0 else b""
+    return (repo / os.fsdecode(out)).resolve() if out else None
+
+
+def git_prefix(repo: Path) -> str | None:
+    """`repo` below the git top level with a trailing slash ("" at the top
+    level); None when git cannot run or `repo` is in no git repo."""
+    r: subprocess.CompletedProcess[bytes] | None = _git(
+        repo, ["rev-parse", "--show-prefix"]
+    )
+    if r is None or r.returncode != 0:
+        return None
+    return os.fsdecode(r.stdout.removesuffix(b"\n"))
+
+
+def git_tracked(repo: Path, rel: str) -> bool:
+    """git has a file at or under `rel` in `repo`; False when git cannot run."""
+    r: subprocess.CompletedProcess[bytes] | None = _git(repo, ["ls-files", "--", rel])
+    return r is not None and r.returncode == 0 and bool(r.stdout)
 
 
 def _head_lines(repo: Path, raw: bytes) -> tuple[int, int | None]:
@@ -2923,14 +2983,17 @@ def _findings(
     state: dict[str, Entry],
     only: str | None,
     ledger_wide: bool,
+    local: bool = False,
 ) -> tuple[list[Finding], list[str]]:
     """(findings, notes) for the whole ledger, or for stage `only` and its entries.
 
     `ledger_wide`: also the checks that are not about one stage (ledger against
-    HEAD, rule stamps). Read-only: writes nothing, git read-only commands only."""
+    HEAD, rule stamps). `local`: pm/ is local only (design R5, R6): no git check
+    on a path under pm/; a missing ref there or stage folder is HARD; nothing
+    against HEAD. Read-only: writes nothing, git read-only commands only."""
     out: list[Finding] = []
     skip: str = _git_skip(repo)
-    notes: list[str] = [skip] if skip else []
+    notes: list[str] = [_LOCAL_NOTICE] * local + ([skip] if skip else [])
     entries: list[Entry] = sorted(
         (e for e in state.values() if only is None or only in (e.id, e.stage)),
         key=lambda e: e.lines[0],
@@ -2968,11 +3031,19 @@ def _findings(
                 out.append((False, G_WASTE_GONE, _clip(f"{e.id} {r}", TITLE_MAX)))
             else:
                 gone.append((e.id, r))
-    # a clone has no git-ignored files: such a missing ref is no damage
-    ign: set[str] = set() if skip else _ignored(repo, [r for _, r in gone])
+    # a clone has no git-ignored files: such a missing ref is no damage; a
+    # local pm/ is in no clone, so a missing ref there is (D-67)
+    def local_pm(r: str) -> bool:
+        return local and _under_pm(r)
+
+    ign: set[str] = set() if skip else _ignored(
+        repo, [r for _, r in gone if not local_pm(r)]
+    )
     for i, r in gone:
         txt: str = _clip(f"{i} {r}", TITLE_MAX)
-        if r in ign or KIT_IGNORED_RE.match(os.path.normpath(r)):
+        if local_pm(r):
+            out.append((True, G_REF, txt))
+        elif r in ign or KIT_IGNORED_RE.match(os.path.normpath(r)):
             out.append((False, G_IGNORED_GONE, txt))
         else:
             out.append((True, G_REF, txt))
@@ -2983,6 +3054,7 @@ def _findings(
     cand: list[tuple[str, str]] = [  # the kit's own ignored places: by design
         (i, r) for i, r in present
         if not _waste(r) and not KIT_IGNORED_RE.match(os.path.normpath(r))
+        and not local_pm(r)
     ]
     if not skip and cand:
         ignored: set[str] = _ignored(repo, [r for _, r in cand])
@@ -2998,15 +3070,15 @@ def _findings(
         if (repo / folder).is_dir():
             continue
         tracked: subprocess.CompletedProcess[bytes] | None = (
-            None if skip else _git(repo, ["ls-files", "--", folder])
-        )
+            None if skip or local else _git(repo, ["ls-files", "--", folder])
+        )  # local: no clone lacks it, so missing is HARD (D-67)
         if tracked is not None and tracked.returncode == 0 and not tracked.stdout:
             # git keeps no empty folder: a clone of a stage with no files yet
             out.append((False, G_FOLDER_EMPTY, f"{st.id} {folder}"))
         else:
             out.append((True, G_FOLDER, f"{st.id} {folder}"))
     done: list[Entry] = [st for st in stages if st.status == "done"]
-    if not skip and (done or ledger_wide):
+    if not skip and not local and (done or ledger_wide):
         committed, differs = _head_lines(repo, raw)
         if ledger_wide and differs is not None:
             out.append((True, G_HEAD, f"{LEDGER_REL}:{differs} differs from HEAD: "
@@ -3137,14 +3209,25 @@ def _print_findings(
 
 def _doctor_start(a: argparse.Namespace) -> int:
     """Session start, at most 3 lines (the hook cuts at 3): kit line, then up to
-    two rule files behind the kit; with more than two, one and '+N more'."""
+    two rule files behind the kit; with more than two, one and '+N more'. A
+    local or broken pm/config.json takes line 2, leaving one line (D-71)."""
     print(f"kit {kit_version()}")
     try:
         repo: Path = _repo(a)
         behind: list[tuple[str, str, str]] = stamps_behind(repo)
     except (LedgerError, OSError):
         return 0
-    shown: list[tuple[str, str, str]] = behind[:2] if len(behind) <= 2 else behind[:1]
+    room: int = 2
+    try:
+        if read_config(repo)["pm"] == "local":
+            print("pm: local only")
+            room = 1
+    except LedgerError:
+        print(_G_CONFIG)
+        room = 1
+    shown: list[tuple[str, str, str]] = (
+        behind[:room] if len(behind) <= room else behind[:room - 1]
+    )
     for rel, have, want in shown:
         print(f"{rel} {have}, kit {want}: run /rk-sync")
     if len(shown) < len(behind):
@@ -3157,15 +3240,25 @@ def _cmd_doctor(a: argparse.Namespace) -> int:
         return _doctor_start(a)
     repo: Path = _repo(a)
     raw: bytes = (repo / LEDGER_REL).read_bytes()
+    cfg: list[Finding] = []  # broken config: listed first, checked as tracked
+    local: bool = False
+    try:
+        local = read_config(repo)["pm"] == "local"
+    except LedgerError as e:
+        cfg = [(True, _G_CONFIG, str(e).removeprefix(f"{_CONFIG_REL}: "))]
     try:
         events: list[tuple[int, dict[str, object]]] = _parse(raw)
         state: dict[str, Entry] = fold(events)
     except LedgerError as e:
-        return 1 if _print_findings([(True, G_PARSE, str(e))], [], "doctor") else 0
+        found: list[Finding] = [*cfg, (True, G_PARSE, str(e))]
+        return 1 if _print_findings(found, [_LOCAL_NOTICE] * local, "doctor") else 0
     only: str | None = resolve(state, a.stage, stage=True) if a.stage else None
-    found, notes = _findings(repo, raw, events, state, only, ledger_wide=True)
+    found, notes = _findings(repo, raw, events, state, only, True, local)
     what: str = f"doctor {only or ''}".strip()
-    return 1 if _print_findings(found, notes, what, _nonneg(a.limit, "--limit")) else 0
+    return (
+        1 if _print_findings(cfg + found, notes, what, _nonneg(a.limit, "--limit"))
+        else 0
+    )
 
 
 def _cmd_brief_check(a: argparse.Namespace) -> int:
