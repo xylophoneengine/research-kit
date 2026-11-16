@@ -67,7 +67,8 @@ Then restart Claude Code (or `/reload-plugins`). Requirements: `bash`, `jq`,
 2. In your project repo (must be a git repo): `/rk-init`. Pick kinds, light or
    full, and who commits.
 3. Start work: `/team <task>` (or `/team juniors=1 critics=1 <task>` for a
-   small one). In full mode, open a stage first (see Stage lifecycle).
+   small one). In full mode, open a stage first (`rk add stage <kind>-<topic>
+   --open`, see Stage lifecycle).
 4. Before a compact say `get ready for compact`; after it the session resumes
    from the handoff file.
 5. When the plugin updates: `/rk-sync` (dry run), sort DROPPED lines, then
@@ -120,6 +121,8 @@ Then bring each repo along: [After a kit update](#after-a-kit-update).
 From 0.2.1: a ledger that holds a shelved entry needs kit 0.2.1 or newer in
 every session that opens the repo. An older kit refuses it with an
 unknown-status error: update the kit, do not edit the ledger line.
+
+From 0.2.5: a ledger with a planned stage needs that kit in every session; an older kit refuses it with an unknown-status error.
 
 ## Kinds
 
@@ -312,6 +315,7 @@ again, with each open span and each reopen.
 
 ```
 rk add <type> <title>       log a task, decision, deferred item, ...
+rk add stage <kind>-<topic> plan a stage (--open: open now; --follows, --before, --after)
 rk start|close|drop|reopen  change status (close and drop take --note)
 rk shelve                   known, not planned now: leaves the open list (needs --note)
 rk set | rk supersede       edit fields (--ref-drop PATH removes a wrong ref); replace a decision
@@ -319,12 +323,16 @@ rk set | rk supersede       edit fields (--ref-drop PATH removes a wrong ref); r
                             handoff) = raised in: while open it may be put into a closed
                             stage by add, set or import, and start / reopen work there
                             (an open or running task cannot)
-rk list | show | search     open items (--all: closed and shelved), one or more entries, text search
+                            stages only: --status planned|shelved|dropped (--note needed),
+                            --before|--after S-n (order planned stages)
+rk list | show | search     open items (--all: closed and shelved; --status S: one status), one or more entries, text search
 rk recent                   newest events
 rk import FILE.jsonl        legacy history into the ledger, marked imported (--dry-run first)
 rk ui [--port N]            read-only browser view of the ledger (see below)
 rk doctor [--stage S-n]     read-only check of ledger, folders, git: exit 1 on hard findings
 rk reref OLD NEW [--dry-run]   point refs at OLD to NEW, after a file was moved by hand
+rk stage-open S-n [--follows S-m]   open a planned stage: next NN, folder renamed, refs rewritten
+rk stage-rename S-n <kind>-<topic> [--note N]   rename the kind-topic part of a stage title (a done stage needs --note)
 rk stage-close S-n --sign-off D-m   close a stage, last; runs the doctor --stage checks first
 rk render                   rebuild pm/STATUS.md
 rk brief-check              the brief gate the hook calls

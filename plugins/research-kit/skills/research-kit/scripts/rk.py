@@ -25,10 +25,14 @@ entries are exempt):
       [--note TEXT] [--link ID]... [--ref PATH]... [--status STATUS]
       [--imported --source FILE:LINE [--legacy-id OLD] [--date YYYY-MM-DD]]
       (title: one line, at most 160 characters; --label L is unique; a stage's
-      title is its folder name and is never renamed; add task without --note is
-      refused, imports exempt; add stage "NN[letter]-kind-topic" also creates
-      the stage folder with its subfolders and records it as ref)
+      title is its folder name, changed only by stage-rename; add task without
+      --note is refused, imports exempt; add stage "kind-topic" plans a stage:
+      status planned, folder pm/stages/P-<n>-kind-topic/ with its subfolders,
+      recorded as ref; [--open] opens it at once, [--follows S-m] gives it a
+      suffix letter, [--before S-n | --after S-n] place it among the planned
+      stages)
   python3 -I rk.py start ID [--owner NAME]
+      (refused for an entry of a planned or shelved stage)
   python3 -I rk.py close ID --note TEXT [--ref PATH]... [--link ID]...
   python3 -I rk.py drop ID --note TEXT [--ref PATH]... [--link ID]...
   python3 -I rk.py shelve ID --note TEXT [--ref PATH]... [--link ID]...
@@ -36,14 +40,23 @@ entries are exempt):
   python3 -I rk.py reopen ID --note TEXT [--ref PATH]...
   python3 -I rk.py set ID [--title T] [--owner N] [--label L] [--stage S]
       [--note T | --note-replace T] [--link ID]... [--ref PATH]...
-      [--ref-drop PATH]...   (--ref-drop removes a ref; the history keeps it)
+      [--ref-drop PATH]... [--status planned|shelved|dropped]
+      [--before S-n | --after S-n]   (--ref-drop removes a ref; the history
+      keeps it; --status and --before/--after are for stages: shelved and
+      dropped need --note; only stage-open opens, only stage-close closes)
   python3 -I rk.py supersede ID TITLE --owner NAME [--note T] [--link ID]...
       [--ref PATH]...
-  python3 -I rk.py list [--type T] [--owner N] [--stage S] [--limit N] [--all]
+  python3 -I rk.py list [--type T] [--owner N] [--stage S] [--status STATUS]
+      [--limit N] [--all]   (planned stages add a line "planned N: ~NN title, ...")
   python3 -I rk.py show ID [ID ...]
   python3 -I rk.py search [TEXT] [--source S] [--label L] [--type T] [--limit N]
   python3 -I rk.py recent [-n N]
   python3 -I rk.py render
+  python3 -I rk.py stage-open S-n [--follows S-m]   (a planned stage gets the
+      next NN, its folder P-<n>-... is renamed, refs are rewritten)
+  python3 -I rk.py stage-rename S-n kind-topic [--note TEXT]   (changes the
+      kind-topic part of a title; folder and refs follow; a done stage needs
+      --note)
   python3 -I rk.py stage-close S-n --sign-off D-m [--ref PATH]...
       (runs the doctor checks of S-n first: refuses on a missing ref or
       stage folder, prints the soft findings, then closes)

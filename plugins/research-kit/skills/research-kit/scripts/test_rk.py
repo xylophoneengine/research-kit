@@ -506,6 +506,7 @@ def test_template_core() -> None:
         "Done when",
         "pm/ledger.jsonl",
         "rk stage-close",
+        "rk stage-open",
         "TASK: T-",
         "research-kit:worker-high",
     )

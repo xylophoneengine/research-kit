@@ -20,7 +20,7 @@ Script (every mode below): `python3 -I "${CLAUDE_PLUGIN_ROOT}/skills/research-ki
 The ledger commands use the same script (`rk.py add|start|close|list|import|...`); the
 reference is core AGENTS.md 4.2. `add` and `set` take `--label L` (form
 `<stage code>/<item>`, e.g. `03b/W4`, the `/` is required; unique); a stage's
-title is its folder name and is never renamed; every ID argument also takes a
+title is its folder name, changed only by `stage-rename`; every ID argument also takes a
 label or a stage code (`03b`); receipts print the real ID and the entry's stage
 (or `(no stage)`); `set --stage` with the stage the entry already has writes
 nothing (`unchanged`); an `add` gets the single open stage by default; when there
@@ -39,8 +39,13 @@ rewrite it, `rk list --stage S-n
 --all` shows the entry. A `TASK:` line in a
 brief names its tasks by id or by label, listed first (a label after other words
 does not count); titles are one line, 160 characters at most. `add task` without
-`--note` is refused (imports exempt); `add stage "<NN-kind-topic>"` creates the
-stage folder and records it as ref. Every `--ref` (add, set, close, drop,
+`--note` is refused (imports exempt); `add stage "<kind>-<topic>"` plans a stage
+(status `planned`, folder `P-<n>-<kind>-<topic>`, recorded as ref; `--open` or
+`stage-open S-n [--follows S-m]` gives it the next NN and renames the folder;
+`--before S-n` / `--after S-n` order planned stages; `stage-rename S-n
+"<kind>-<topic>" [--note N]` renames a stage; `set S-n --status
+planned|shelved|dropped --note ...`; `start` is refused for an entry of a
+planned or shelved stage). Every `--ref` (add, set, close, drop,
 shelve, reopen, supersede, stage-close) must name an existing file, relative to the repo
 root (a `://` URL, `doi:` or `arXiv:` passes; a path outside the repo is refused;
 imports exempt; checked against the main checkout, so in a worktree merge first):
