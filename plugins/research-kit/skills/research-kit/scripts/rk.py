@@ -78,7 +78,8 @@ entries are exempt):
   python3 -I rk.py doctor [--stage S] [--limit N]   (read-only; exit 1 on a
       HARD finding; N lines per group, default 20, 0 = all)
   python3 -I rk.py doctor --start       (kit version, rule files behind the
-      kit; at most 3 lines, always exit 0)
+      kit; the kit part is at most 3 lines, then one `spec: ` line per open
+      stage without a user decision labelled <stage code>/SPEC; always exit 0)
   python3 -I rk.py brief-check < message.txt    (hook gate: rc 0 pass, 2 refuse)
   python3 -I rk.py import FILE.jsonl [FILE.jsonl ...] [--dry-run]
       (imported history, all or nothing; rows: type, title, source; optional
@@ -275,8 +276,9 @@ def _exclude_state(repo_dir: Path) -> tuple[Path, str, str] | None:
     prefix: str | None = ledger.git_prefix(repo_dir)  # anchors the lines (D-76)
     if path is None or prefix is None:
         return None
-    old: str = path.read_text() if path.exists() else ""
-    lines: list[str] = [f"/{prefix}{ln}" for ln in _EXCL_LINES]
+    old: str = path.read_text(encoding="utf-8") if path.exists() else ""
+    anchor: str = re.sub(r"([\\*?\[\]])", r"\\\1", prefix)  # glob characters
+    lines: list[str] = [f"/{anchor}{ln}" for ln in _EXCL_LINES]
     return path, old, _marked_block(old, _excl_start(prefix), lines)
 
 
@@ -290,7 +292,7 @@ def _ensure_exclude(repo_dir: Path) -> Path | None:
     path, old, new = state
     if new != old:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(new)
+        path.write_text(new, encoding="utf-8")
     return path
 
 
@@ -493,8 +495,9 @@ def _bad_kinds(kinds: list[str]) -> list[str]:
 
 
 def cmd_init(
-    repo_dir: Path, kinds: list[str], mode: str, git_policy: str, pm: str = "tracked"
+    repo_dir: Path, kinds: list[str], mode: str, git_policy: str, pm: str | None = None
 ) -> int:
+    """`pm` None: pm/config.json decides (tracked without a file)."""
     target: Path = repo_dir / "AGENTS.md"
     bad: list[str] = _bad_kinds(kinds)
     if bad:
@@ -503,7 +506,7 @@ def cmd_init(
     if mode not in MODES or git_policy not in GIT_POLICIES:
         print(f"mode must be one of {MODES}, git one of {tuple(GIT_POLICIES)}")
         return 1
-    if pm not in _PM_MODES:
+    if pm is not None and pm not in _PM_MODES:
         print(f"pm must be one of {_PM_MODES}")
         return 1
     if not repo_dir.is_dir():
@@ -519,7 +522,7 @@ def cmd_init(
     cfg: dict[str, object] | None = _config(repo_dir)
     if cfg is None:
         return 1
-    local: bool = pm == "local" or cfg["pm"] == "local"
+    local: bool = (pm or cfg["pm"]) == "local"  # the flag wins over the file
     if pm == "local" and ledger.git_tracked(repo_dir, "pm/"):
         print(_REFUSAL)
         return 1
@@ -535,10 +538,12 @@ def cmd_init(
         kpath: Path = repo_dir / "pm" / "kinds" / f"{k}.md"
         if not kpath.exists():
             kpath.write_text(_kind_template(k).read_text())
+    if pm is not None and pm != cfg["pm"]:
+        (repo_dir / "pm" / "config.json").write_text(
+            _config_text(cfg, pm), encoding="utf-8"
+        )
     ignored: str = ".gitignore, .gitattributes"
     if local:
-        if cfg["pm"] != "local":
-            (repo_dir / "pm" / "config.json").write_text(_config_text(cfg, "local"))
         ignored = "pm/config.json" + (
             f", {_EXCL_LABEL}" if _ensure_exclude(repo_dir) else ""
         )
@@ -686,21 +691,25 @@ def cmd_sync(
             print(_diff(krepo, knew, rel))
 
     excl: Path | None = None  # git's exclude file, when it gets the local block
+    cfg_path: Path = repo_dir / "pm" / "config.json"
     if pm is not None and pm != cfg["pm"]:
-        writes[repo_dir / "pm" / "config.json"] = _config_text(cfg, pm)
+        writes[cfg_path] = _config_text(cfg, pm)
         print(f'\n== pm/config.json == "pm": {cfg["pm"]} -> {pm}')
 
     if local:
         state: tuple[Path, str, str] | None = _exclude_state(repo_dir)
         if state is None:
             print(f"\n{_NO_GIT}")
-        elif state[2] != state[1]:
-            excl = state[0]
-            writes[excl] = state[2]
-            print(f"\n== {_EXCL_LABEL} == research-kit block added/refreshed")
+        else:
+            excl_file, excl_old, excl_new = state
+            if excl_new != excl_old:
+                excl = excl_file
+                writes[excl] = excl_new
+                print(f"\n== {_EXCL_LABEL} == research-kit block added/refreshed")
         for name in (".gitignore", ".gitattributes"):  # only to find a 0.2.5 block
             f: Path = repo_dir / name
-            if f.exists() and GI_START in f.read_text().splitlines():
+            if (f.exists() and GI_START in f.read_text().splitlines()
+                    and ledger.git_tracked(repo_dir, name)):
                 print(f"\nnote: {name} holds a research-kit block; remove it by hand")
     else:
         gi: Path = repo_dir / ".gitignore"
@@ -721,7 +730,8 @@ def cmd_sync(
             old_excl: Path | None = ledger.git_exclude_file(repo_dir)
             prefix: str | None = ledger.git_prefix(repo_dir)
             if (old_excl is not None and prefix is not None and old_excl.exists()
-                    and _excl_start(prefix) in old_excl.read_text().splitlines()):
+                    and _excl_start(prefix)
+                    in old_excl.read_text(encoding="utf-8").splitlines()):
                 print(f"\nnote: {_EXCL_LABEL} holds a research-kit block; "
                       "remove it by hand")
 
@@ -769,7 +779,8 @@ def cmd_sync(
         print("wrote CLAUDE.md")
     for path, content in writes.items():
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
+        utf8: bool = path == excl or path == cfg_path
+        path.write_text(content, encoding="utf-8" if utf8 else None)
         print(f"wrote {_EXCL_LABEL if path == excl else path.relative_to(repo_dir)}")
     return 0
 
@@ -789,7 +800,7 @@ def main() -> int:
     pi.add_argument("--kinds", required=True, help="comma list: " + ",".join(KINDS))
     pi.add_argument("--mode", required=True, choices=MODES)
     pi.add_argument("--git", default="user", choices=tuple(GIT_POLICIES))
-    pi.add_argument("--pm", default="tracked", choices=_PM_MODES)
+    pi.add_argument("--pm", choices=_PM_MODES)
     pa: argparse.ArgumentParser = sub.add_parser("add-kind")
     pa.add_argument("repo_dir", type=Path)
     pa.add_argument("kind")
