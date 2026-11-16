@@ -1,4 +1,4 @@
-<!-- research-kit: 2026-11-16c -->
+<!-- research-kit: 2026-11-16d -->
 # AGENTS.md - how we work on a research project (research-kit core)
 
 Generic working method for every project kind (paper, software, reverse engineering, experiment, thesis), distilled from completed projects. Installed and updated by the `research-kit` plugin (`/rk-init`, `/rk-add-kind`, `/rk-upgrade`, `/rk-sync`, `/rk-close`). Everything above "Project appendix" is generic and replaced on sync: never edit it in a repo copy; repo-specific lines go into the appendix. Kind rules live in `pm/kinds/<kind>.md`, one file per active kind, listed in the kinds block of the appendix; they add to this file, never relax it. Every rule carries a one-clause reason so a later session can judge an edge case instead of obeying blind. Placeholders: `<ID>` = short project id (session prefix, appendix), `NN` = stage number, `<kind>` = kind id, `<topic>` = stage topic.
@@ -13,7 +13,7 @@ Generic working method for every project kind (paper, software, reverse engineer
 
 ### 0.2 First session in a new repo
 
-1. `/rk-init` asks kinds, mode and git policy, then creates the `pm/` tree, the appendix fields, the kinds block and the `.gitignore` block. Verify they exist; never hand-build a second tree.
+1. `/rk-init` asks kinds, mode and git policy, and whether `pm/` stays local only, then creates the `pm/` tree, the appendix fields, the kinds block and the `.gitignore` block (local-only: the exclude block instead). Verify they exist; never hand-build a second tree.
 2. Root `CLAUDE.md` = two-line pointer: "read AGENTS.md and pm/README.md; AGENTS.md is the agent file, not CLAUDE.md". Add `**/.cache/` and credential files to `.gitignore` before the first fetch or import. Why: API keys land in caches and transcripts.
 3. Skeleton file, headings only (lead): `pm/living/GOALS.md`.
 4. Fill the rest of the appendix with the user via AskUserQuestion; open questions (title) stay plain text. No silent defaults: an unanswered item -> `rk add deferred "<item>" --owner user` (title: one line, 160 characters at most). Why: a guessed default becomes an unrecorded decision.
@@ -252,7 +252,7 @@ Every claim in a report, note, README or brief carries one tag and a cite. Why: 
 
 ## 7. Git policy and waste
 
-The appendix `Git policy:` line decides; never infer it from habit.
+The appendix `Git policy:` line decides; never infer it from habit. Local-only repo (`pm/config.json`: `pm` = `local`; the session start block says `pm: local only`): `pm/` is never committed or force-added; skip every step that commits a `pm/` file. Why: the repo is public or shared and its record is not.
 - `user commits` (default): agents run no git command that changes state (commit, push, branch, checkout, reset, stash, rebase); read-only `status` / `diff` / `log` are fine. User commits. Why: the user owns history.
 - `orchestrator commits`: each implementer works in its own git worktree on its own branch (`isolation: "worktree"`) and commits only there. Only the lead merges into the main branch, after no BLOCKING critic finding is open, minors are logged (2.2 step 6) and the Done when check passes. The ledger stays one file in the main checkout (4.2): the lead carries it in each merge commit, never a ledger-only commit: `git merge --no-ff --no-commit <branch>`, then `git add pm/ledger.jsonl`, then `git commit` (staged before the merge, git refuses the merge; a fast-forward leaves no merge commit to carry it); `rk init` sets `pm/ledger.jsonl merge=union` in `.gitattributes`. Nobody pushes, force-pushes or rewrites history unless the user asks. Why: one merger keeps parallel work reviewable.
 - Never delete files, under either policy: move them to `pm/waste/` with the `research-kit:waste` skill (waste ledger row first; no `rm`, `git rm`, overwrite-to-clear). User empties it. Legacy `WASTE/` (appendix `Legacy waste:`) stays as is; new waste goes to `pm/waste/`. Why: deletions cannot be reviewed.

@@ -197,7 +197,7 @@ stage opens in a fresh session named after its folder (`/rename`).
 
 | Session | You type | What happens |
 |---|---|---|
-| setup | `/rk-init` (kinds: paper; full; user commits) | `pm/` tree, appendix, `.gitignore` block. Paper first-session steps: ARS check, library tag asked (e.g. `mypaper`), appendix lines (title, venue, authors, topic) |
+| setup | `/rk-init` (kinds: paper; full; user commits) | `pm/` tree, appendix, `.gitignore` block (local-only: `pm/config.json` and an exclude block instead). Paper first-session steps: ARS check, library tag asked (e.g. `mypaper`), appendix lines (title, venue, authors, topic) |
 | 01 | `/rename MYP_01_paper_goal-scan`, then "open stage: goal + lit-scan" | Lead writes `BRIEF.md` with a `Done when`. Lead runs the GOALS dialogue (`deep-research`, `socratic`) and writes `pm/living/GOALS.md`; you confirm. `/team`: a teammate runs `deep-research` `three-way-scan` into `deliverables/`; `crit1` + a disposable critic review into `notes/` |
 | | "close stage" (or `/rk-close 01`) | Close checklist: `Done when` output pasted; every stage task done, dropped, shelved, re-staged or deferred; `pm/README.md` numbers and traps; handoffs closed; kind freeze steps; chat archive (main transcript copied last); your sign-off asked with the `rk doctor --stage` output and logged as a decision; `rk stage-close` last. Stage is frozen |
 | 02 | "open stage: source sync" | `/team` with `research-kit-lit:zotero-worker` teammates: preflight, import, tag, ledger = PDFs = library entries; corpus passport rebuilt for ARS |
@@ -361,6 +361,8 @@ rk brief-check              the brief gate the hook calls
 It also writes a marked block into `.gitattributes` with `pm/ledger.jsonl merge=union`,
 so branch merges of the append-only ledger do not conflict.
 
+With `--pm local` (the local-only `/rk-init` question, asked with the kinds, mode and git policy questions, yes; `rk init` and `rk sync <repo_dir> --pm local|tracked [--write]` take the same flag), `pm/config.json` holds `{"pm": "local"}` and a `research-kit (local only)` block goes into git's exclude file (`.git/info/exclude`) instead of `.gitignore` and `.gitattributes`. `sync --pm local` is refused while `pm/` has files in git. In a local-only repo `rk doctor` starts with `pm: local only (pm/config.json): git checks on pm/ skipped`. Note: git's exclude file only hides untracked files, so an `AGENTS.md` or `CLAUDE.md` that is already in git keeps showing its changes.
+
 ### The ledger viewer
 
 `/rk-viewer` (or `rk ui` in a terminal) serves a read-only web page for
@@ -430,7 +432,7 @@ the full name `/research-kit:<name>`, for example `/research-kit:rk-viewer`.
 | Command | Does |
 |---|---|
 | `/rk` | menu: shows the options below for the repo's state and runs your choice (start here). Full name `/research-kit:rk`; on first use it offers a personal `/rk` shortcut (`~/.claude/commands/rk.md`) so it ranks first in the slash menu |
-| `/rk-init` | asks kinds, mode and git policy, then creates `pm/`, the appendix fields, the kinds block, the `.gitignore` block |
+| `/rk-init` | asks kinds, mode, git policy and local-only (`--pm local\|tracked`, file `pm/config.json`), then creates `pm/`, the appendix fields, the kinds block, the `.gitignore` block (local-only: the exclude block instead) |
 | `/rk-add-kind <kind>` | activates another kind (no-op if already active; unknown kind lists the valid ids) |
 | `/rk-upgrade` | light to full: adds `pm/stages/`, flips `Mode:` |
 | `/rk-sync` | updates `AGENTS.md` and the kind files from the plugin templates (see below) |

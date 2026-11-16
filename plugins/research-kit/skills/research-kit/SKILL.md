@@ -90,7 +90,7 @@ entries with missing refs, imported entries titled with a status word (OPEN, DON
 TODO; dropped or superseded ones are skipped), done entries titled `open:` or
 `OPEN ...`, ignored or outside-the-repo refs a clone would
 lack, stage folder absent in a clone, rule file behind the kit, and with `--stage` the
-decisions not owned by the user) are listed; no git repo: git checks are skipped.
+decisions not owned by the user) are listed; no git repo: git checks are skipped. In a local-only repo (`pm/config.json`: `pm` = `local`) `doctor` starts with the line `pm: local only (pm/config.json): git checks on pm/ skipped`, runs no git check on a path under `pm/`, and a missing file (outside `pm/waste/`) or stage folder under `pm/` is HARD.
 `reref OLD NEW [--dry-run]` replaces a leading path prefix in every ref that
 starts with it, all or nothing (refuses and writes nothing if a new path does
 not exist: move the files first). `stage-close` runs the stage checks and refuses on HARD; once closed it writes
@@ -101,7 +101,7 @@ the generated first line is not overwritten). If the write fails after the close
 line, or the file is missing, `stage-close S-n` on the done stage writes the
 record only, no ledger line. Why: the stage's record on one page, read without
 the ledger.
-`doctor --start` feeds the SessionStart block (`kit <version>`, a line per stale
+`doctor --start` feeds the SessionStart block (`kit <version>`, `pm: local only` in a local-only repo, a line per stale
 rule file: run `/rk-sync` between stages, not inside one); the block also prints
 the line `rk() { python3 -I "<path>/rk.py" "$@"; }` and a notice when `jq` is
 missing. A Bash call keeps no shell state: start each call that uses `rk` with
@@ -112,16 +112,19 @@ The command argument says the mode: init, add-kind, upgrade, sync or close.
 
 ## init (repo has no `AGENTS.md`)
 
-1. Ask the user with AskUserQuestion, all four in one call:
+1. Ask the user with AskUserQuestion in two calls (one call takes at most four
+   questions): the first four in one call, then the global note in a second:
    - kinds (`multiSelect: true`; the five ids above);
    - mode: `full` (stage folders, close checklist) or `light` (no stage
      folders; critics, the ledger, logs, handoffs stay);
    - git policy: `user` (the user commits) or `orchestrator` (the lead commits
      and merges);
+   - local only: "Keep pm/ and the rule files out of git (local only)?" no
+     (recommended) / yes; yes gives `--pm local` in step 2;
    - global note: "Add the research-kit team-roles note to your global
      `~/.claude/CLAUDE.md`?" yes (recommended) / no. Run `global-rules` (dry
      run) first; if it prints "up to date", drop this question and step 5.
-2. Run `init <repo_dir> --kinds <k1,k2> --mode <full|light> --git <user|orchestrator>`.
+2. Run `init <repo_dir> --kinds <k1,k2> --mode <full|light> --git <user|orchestrator> --pm <local|tracked>` (`tracked` unless the local-only answer is yes).
    Exit 1 = repo already initialised or unknown kind: tell the user, stop.
 3. Follow each kind file's first-session section with the user where it has
    one (no section = nothing to ask), then the appendix lines (project name,
@@ -130,7 +133,7 @@ The command argument says the mode: init, add-kind, upgrade, sync or close.
    `CLAUDE.md` (created if missing; existing text kept), creates an empty
    `pm/ledger.jsonl`, ignores `pm/STATUS.md` and writes a marked block into
    `.gitattributes` with `pm/ledger.jsonl merge=union` (branch merges of the
-   append-only ledger then do not conflict).
+   append-only ledger then do not conflict). With `--pm local` it writes `pm/config.json` (`{"pm": "local"}`) and a marked block in `.git/info/exclude` instead of the `.gitignore` and `.gitattributes` blocks; that block hides `/pm/`, `/AGENTS.md`, `/CLAUDE.md` and `/**/_dry/` from git.
 5. Only on yes to the global note: run `global-rules --write` (marked block in
    `~/.claude/CLAUDE.md`; text outside kept). Never run without that yes.
 6. Tell the user: new session needed to load the rules; commits follow the
@@ -152,7 +155,7 @@ Output "already full" = nothing to do.
 
 1. Run `sync <repo_dir>` (dry run). It prints the stamps, one combined diff for
    `AGENTS.md` and every `pm/kinds/<kind>.md` listed in the kinds block, and
-   a DROPPED list: repo lines the template lacks. `up to date` = done.
+   a DROPPED list: repo lines the template lacks. `up to date` = done. `sync <repo_dir> --pm local|tracked [--write]` switches the repo: `local` writes `pm/config.json` and the exclude block, no `.gitignore` or `.gitattributes`; it is refused (exit 1, nothing written) while `pm/` has files in git, which the user untracks first. A repo that already excludes `/pm/`, `/AGENTS.md`, `/CLAUDE.md` and `/**/_dry/` by hand gets a second copy of them in the block; the hand lines can then go.
    A repo with the legacy (pre-research-kit) stamp is migrated: `AGENTS.md` is
    rewritten, `pm/` (folders, skeleton files, among them an empty
    `pm/ledger.jsonl`), `pm/kinds/paper.md` and the
@@ -167,7 +170,7 @@ Output "already full" = nothing to do.
      clone of this plugin's repo, then sync again;
    - unclear -> ask the user (AskUserQuestion, one option per line).
 3. Rerun the dry run until DROPPED holds only text to drop. Show the user the
-   diff summary, then run `sync <repo_dir> --write --accept-drop`. Without
+   diff summary, then run `sync <repo_dir> --write --accept-drop` (add `--pm local|tracked` when step 1 used it). Without
    `--accept-drop`, `--write` exits 2 while drops exist.
 4. `sync` also refreshes the marked `## Compact Instructions` block in
    `CLAUDE.md` (diff shown in the dry run, written only with `--write`; text
