@@ -1044,18 +1044,23 @@ def render_status(state: dict[str, Entry], now: datetime) -> str:
             ],
         )
     fc: dict[str, str] = _forecast(state)
-    section(
-        "Planned stages",
-        [
+    planned: list[str] = []
+    for e in _queue(state):  # each stage, then its entries shown planned (D-56)
+        planned.append(
             _clip(
                 f"- {fc.get(e.id, '~?')} {e.id} {e.title} "
-                f"(open entries: {_open_entries(state, e)})"
+                f"(entries: {_open_entries(state, e)})"
             )
-            for e in _queue(state)
-        ],
-    )
+        )
+        planned += [
+            _clip(f"  {_item(x, now)}")
+            for x in sorted(state.values(), key=_sort_key)
+            if x.stage == e.id and shown_status(state, x) == "planned"
+        ]
+    section("Planned stages", planned)
     shelved: list[Entry] = sorted(  # known, not planned now: not in the open view
-        (e for e in state.values() if e.status == "shelved"), key=_sort_key
+        (e for e in state.values() if shown_status(state, e) == "shelved"),
+        key=_sort_key,
     )
     section("Shelved", [_item(e, now) for e in shelved])
     decs: list[Entry] = [
@@ -1157,8 +1162,9 @@ def format_list(
     cap: list[Entry] = shown[:limit] if limit else shown
     for e in cap:
         title: str = ("[imp] " if _imported(e) else "") + e.title
-        if e.status == "planned":  # forecast and open entries, as in STATUS.md
-            title = f"{fc.get(e.id, '~?')} {title} ({_open_entries(state, e)} open)"
+        if e.status == "planned":  # forecast and entries, as in STATUS.md (D-56)
+            m: int = _open_entries(state, e)
+            title = f"{fc.get(e.id, '~?')} {title} ({m} entr{'y' if m == 1 else 'ies'})"
         lines.append(
             _clip(
                 f"{e.id:<5} {shown_status(state, e):<7} {e.owner[:8]:<8} "

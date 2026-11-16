@@ -4933,9 +4933,9 @@ def test_status_md_planned_block() -> None:
         sec: dict[str, str] = sections(st)
         rows: list[str] = bullets(sec["## Planned stages"])
         assert rows == [
-            "- ~02 S-2 paper-scan (open entries: 1)",
-            "- ~03 S-3 software-b (open entries: 0)",
-            "- ~04 S-4 thesis-c (open entries: 0)",
+            "- ~02 S-2 paper-scan (entries: 1)",
+            "- ~03 S-3 software-b (entries: 0)",
+            "- ~04 S-4 thesis-c (entries: 0)",
         ], rows
         assert "paper-scan" not in sec["## Stages"], sec["## Stages"]
         assert "Open: 1." in st, st  # S-1; DB-1 in planned S-2 shows planned (D-56)
@@ -4962,7 +4962,7 @@ def test_status_md_planned_block() -> None:
         # a closed entry no longer counts
         assert lrun(repo, "close", "DB-1", "--note", "done")[0] == 0
         rows = bullets(sections((repo / L.STATUS_REL).read_text())["## Planned stages"])
-        assert rows[1] == "- ~03 S-2 paper-scan (open entries: 0)", rows
+        assert rows[1] == "- ~03 S-2 paper-scan (entries: 0)", rows
         # nothing planned: no section
         assert lrun(repo, "set", "S-2", "--status", "dropped", "--note", "x")[0] == 0
         assert lrun(repo, "set", "S-4", "--status", "shelved", "--note", "y")[0] == 0
@@ -4994,8 +4994,8 @@ def test_list_status_filter() -> None:
         assert lines[0] == "open 0 (running 0)", lines
         assert [ln.split()[0] for ln in lines[1:]] == ["S-3", "S-2", "DB-1"], lines
         assert lines[1].split()[:3] == ["S-3", "planned", "lead"], lines
-        assert lines[1].endswith("  ~02 software-b (0 open)"), lines
-        assert lines[2].endswith("  ~03 paper-scan (1 open)"), lines  # DB-1
+        assert lines[1].endswith("  ~02 software-b (0 entries)"), lines
+        assert lines[2].endswith("  ~03 paper-scan (1 entry)"), lines  # DB-1
         assert set(ids("--status", "shelved")) == {"T-3", "S-4"}
         assert "~" not in lrun(repo, "list", "--status", "shelved")[1]
         assert set(ids("--status", "open")) == {"S-1", "T-1"}  # DB-1: planned, D-56
@@ -5555,7 +5555,7 @@ def test_status_md_shown_status() -> None:
         assert "DB-3" in sec["## Open debt"] and "DB-1" not in sec["## Open debt"]
         assert "DB-4" not in sec.get("## Needs you", ""), sec
         assert "T-1" not in sec.get("## Open tasks", ""), sec
-        assert "S-2 paper-b (open entries: 2)" in sec["## Planned stages"], sec
+        assert "S-2 paper-b (entries: 2)" in sec["## Planned stages"], sec
         code, out = lrun(repo, "render")
         assert code == 0 and out == f"wrote {L.STATUS_REL} (2 open)\n", out
 
@@ -5586,6 +5586,37 @@ def test_shown_status_imported_shelved_stage() -> None:
         assert L.shown_status(st, st["DB-1"]) == "shelved"
         lines: list[str] = lrun(repo, "list")[1].splitlines()
         assert lines == ["open 0 (running 0)"], lines
+        sec: dict[str, str] = sections((repo / L.STATUS_REL).read_text())
+        assert "- DB-1 (" in sec["## Shelved"], sec  # blind7 F1: not lost
+
+
+# blind7 F1 (T-67): an entry shown planned or shelved is in exactly one
+# STATUS.md section (planned: under its stage in `## Planned stages`; shelved:
+# `## Shelved`) and in `rk list --all` with its shown status
+def test_status_md_inherited_entries_findable() -> None:
+    def where(text: str, i: str) -> list[str]:
+        return [h for h, body in sections(text).items() if f"- {i} (" in body]
+
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = shown_repo(Path(d))
+        text: str = (repo / L.STATUS_REL).read_text()
+        for i in ("T-1", "DB-2", "DB-1"):
+            assert where(text, i) == ["## Planned stages"], (i, text)
+        block: list[str] = sections(text)["## Planned stages"].splitlines()
+        k: int = block.index("- ~02 S-3 paper-c (entries: 2)")
+        assert [ln.split()[1] for ln in block[k + 1:k + 3]] == ["T-1", "DB-2"]
+        assert where(text, "DB-3") == ["## Open debt"], text
+        assert lrun(repo, "set", "S-2", "--status", "shelved", "--note", "l")[0] == 0
+        text = (repo / L.STATUS_REL).read_text()
+        assert where(text, "DB-1") == ["## Shelved"], text
+        assert where(text, "S-2") == ["## Shelved"], text
+        rows: dict[str, str] = {
+            ln.split()[0]: ln.split()[1]
+            for ln in lrun(repo, "list", "--all")[1].splitlines()[2:]
+        }
+        assert (rows["DB-1"], rows["T-1"], rows["DB-3"]) == (
+            "shelved", "planned", "open"
+        ), rows
 
 
 def main() -> int:
