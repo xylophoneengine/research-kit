@@ -3213,7 +3213,7 @@ def test_set_status_stage_transitions() -> None:
             out = refused(repo, "set", "T-1", "--status", status, "--note", "x")
             assert out == (
                 f"error: --status {status}: set gives a status to a stage only; "
-                "for T-1 use close, drop, shelve or reopen\n"
+                "for T-1 use close, drop, shelve, staged or reopen\n"  # R19 (T-82)
             ), out
         # imported shelved -> planned (Q5), and what the table does not list
         out = refused(repo, "set", "S-5", "--status", "planned")
@@ -3275,9 +3275,9 @@ def test_drop_planned_stage_with_open_entries() -> None:
             repo, "add", "task", "next", "--note", "n", "--stage", "S-2"
         )[0] == 0  # T-2
         busy: str = (
-            "error: cannot drop S-2: open entries are in it: DB-1 open, T-2 "
-            "open; close, drop or re-stage each (set ID --stage S-x) first\n"
-        )  # in ledger order
+            "error: cannot drop S-2: entries of it are not closed: DB-1, T-2; "
+            "close, drop or re-stage each (set ID --stage S-x) first\n"
+        )  # in ledger order; R20 (T-82)
         out: str = refused(
             repo, "set", "S-2", "--status", "dropped", "--note", "not needed"
         )
@@ -4993,7 +4993,8 @@ def test_list_status_filter() -> None:
 
         code, out = lrun(repo, "list", "--status", "planned")
         lines: list[str] = out.splitlines()
-        assert lines[0] == "open 0 (running 0)", lines
+        assert lines[0].startswith("planned 3: "), lines  # R13 (T-82), was open 0
+        assert head_counts(lines[0]) == ("planned", 3, {"stage": 2, "debt": 1}), lines
         assert [ln.split()[0] for ln in lines[1:]] == ["S-3", "S-2", "DB-1"], lines
         assert lines[1].split()[:3] == ["S-3", "planned", "lead"], lines
         assert lines[1].endswith("  ~02 software-b (0 entries)"), lines
@@ -5029,7 +5030,8 @@ def test_list_planned_line() -> None:
             ("--status", "planned"), ("--type", "task"),
         ):
             out: str = lrun(repo, "list", *argv)[1]
-            assert not any(ln.startswith("planned ") for ln in out.splitlines()), argv
+            body: list[str] = out.splitlines()[1:]  # line 1: the head (R13, T-82)
+            assert not any(ln.startswith("planned ") for ln in body), argv
         # a planned follow-up counts and shows `~NNx`, in queue order
         assert lrun(repo, "add", "stage", "paper-fu", "--follows", "S-1")[0] == 0
         assert L._planned_line(L.load(repo)) == (
@@ -5052,13 +5054,15 @@ def test_list_planned_line() -> None:
         assert all(len(ln) <= L.LINE_MAX for ln in out.splitlines()), out
         line: str = out.splitlines()[1]
         assert line.startswith("planned 12: ~01 paper-t01, ~02 paper-t02"), line
-        tail: list[str] = line.split()[-2:]
+        more: str = ": rk list --status planned"  # R13 (T-82): the cut names the list
+        assert line.endswith(more), line
+        tail: list[str] = line[: -len(more)].split()[-2:]
         assert tail[1] == "more" and tail[0][1:].isdigit(), line  # "+k more"
         k: int = int(tail[0][1:])
         body: str = line.split(": ", 1)[1].rsplit("+", 1)[0].rstrip(", ")
         shown: list[str] = body.split(", ")
         assert shown == [f"~{i:02d} paper-t{i:02d}" for i in range(1, len(shown) + 1)]
-        assert len(shown) >= 3 and len(shown) + k == 12, (shown, k)
+        assert len(shown) >= 2 and len(shown) + k == 12, (shown, k)  # R13: longer cut
 
 
 def _injected(*args: Any) -> None:
@@ -5413,9 +5417,9 @@ def test_staged_blocks_and_guards() -> None:
         plan_stages(repo, "software-p")  # S-2
         assert lrun(repo, "add", "debt", "p", "--stage", "S-2")[0] == 0  # DB-2
         out = refused(repo, "staged", "DB-2", "--note", "w1")
-        assert out.startswith(
-            "error: S-2 is planned: a staged debt cannot go into it (work runs "
-            "only in an open stage)"
+        assert out == (  # R19 (T-82)
+            "error: cannot stage DB-2: its stage S-2 is planned (work runs only in "
+            "an open stage): rk stage-open S-2\n"
         ), out
         out = refused(repo, "set", "T-1", "--stage", "S-2")
         assert out.startswith("error: S-2 is planned: a staged task cannot go"), out
@@ -5425,8 +5429,8 @@ def test_staged_blocks_and_guards() -> None:
             fh.write(json.dumps(ev) + "\n")
         assert lrun(repo, "close", "DB-2", "--note", "x")[0] == 0
         out = refused(repo, "set", "S-2", "--status", "dropped", "--note", "no")
-        assert out.startswith(
-            "error: cannot drop S-2: open entries are in it: T-1 staged;"
+        assert out.startswith(  # R20 (T-82)
+            "error: cannot drop S-2: entries of it are not closed: T-1;"
         ), out
 
 
@@ -6126,6 +6130,511 @@ def test_local_broken_config_ledger_commands_unaffected() -> None:
             ):
                 code, out = lrun(repo, *argv)
                 assert code == 0, (text, argv, out)
+
+
+# ---- debt batch (S-4, design-debt-batch R3 to R25; T-82: red first) ----------
+# Texts are those of the R lines and INTERFACES I1, I2 of that design.
+
+
+def head_counts(head: str) -> tuple[str, int, dict[str, int]]:
+    """`planned 3: stage 2, debt 1` -> ("planned", 3, {"stage": 2, "debt": 1})."""
+    first, _, rest = head.partition(": ")
+    counts: dict[str, int] = {}
+    try:
+        status, n = first.split()
+        for part in rest.split(", ") if rest else []:
+            typ, _, c = part.rpartition(" ")
+            counts[typ] = int(c)
+        return status, int(n), counts
+    except ValueError:  # not a `S <n>: ...` head (e.g. `open 0 (running 0)`)
+        return "?", -1, {}
+
+
+def spec_line(sid: str, title: str, code: str) -> str:
+    """I1: the start line of an open stage without its `<code>/SPEC` decision."""
+    return (
+        f"spec: {sid} {title} has no user decision labelled {code}/SPEC "
+        "(AGENTS.md 3.3)"
+    )
+
+
+def start_lines(repo: Path) -> list[str]:
+    code, out = lrun(repo, "doctor", "--start")
+    assert code == 0, out
+    return out.splitlines()
+
+
+# R3 (I1, I2): one `spec:` line per open stage that has no user decision labelled
+# `<stage code>/SPEC`, after the kit part
+def test_spec_start_line() -> None:
+    kit: str = f"kit {L.kit_version()}"
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root / "a")
+        assert lrun(repo, "add", "stage", "software-x", "--open")[0] == 0  # S-1
+        want: str = spec_line("S-1", "01-software-x", "01")
+        assert start_lines(repo) == [kit, want], start_lines(repo)
+        add: list[str] = ["add", "decision", "spec approved"]
+        assert lrun(repo, *add, "--owner", "user", "--label", "01/SPEC")[0] == 0
+        assert start_lines(repo) == [kit]  # the decision is there: no line
+        # each of these leaves the line: not the user's, dropped, another stage's
+        for name, owner, label, drop in (
+            ("b", "lead", "01/SPEC", False),
+            ("c", "user", "01/SPEC", True),
+            ("e", "user", "02/SPEC", False),
+        ):
+            other: Path = new_repo(root / name)
+            assert lrun(other, "add", "stage", "software-x", "--open")[0] == 0
+            assert lrun(other, *add, "--owner", owner, "--label", label)[0] == 0
+            if drop:
+                assert lrun(other, "drop", "D-1", "--note", "withdrawn")[0] == 0
+            assert start_lines(other) == [kit, want], name
+        # two open stages: one line each, in ledger order; a decision clears its own
+        two: Path = new_repo(root / "two")
+        assert lrun(two, "add", "stage", "software-x", "--open")[0] == 0  # S-1
+        assert lrun(two, "add", "stage", "paper-y", "--open")[0] == 0  # S-2
+        l2: str = spec_line("S-2", "02-paper-y", "02")
+        assert start_lines(two) == [kit, want, l2]
+        assert lrun(two, *add, "--owner", "user", "--label", "01/SPEC")[0] == 0
+        assert start_lines(two) == [kit, l2]
+        assert lrun(two, *add, "--owner", "user", "--label", "02/SPEC")[0] == 0
+        assert start_lines(two) == [kit]
+
+
+# R3 (I2): the stage code is the title up to the first `-` (03b); an open
+# imported stage without an NN title gets no line; a torn ledger gives none
+def test_spec_start_line_codes_and_torn_ledger() -> None:
+    kit: str = f"kit {L.kit_version()}"
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root / "a")
+        code, out = lrun(
+            repo, "add", "stage", "03b-paper-scan", "--imported", "--source", "A:1",
+            "--status", "open",
+        )  # fmt: skip
+        assert code == 0, out
+        code, out = lrun(
+            repo, "add", "stage", "phase one", "--imported", "--source", "A:2",
+            "--status", "open",
+        )  # fmt: skip
+        assert code == 0, out
+        got: list[str] = start_lines(repo)
+        assert got == [kit, spec_line("S-1", "03b-paper-scan", "03b")], got
+        torn: Path = new_repo(root / "b")
+        assert lrun(torn, "add", "stage", "software-x", "--open")[0] == 0
+        with (torn / L.LEDGER_REL).open("a") as fh:
+            fh.write("{torn\n")
+        assert start_lines(torn) == [kit]  # the ledger does not fold: no line
+
+
+# R3, R4 (D1): the spec lines come after the kit part (kit, pm, rule files)
+def test_spec_start_line_after_kit_part() -> None:
+    kit: str = f"kit {L.kit_version()}"
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "software-x", "--open")[0] == 0
+        want: str = spec_line("S-1", "01-software-x", "01")
+        make_local(repo)
+        got: list[str] = start_lines(repo)
+        assert got == [kit, "pm: local only", want], got
+        (repo / "AGENTS.md").write_text("<!-- research-kit: 2000-01-01a -->\n")
+        a_kit: str | None = L._line1_stamp(L.TEMPLATE_DIR / "AGENTS.md")
+        a_line: str = f"AGENTS.md 2000-01-01a, kit {a_kit}: run /rk-sync"
+        assert start_lines(repo) == [kit, "pm: local only", a_line, want]
+        make_local(repo, "{}")  # tracked: kit, two rule files, then the line
+        (repo / "pm/kinds/paper.md").write_text(
+            "<!-- research-kit-kind paper: 2000-01-01a -->\n"
+        )
+        p_kit: str | None = L._line1_stamp(L.TEMPLATE_DIR / "kinds/paper.md")
+        p_line: str = f"pm/kinds/paper.md 2000-01-01a, kit {p_kit}: run /rk-sync"
+        assert start_lines(repo) == [kit, a_line, p_line, want]
+
+
+# R5 (guard): no command is refused, and none changes its output, because the
+# decision is missing; green before and after the build
+def test_spec_missing_refuses_nothing() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "software-x", "--open")[0] == 0  # S-1
+        outs: list[str] = []
+        for argv in (
+            ("add", "task", "a", "--note", "n"), ("start", "T-1"),
+            ("add", "task", "b", "--note", "n"),
+            ("staged", "T-2", "--note", "w1 at abc"),
+            ("add", "task", "c", "--note", "n"), ("close", "T-3", "--note", "ok"),
+            ("add", "task", "d", "--note", "n"),
+        ):
+            code, out = lrun(repo, *argv)
+            assert code == 0, (argv, out)
+            outs.append(out)
+        code, out = bcheck(repo, "You are sr1\nDELIVERABLE: d\nTASK: T-4\n")
+        assert code == 0, out
+        outs.append(out)
+        code, out = doctor(repo)
+        assert code == 0, out
+        outs.append(out)
+        for argv in (
+            ("close", "T-1", "--note", "ok"), ("land", "T-2", "--note", "merged"),
+            ("close", "T-4", "--note", "ok"),
+        ):
+            assert lrun(repo, *argv)[0] == 0, argv
+        code, out = lrun(
+            repo, "add", "decision", "ok", "--owner", "user", "--link", "S-1"
+        )  # D-1: the sign-off, no SPEC label
+        assert code == 0, out
+        code, out = lrun(repo, "stage-close", "S-1", "--sign-off", "D-1")
+        assert code == 0 and "closed S-1: sign-off D-1" in out, out
+        outs.append(out)
+        assert not [o for o in outs if "spec:" in o], outs
+
+
+# R6: no stage entries (light mode), or none open: no `spec:` line
+def test_spec_no_line_without_open_stage() -> None:
+    kit: str = f"kit {L.kit_version()}"
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        control: Path = new_repo(root / "control")  # a stage entry: the line is there
+        assert lrun(control, "add", "stage", "paper-x", "--open")[0] == 0
+        assert spec_line("S-1", "01-paper-x", "01") in start_lines(control)
+        light: Path = new_repo(root / "a")
+        assert lrun(light, "add", "task", "t", "--note", "n")[0] == 0
+        assert lrun(light, "add", "debt", "d")[0] == 0
+        assert start_lines(light) == [kit]
+        planned: Path = new_repo(root / "b")
+        assert lrun(planned, "add", "stage", "paper-x")[0] == 0  # planned
+        assert start_lines(planned) == [kit]
+        closed: Path = new_repo(root / "c")
+        assert lrun(closed, "add", "stage", "paper-x", "--open")[0] == 0
+        sign_off_close(closed, "S-1")
+        assert start_lines(closed) == [kit]
+
+
+# R9: reopen of a stage whose title is no folder name (an imported stage)
+def test_reopen_imported_title_no_folder_name() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        code, out = lrun(
+            repo, "add", "stage", "phase one", "--imported", "--source", "A:1",
+            "--status", "done",
+        )  # fmt: skip
+        assert code == 0, out
+        (repo / "pm/stages/phase one").mkdir(parents=True)  # its folder is there
+        out = refused(repo, "reopen", "S-1", "--note", "x")
+        assert out == (
+            "error: cannot reopen S-1: its title 'phase one' is no folder name, so "
+            "it can have no stage record (an imported stage); add a new stage\n"
+        ), out
+
+
+# R10 (I6): no pm/ at or above the cwd, a linked worktree of a main checkout that
+# holds the ledger: the main checkout's ledger and config; no git is run
+def test_worktree_without_pm_uses_main() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d).resolve()
+        main: Path = new_repo(root)
+        make_local(main)
+        (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+        wt: Path = root / "wt"
+        (wt / "sub").mkdir(parents=True)
+        (wt / ".git").write_text(f"gitdir: {main}/.git/worktrees/wt\n")
+        plain: Path = root / "plain"  # no ledger, no worktree: as before
+        plain.mkdir()
+        fakebin, log = fake_git_log(root)
+        with env(PATH=f"{fakebin}{os.pathsep}{os.environ['PATH']}"):
+            assert L.find_repo(wt) == main
+            assert L.find_repo(wt / "sub") == main
+            assert L.read_config(wt)["pm"] == "local"
+            for explicit in (plain, wt):  # --repo DIR: as given
+                try:
+                    L.find_repo(explicit, explicit=True)
+                except L.LedgerError:
+                    pass
+                else:
+                    raise AssertionError(f"find_repo({explicit}, explicit=True)")
+            try:
+                L.find_repo(plain)
+            except L.LedgerError:
+                pass
+            else:
+                raise AssertionError("find_repo found a ledger outside a worktree")
+        assert git_calls(log) == [], "a lookup ran git"
+        (wt / "pm").mkdir()  # the worktree's own config wins
+        (wt / "pm/config.json").write_text('{"pm": "tracked"}\n')
+        assert L.read_config(wt)["pm"] == "tracked"
+        (wt / "pm/config.json").unlink()
+        assert L.read_config(wt)["pm"] == "local"
+        assert lrun(main, "add", "task", "from main", "--note", "n")[0] == 0
+
+        def tool(*argv: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [sys.executable, "-I", str(RK_PY), *argv], cwd=wt,
+                capture_output=True, text=True,
+            )
+
+        r: subprocess.CompletedProcess[str] = tool("list")
+        assert r.returncode == 0 and "T-1" in r.stdout, (r.stdout, r.stderr)
+        r = tool("doctor")
+        assert r.stdout.splitlines()[0] == LOCAL_NOTICE, (r.stdout, r.stderr)
+        assert not (wt / L.LEDGER_REL).exists()
+        assert lrun(wt, "list")[0] == 1  # --repo wt: no ledger there
+
+
+# R11: reopen and stage-open of a planned or shelved stage say what to do; an
+# imported shelved stage keeps today's texts
+def test_reopen_and_open_planned_shelved_texts() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        plan_stages(repo, "paper-a", "software-b")  # S-1, S-2 planned
+        assert lrun(repo, "set", "S-2", "--status", "shelved", "--note", "l")[0] == 0
+        out: str = refused(repo, "reopen", "S-2", "--note", "x")
+        assert out == (
+            "error: cannot reopen S-2: it is shelved: rk set S-2 --status planned, "
+            "then rk stage-open S-2\n"
+        ), out
+        out = refused(repo, "reopen", "S-1", "--note", "x")
+        assert out == (
+            "error: cannot reopen S-1: it is planned: rk stage-open S-1\n"
+        ), out
+        out = refused(repo, "stage-open", "S-2")
+        assert out == (
+            "error: S-2 is shelved: only a planned stage opens: rk set S-2 "
+            "--status planned first\n"
+        ), out
+        code, out = lrun(
+            repo, "add", "stage", "old3", "--imported", "--source", "a:1",
+            "--status", "shelved",
+        )  # fmt: skip
+        assert code == 0 and out == "logged S-3: old3\n", out
+        assert refused(repo, "reopen", "S-3", "--note", "x") == (
+            "error: cannot reopen S-3: it is shelved\n"
+        )
+        assert refused(repo, "stage-open", "S-3") == (
+            "error: S-3 is shelved: only a planned stage opens\n"
+        )
+
+
+# R12: stage-close of a stage that is not open prints the status, nothing else
+def test_stage_close_not_open_prints_only_status() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        plan_stages(repo, "paper-x")  # S-1 planned
+        assert lrun(repo, "add", "task", "t", "--note", "n", "--stage", "S-1")[0] == 0
+        for argv in (
+            ["stage-close", "S-1"], ["stage-close", "S-1", "--sign-off", "D-9"]
+        ):
+            out: str = refused(repo, *argv)
+            assert out == (
+                "error: stage-close S-1 refused: S-1 is planned, not open\n"
+            ), out
+        assert lrun(repo, "set", "S-1", "--status", "shelved", "--note", "l")[0] == 0
+        out = refused(repo, "stage-close", "S-1")
+        assert out == "error: stage-close S-1 refused: S-1 is shelved, not open\n", out
+
+
+# R13: `list --status S` (S not open, running, staged) starts with `S <n>` and
+# the type counts of the listed rows
+def test_list_status_head_counts() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = shown_repo(Path(d))  # S-1 open; planned S-3 S-2 S-4; entries
+        assert lrun(repo, "close", "DB-3", "--note", "ok")[0] == 0
+        assert lrun(repo, "set", "S-4", "--status", "shelved", "--note", "l")[0] == 0
+        for status, want in (
+            ("planned", {"stage": 2, "task": 1, "debt": 2}),  # S-3 S-2, T-1, DB-2 DB-1
+            ("shelved", {"stage": 1}),  # S-4
+            ("done", {"debt": 1}),  # DB-3
+        ):
+            out: str = lrun(repo, "list", "--status", status)[1]
+            head: str = out.splitlines()[0]
+            n: int = sum(want.values())
+            got: tuple[str, int, dict[str, int]] = head_counts(head)
+            assert got == (status, n, want), (status, head)
+            assert not head.startswith("open "), head
+            assert len(out.splitlines()) - 1 == n, out  # one row each
+        assert lrun(repo, "list", "--status", "open")[1].startswith("open 1 (")
+        assert lrun(repo, "list", "--status", "running")[1].startswith("open 0 (")
+
+
+# R14: `show` prints `queue:` only for a planned stage
+def test_show_queue_line_only_when_planned() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        plan_stages(repo, "paper-a", "software-b")  # S-1, S-2
+
+        def queue_lines(sid: str) -> list[str]:
+            out: str = lrun(repo, "show", sid)[1]
+            return [ln for ln in out.splitlines() if ln.startswith("queue:")]
+
+        for sid in ("S-1", "S-2"):  # planned: the line is there (a guard)
+            assert len(queue_lines(sid)) == 1, lrun(repo, "show", sid)[1]
+        assert lrun(repo, "stage-open", "S-1")[0] == 0
+        assert queue_lines("S-1") == [], queue_lines("S-1")  # open now
+        assert lrun(repo, "set", "S-2", "--status", "dropped", "--note", "x")[0] == 0
+        assert queue_lines("S-2") == [], queue_lines("S-2")  # dropped
+        plan_stages(repo, "thesis-c")  # S-3
+        assert lrun(repo, "set", "S-3", "--status", "shelved", "--note", "l")[0] == 0
+        assert queue_lines("S-3") == [], queue_lines("S-3")  # shelved
+
+
+# R15: stage-rename to a name that differs only in case renames the folder where
+# the file system ignores case; elsewhere nothing is asserted
+def test_stage_rename_case_only() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        (root / "Probe").mkdir()
+        if not (root / "probe").exists():
+            return  # a case-sensitive file system: the rename is a plain rename
+        repo: Path = new_repo(root / "r")
+        assert lrun(repo, "add", "stage", "paper-x", "--open")[0] == 0  # 01-paper-x
+        (repo / "pm/stages/01-paper-x/notes/a.md").write_text("a")
+        code, out = lrun(repo, "stage-rename", "S-1", "paper-X")
+        assert code == 0, out
+        assert out.startswith("renamed S-1: 01-paper-x -> 01-paper-X\n"), out
+        assert L.load(repo)["S-1"].title == "01-paper-X"
+        names: list[str] = os.listdir(repo / "pm/stages")  # the real case on disk
+        assert "01-paper-X" in names, names
+        assert (repo / "pm/stages/01-paper-X/notes/a.md").read_text() == "a"
+
+
+# R16: a stage cannot move relative to itself
+def test_set_stage_relative_to_itself() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        plan_stages(repo, "paper-a", "paper-b")  # S-1, S-2
+        for flag in ("--before", "--after"):
+            out: str = refused(repo, "set", "S-2", flag, "S-2")
+            assert out == (
+                f"error: {flag} S-2: a stage cannot move relative to itself\n"
+            ), out
+
+
+# R17: close, drop, shelve on a shelved stage name the command that does it
+def test_close_drop_shelve_on_shelved_stage() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        plan_stages(repo, "paper-a", "software-b")  # S-1, S-2
+        assert lrun(repo, "set", "S-2", "--status", "shelved", "--note", "l")[0] == 0
+        for cmd in ("close", "drop", "shelve"):
+            out: str = refused(repo, cmd, "S-2", "--note", "x")
+            assert out == (
+                "error: S-2 is a shelved stage: use rk set S-2 --status dropped "
+                "--note ... (or --status planned)\n"
+            ), out
+        out = refused(repo, "close", "S-1", "--note", "x")  # planned: as before
+        assert out == (
+            "error: S-1 is a planned stage: use rk set S-1 --status shelved|dropped "
+            "--note ...\n"
+        ), out
+
+
+# R18: STATUS.md, Staged block: a line over LINE_MAX keeps the note whole and
+# cuts the title with `...`; a line that fits is as before
+def test_status_md_staged_line_keeps_note() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        title: str = "x" * 70
+        assert lrun(repo, "add", "debt", title)[0] == 0  # DB-1
+        assert lrun(repo, "add", "debt", "fix it")[0] == 0  # DB-2
+        for i in ("DB-1", "DB-2"):
+            assert lrun(repo, "staged", i, "--note", "w2-fix at 9f8e7d6")[0] == 0
+        text: str = (repo / L.STATUS_REL).read_text()
+        lines: list[str] = bullets(sections(text)["## Staged (done, not landed)"])
+        long_: str = next(ln for ln in lines if ln.startswith("- DB-1 "))
+        short: str = next(ln for ln in lines if ln.startswith("- DB-2 "))
+        assert len(long_) <= L.LINE_MAX, long_
+        assert long_.endswith("... -- w2-fix at 9f8e7d6"), long_
+        assert long_.startswith("- DB-1 (lead, ") and title[:20] in long_, long_
+        assert short.endswith(") fix it -- w2-fix at 9f8e7d6"), short
+
+
+# R19: `rk staged` of an entry in a planned or shelved stage
+def test_staged_entry_in_planned_or_shelved_stage() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        plan_stages(repo, "paper-a")  # S-1 planned
+        assert lrun(repo, "add", "debt", "d", "--stage", "S-1")[0] == 0  # DB-1
+        way: str = "(work runs only in an open stage)"
+        out: str = refused(repo, "staged", "DB-1", "--note", "w")
+        assert out == (
+            f"error: cannot stage DB-1: its stage S-1 is planned {way}: "
+            "rk stage-open S-1\n"
+        ), out
+        assert lrun(repo, "set", "S-1", "--status", "shelved", "--note", "l")[0] == 0
+        out = refused(repo, "staged", "DB-1", "--note", "w")
+        assert out == (
+            f"error: cannot stage DB-1: its stage S-1 is shelved {way}: "
+            "rk set S-1 --status planned, then rk stage-open S-1\n"
+        ), out
+        code, out = lrun(
+            repo, "add", "stage", "old", "--imported", "--source", "a:1",
+            "--status", "shelved",
+        )  # fmt: skip
+        assert code == 0, out  # S-2
+        assert lrun(repo, "add", "debt", "e", "--stage", "S-2")[0] == 0  # DB-2
+        out = refused(repo, "staged", "DB-2", "--note", "w")
+        assert out == (
+            f"error: cannot stage DB-2: its stage S-2 is shelved {way}: "
+            "re-stage it: rk set DB-2 --stage S-<x>\n"
+        ), out
+
+
+# R20: `list --all` sorts an entry shown planned or shelved with the not-open
+# group, after every row shown open
+def test_list_all_sorts_shown_status() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = shown_repo(Path(d))
+        assert lrun(repo, "close", "DB-3", "--note", "ok")[0] == 0
+        assert lrun(repo, "add", "debt", "gg", "--stage", "S-1")[0] == 0  # DB-4 open
+        out: str = lrun(repo, "list", "--all")[1]
+        rows: list[list[str]] = [
+            ln.split() for ln in out.splitlines()[1:] if ln.split()[0][:2] in (
+                "S-", "T-", "DB"
+            )
+        ]
+        shown: list[str] = [r[1] for r in rows]
+        last_open: int = max(i for i, s in enumerate(shown) if s == "open")
+        first_not: int = min(
+            i for i, s in enumerate(shown) if s in ("planned", "shelved", "done")
+        )
+        assert last_open < first_not, shown
+
+
+# R20: `rk search` lines and the `linked:` lines of `rk show` print the shown status
+def test_search_and_linked_print_shown_status() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = shown_repo(Path(d))  # DB-1 "dd" is open in the planned S-2
+        found: list[str] = lrun(repo, "search", "dd")[1].splitlines()
+        assert "DB-1 planned: dd" in found, found
+        assert "DB-3 open: ff" in lrun(repo, "search", "ff")[1].splitlines()
+        code, out = lrun(
+            repo, "add", "task", "linker", "--note", "n", "--stage", "S-1",
+            "--link", "DB-1",
+        )  # fmt: skip
+        assert code == 0, out
+        tid: str = out.split()[1].rstrip(":")
+        shown_out: list[str] = lrun(repo, "show", tid)[1].splitlines()
+        assert "  DB-1 planned: dd" in shown_out, shown_out
+
+
+# R21 (guard): the forecast of the plan queue's head is the code stage-open gives,
+# plain and with --follows; green before and after the build
+def test_forecast_matches_stage_open() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "paper-a", "--open")[0] == 0  # 01-paper-a
+        sign_off_close(repo, "S-1")
+        plan_stages(repo, "software-b")  # S-2
+        assert lrun(repo, "add", "stage", "paper-fu", "--follows", "S-1")[0] == 0  # S-3
+        assert lrun(repo, "add", "stage", "paper-fv", "--follows", "S-1")[0] == 0  # S-4
+        assert lrun(repo, "set", "S-2", "--before", "S-3")[0] == 0
+        for sid in ("S-2", "S-3", "S-4"):  # each in turn the head of the queue
+            head: str = queue_ids(repo)[0]
+            assert head == sid, queue_ids(repo)
+            code_: str = forecast_of(repo)[head].lstrip("~")
+            code, out = lrun(repo, "stage-open", head)
+            assert code == 0, out
+            title: str = L.load(repo)[head].title
+            assert title.startswith(f"{code_}-"), (head, code_, title)
+            sign_off_close(repo, head)
 
 
 def main() -> int:

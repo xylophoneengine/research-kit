@@ -1441,6 +1441,7 @@ def test_local_sync_notes_existing_blocks() -> None:
         assert code == 0 and "holds a research-kit block" not in out, out
         gi.write_text(rk.gitignore_text("mine/\n"))
         ga.write_text(f"{rk.GI_START}\npm/ledger.jsonl merge=union\n{rk.GI_END}\n")
+        _g(repo, "add", ".gitignore", ".gitattributes")  # R25 (T-82): git tracks both
         before: dict[str, bytes | None] = _tree(repo)
         excl: bytes = _excl(repo).read_bytes()
         for write in (False, True):
@@ -1482,6 +1483,224 @@ def test_local_add_kind_upgrade_refresh_exclude() -> None:
             assert code == 0, out
             assert _excl(repo).read_text() == BLOCK, (fn.__name__, _excl(repo))
             assert not (repo / ".gitignore").exists(), fn.__name__
+
+
+# ---- debt batch (S-4, design-debt-batch R1, R2, R7, R10, R22 to R25; T-82) ----
+# Red first, except R1, R2 and R7 (jr1 writes those texts in parallel).
+
+PLUGIN_ROOT: Path = RK_PY.resolve().parents[3]  # plugins/research-kit
+REPO_ROOT: Path = RK_PY.resolve().parents[5]  # the repo that holds README.md
+
+
+# R1: the core rule line of the design step (AGENTS.md 3.3), I3 verbatim in its
+# key strings; the file stays at 300 lines and its stamp moved
+def test_template_design_step() -> None:
+    lines: list[str] = (REAL_TEMPLATE / "AGENTS.md").read_text().splitlines()
+    text: str = "\n".join(lines)
+    assert len(lines) <= 300, f"core template has {len(lines)} lines (> 300)"
+    need: tuple[str, ...] = (
+        "- **Design step** (every kind; before any design or plan work of a stage):",
+        "(1) the lead asks the user via AskUserQuestion whether the architect "
+        "(`arch1`, 2.1) does the planning",
+        "(2) the lead itself holds the design talk with the user: one question at a "
+        "time, discrete options via AskUserQuestion, recommended option first "
+        "(section 8)",
+        "(3) the spec is a file in the stage `notes/`; no code and no implementer "
+        "brief before the user said yes to it",
+        '(4) the yes is logged as `rk add decision "<spec approved>" --owner user '
+        "--label <stage code>/SPEC --ref <spec file>`",
+        "(stage code = NN of the stage folder, e.g. `03/SPEC`)",
+        "has no user decision labelled <stage code>/SPEC (AGENTS.md 3.3)",
+        "no `rk` command is refused",
+    )
+    missing: list[str] = [s for s in need if s not in text]
+    assert not missing, f"design step lacks: {missing}"
+    assert rk.stamp(text) != "2026-11-16d", "template stamp not bumped"
+
+
+# R2: the software kind's stage row 1 is the design step; its stamp moved
+def test_software_kind_design_row() -> None:
+    text: str = (REAL_TEMPLATE / "kinds/software.md").read_text()
+    rows: list[str] = [ln for ln in text.splitlines() if ln.startswith("| 1 |")]
+    assert len(rows) == 1, rows
+    for s in ("core 3.3", "/SPEC", "superpowers:brainstorming", "grilling"):
+        assert s in rows[0], (s, rows[0])
+    stamp_line: str = text.splitlines()[0]
+    assert "2026-11-14b" not in stamp_line, stamp_line
+
+
+# R7: SKILL.md and README.md name the label form and the start line once
+def test_design_step_named_in_skill_and_readme() -> None:
+    for path in (PLUGIN_ROOT / "skills/research-kit/SKILL.md", REPO_ROOT / "README.md"):
+        text: str = path.read_text()
+        n: int = text.count("has no user decision labelled")
+        assert n == 1, (path.name, n)
+        assert "/SPEC" in text, path.name
+
+
+# R10 (I6): `rk sync <worktree>` where the worktree has no pm/ (a local-only repo's
+# linked worktree) reads the main checkout's config: local, no `.gitignore` block
+def test_sync_in_worktree_without_pm_is_local() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        main: Path = _git_repo(root)
+        assert runk(rk.cmd_init, main, ["paper"], "full", "user", pm="local")[0] == 0
+        wt: Path = root / "wt"  # the ledger's linked worktree: a .git file, no pm/
+        (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+        wt.mkdir()
+        (wt / ".git").write_text(f"gitdir: {main.resolve()}/.git/worktrees/wt\n")
+        (wt / "AGENTS.md").write_text((main / "AGENTS.md").read_text())  # tracked
+        before: dict[str, bytes | None] = _tree(wt)
+        code, out = run(rk.cmd_sync, wt, False, False)
+        assert code == 0, out
+        assert "== .gitignore ==" not in out, out
+        assert "== .gitattributes ==" not in out, out
+        assert _tree(wt) == before, "a dry run wrote something"
+
+
+# R22 (I7): `--pm tracked` given on the command line wins over a pm/config.json
+# that says local; `--pm local` keeps it; without the flag the file decides
+def test_init_pm_flag_wins_over_config() -> None:
+    def fresh(name: str, root: Path) -> Path:
+        (root / name).mkdir()
+        repo: Path = setup(root / name)
+        (repo / "pm").mkdir()
+        (repo / "pm/config.json").write_text(CONFIG_LOCAL)
+        return repo
+
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = fresh("flag-tracked", root)
+        code, out = runk(rk.cmd_init, repo, ["paper"], "light", "user", pm="tracked")
+        assert code == 0, out
+        got: str = (repo / "pm/config.json").read_text()
+        assert got == CONFIG_TRACKED, (got, out)
+        assert (repo / ".gitignore").read_text() == rk.gitignore_text(""), out
+        assert (repo / ".gitattributes").exists(), out
+        repo = fresh("flag-local", root)
+        code, out = runk(rk.cmd_init, repo, ["paper"], "light", "user", pm="local")
+        assert code == 0, out
+        assert (repo / "pm/config.json").read_text() == CONFIG_LOCAL
+        assert not (repo / ".gitignore").exists()
+        repo = fresh("no-flag", root)
+        code, out = run(rk.cmd_init, repo, ["paper"], "light", "user")
+        assert code == 0, out
+        assert (repo / "pm/config.json").read_text() == CONFIG_LOCAL  # file decides
+        for name in (".gitignore", ".gitattributes"):
+            assert not (repo / name).exists(), name
+
+
+# R22: the same on the command line (real template); the flag has no default
+def test_init_cli_pm_flag_wins_over_config() -> None:
+    def cli(repo: Path, *flag: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-I", str(RK_PY), "init", str(repo), "--kinds", "paper",
+             "--mode", "light", *flag],
+            capture_output=True, text=True,
+        )  # fmt: skip
+
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        for name, flag, want in (
+            ("tracked", ("--pm", "tracked"), CONFIG_TRACKED),
+            ("local", ("--pm", "local"), CONFIG_LOCAL),
+            ("none", (), CONFIG_LOCAL),
+        ):
+            repo: Path = root / name
+            (repo / "pm").mkdir(parents=True)
+            (repo / "pm/config.json").write_text(CONFIG_LOCAL)
+            r: subprocess.CompletedProcess[str] = cli(repo, *flag)
+            assert r.returncode == 0, (name, r.stdout, r.stderr)
+            assert (repo / "pm/config.json").read_text() == want, (name, r.stdout)
+            assert (repo / ".gitignore").exists() == (name == "tracked"), name
+        assert "--pm {local,tracked}" in subprocess.run(
+            [sys.executable, "-I", str(RK_PY), "init", "--help"],
+            capture_output=True, text=True,
+        ).stdout
+
+
+# R23: pm/config.json and git's exclude file are read and written as UTF-8 under
+# any locale: LC_ALL=C with the interpreter's UTF-8 mode off (-X utf8=0)
+def test_local_utf8_under_c_locale() -> None:
+    env: dict[str, str] = {**os.environ, "LC_ALL": "C", "LANG": "C"}
+    env.pop("LC_CTYPE", None)
+    base: list[str] = [sys.executable, "-I", "-X", "utf8=0"]
+    probe: subprocess.CompletedProcess[str] = subprocess.run(
+        [*base, "-c", "import locale; print(locale.getpreferredencoding(False))"],
+        env=env, capture_output=True, text=True,
+    )
+    if "UTF" in probe.stdout.upper():
+        return  # the locale cannot be forced to a non-UTF-8 encoding here
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = Path(d) / "repo"  # the real template: the subprocess uses it
+        repo.mkdir()
+        rk.TEMPLATE_DIR = REAL_TEMPLATE
+        _g(repo, "init", "-q")
+        assert run(rk.cmd_init, repo, ["paper"], "full", "user")[0] == 0
+        cfg: Path = repo / "pm/config.json"
+        cfg.write_bytes('{"pm": "tracked", "note": "café"}\n'.encode("utf-8"))
+        with _excl(repo).open("ab") as fh:
+            fh.write("# café\n".encode("utf-8"))
+        old: bytes = _excl(repo).read_bytes()
+        r: subprocess.CompletedProcess[str] = subprocess.run(
+            [*base, str(RK_PY), "sync", str(repo), "--pm", "local", "--write"],
+            env=env, capture_output=True, text=True,
+        )
+        assert r.returncode == 0, (r.stdout, r.stderr[-400:])
+        got: object = json.loads(cfg.read_bytes().decode("utf-8"))
+        assert got == {"pm": "local", "note": "café"}, got
+        new: bytes = _excl(repo).read_bytes()
+        assert new.startswith(old) and new.endswith(BLOCK.encode("utf-8")), new
+        r = subprocess.run(
+            [*base, str(RK_PY), "doctor", "--repo", str(repo)],
+            env=env, capture_output=True, text=True,
+        )
+        assert r.stdout.startswith("pm: local only"), (r.stdout, r.stderr[-400:])
+
+
+# R24 (real git): `\`, `*`, `?` and `[` of the kit folder's prefix are escaped in
+# the block's lines; the start marker keeps the raw prefix
+def test_local_exclude_block_escapes_prefix() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        names: tuple[str, ...] = ("a[b]*", "c?d", "e\\f")
+        top, dirs = _multi_repo(root, *names)
+        for folder in dirs:
+            _init_local(folder)
+        text: str = _excl(top).read_text()
+        for name, esc in zip(names, ("a\\[b\\]\\*", "c\\?d", "e\\\\f")):
+            assert f"{START_LOCAL} {name}/\n" in text, (name, text)  # raw prefix
+            assert f"/{esc}/pm/\n" in text and f"/{esc}/**/_dry/\n" in text, text
+        for rel, want in (
+            ("a[b]*/pm/f", True), ("ab/pm/f", False), ("a[b]*/x/_dry/f", True),
+            ("c?d/pm/f", True), ("cxd/pm/f", False),
+            ("e\\f/pm/f", True), ("ef/pm/f", False),
+        ):
+            assert _ignored(top, rel) == want, (rel, want, text)
+        assert _g(top, "status", "--porcelain") == "", "not excluded"
+
+
+# R25: in a local repo, sync notes a research-kit block of .gitignore or
+# .gitattributes only when git tracks the file
+def test_local_sync_note_only_for_tracked_files() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = _git_repo(Path(d))
+        assert runk(rk.cmd_init, repo, ["paper"], "full", "user", pm="local")[0] == 0
+        gi: Path = repo / ".gitignore"
+        ga: Path = repo / ".gitattributes"
+        gi.write_text(rk.gitignore_text("mine/\n"))
+        ga.write_text(f"{rk.GI_START}\npm/ledger.jsonl merge=union\n{rk.GI_END}\n")
+        for write in (False, True):  # untracked: the user's own, no note
+            code, out = run(rk.cmd_sync, repo, write, False)
+            assert code == 0 and "holds a research-kit block" not in out, out
+        _g(repo, "add", ".gitignore")  # only one of the two is tracked
+        code, out = run(rk.cmd_sync, repo, False, False)
+        assert code == 0, out
+        assert "note: .gitignore holds a research-kit block; remove it by hand" in out
+        assert "note: .gitattributes holds" not in out, out
+        _g(repo, "add", ".gitattributes")
+        code, out = run(rk.cmd_sync, repo, False, False)
+        assert "note: .gitattributes holds a research-kit block; remove it" in out, out
 
 
 def _ledger_tests() -> list[tuple[str, Callable[[], None]]]:
