@@ -46,7 +46,11 @@ does not count); titles are one line, 160 characters at most. `add task` without
 "<kind>-<topic>" [--note N]` renames a stage; `set S-n --status
 planned|shelved|dropped` (`--note` required for shelved and dropped only);
 `start` is refused for an entry of a
-planned or shelved stage). Every `--ref` (add, set, close, drop,
+planned or shelved stage; such an entry stays stored `open` but is shown as
+`planned` (`shelved`): out of the open list and counts, found by `list --status
+planned` or `list --stage S-n`, open again by itself at `stage-open`; the
+`planned N:` line of `list` gives each stage's entry count `(k entries)` and
+`show` names the stored and the shown status). Every `--ref` (add, set, close, drop,
 shelve, reopen, supersede, stage-close) must name an existing file, relative to the repo
 root (a `://` URL, `doi:` or `arXiv:` passes; a path outside the repo is refused;
 imports exempt; checked against the main checkout, so in a worktree merge first):

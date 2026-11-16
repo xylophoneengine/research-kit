@@ -122,7 +122,7 @@ From 0.2.1: a ledger that holds a shelved entry needs kit 0.2.1 or newer in
 every session that opens the repo. An older kit refuses it with an
 unknown-status error: update the kit, do not edit the ledger line.
 
-From 0.2.5: a ledger with a planned stage or a staged entry needs kit 0.2.5 or newer in every session (plugin update per session); an older kit refuses it with an unknown-status error. Ledgers that use neither stay readable by 0.2.4.
+From 0.2.5: a ledger with a planned stage or a staged entry needs kit 0.2.5 or newer in every session (plugin update per session); an older kit refuses it with an unknown-status error. Ledgers that use neither stay readable by 0.2.4, but open entries of an imported shelved stage now show as shelved and leave the open list.
 
 ## Kinds
 
@@ -316,7 +316,12 @@ running, staged (work done on a branch, not landed: `rk staged ID --note
 "<branch, commit>"`; it stays in the open list, `rk list --status staged` shows
 only those), done, dropped, shelved, superseded; a stage also planned. Staged
 work lands with `rk close` (each) or `rk land` (all staged, or the named ones);
-a staged task blocks `rk stage-close` like an open one.
+a staged task blocks `rk stage-close` like an open one. An open entry in a
+planned or shelved stage is stored open but shown as planned (shelved): out of
+the open list and its counts, listed by `rk list --status planned` or `rk list
+--stage S-n`, open again by itself at `rk stage-open`; the `planned N:` line of
+`rk list` gives each stage's entry count (`~02 paper-c (2 entries)`), and `rk
+show` names the stored and the shown status.
 
 ```
 rk add <type> <title>       log a task, decision, deferred item, ...
