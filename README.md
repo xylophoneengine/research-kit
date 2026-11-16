@@ -349,7 +349,10 @@ so branch merges of the append-only ledger do not conflict.
 `/rk-viewer` (or `rk ui` in a terminal) serves a read-only web page for
 `pm/ledger.jsonl` and opens it in your browser. Tabs: list, board, stages and
 timeline; a search box (also Ctrl/Cmd-K) finds an entry by id, title or note, and
-a detail pane shows one entry with its history. It reads the ledger fresh on
+a detail pane shows one entry with its history. The stages tab starts with the
+plan: planned stages in queue order with their `~NN` forecast (from the kit, not
+computed in the viewer), then shelved ones; an open or running entry whose linked
+tasks are all done carries a `staged` badge (work done, not landed). It reads the ledger fresh on
 every request and reloads when the tab regains focus; it never writes the ledger
 or `pm/STATUS.md`. It listens on 127.0.0.1 only and has no login, so any user
 logged in on the same machine can read the ledger while it runs. Port 8765 by

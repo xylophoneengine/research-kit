@@ -12,6 +12,9 @@ export type Ev = {
 export type Ledger = {
   repo: string; entries: Entry[]; events: Ev[];
   types: Record<string, string>;
+  // from the kit: planned stage ids in queue order and their `~NN` strings;
+  // missing from an older kit
+  plan?: { queue: string[]; forecast: Record<string, string> };
 };
 export type Tab = "list" | "board" | "stages" | "timeline";
 export type Route = {
@@ -142,6 +145,61 @@ export function backlinks(l: Ledger): Map<string, string[]> {
     }
   }
   return m;
+}
+
+// open + running entries of a stage
+const openIn = (l: Ledger, stage: string): number =>
+  l.entries.filter((e) => e.stage === stage && (e.status === "open" || e.status === "running")).length;
+
+export type PlanRow = { stage: Entry; forecast: string; open: number };
+
+// The Stages view's plan block: planned stages in the kit's queue order with its
+// forecast string (shown as sent, nothing computed here), shelved stages apart
+// by id number without forecast; `open` = open + running entries of the stage.
+export function planRows(l: Ledger): { planned: PlanRow[]; shelved: PlanRow[] } {
+  const idx = byId(l);
+  const forecast = l.plan?.forecast ?? {};
+  const planned: PlanRow[] = [];
+  for (const id of l.plan?.queue ?? []) {
+    const stage = idx.get(id);
+    if (stage) planned.push({ stage, forecast: forecast[id] ?? "", open: openIn(l, id) });
+  }
+  const shelved = l.entries
+    .filter((e) => e.type === "stage" && e.status === "shelved")
+    .sort((a, b) => num(a.id) - num(b.id))
+    .map((stage) => ({ stage, forecast: "", open: openIn(l, stage.id) }));
+  return { planned, shelved };
+}
+
+// the earlier titles of entry `id` from its events (in file order), newest first;
+// each with the day it was replaced
+export function earlierTitles(events: Ev[], id: string): { title: string; until: string }[] {
+  const out: { title: string; until: string }[] = [];
+  let cur: string | null = null;
+  for (const ev of events) {
+    const t = ev.id === id ? ev.f.title : undefined;
+    if (typeof t !== "string") continue;
+    if (cur !== null && t !== cur) out.push({ title: cur, until: ev.ts.slice(0, 10) });
+    cur = t;
+  }
+  return out.reverse();
+}
+
+// Entries shown with a `staged` badge: open or running, neither task nor stage, with
+// at least one linked task (either direction) and every linked task done. Display only.
+export function stagedIds(l: Ledger): Set<string> {
+  const idx = byId(l);
+  const back = backlinks(l);
+  const out = new Set<string>();
+  for (const e of l.entries) {
+    if (e.type === "task" || e.type === "stage") continue;
+    if (e.status !== "open" && e.status !== "running") continue;
+    const tasks = [...new Set([...e.links, ...(back.get(e.id) ?? [])])]
+      .map((id) => idx.get(id))
+      .filter((x): x is Entry => x !== undefined && x.type === "task");
+    if (tasks.length > 0 && tasks.every((x) => x.status === "done")) out.add(e.id);
+  }
+  return out;
 }
 
 // the one text for what id mode matches (id button, exact button, palette hint)

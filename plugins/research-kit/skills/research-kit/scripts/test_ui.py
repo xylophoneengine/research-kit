@@ -143,7 +143,7 @@ def test_payload_shape() -> None:
     with tmpdir() as tmp:
         repo: Path = mk_repo(tmp, TWO)
         p: dict[str, Any] = ui.payload(repo)  # Any: JSON-shaped nesting
-    assert set(p) == {"repo", "entries", "events", "types"}
+    assert set(p) == {"repo", "entries", "events", "types", "plan"}
     assert p["repo"] == str(repo)
     entries: list[dict[str, Any]] = p["entries"]
     events: list[dict[str, Any]] = p["events"]
@@ -167,6 +167,51 @@ def test_payload_shape() -> None:
     assert set(events[0]) == {"line", "ts", "who", "ev", "id", "f"}
     assert list(types)[:2] == ["task", "decision"] and types["deferred"] == "DF"
     json.dumps(p)
+
+
+def test_real_ledger_planned_stages() -> None:
+    """A ledger written by the kit's own rk.py: planned stages, queue, forecast."""
+    with tmpdir() as tmp:
+        repo: Path = tmp / "repo"
+        (repo / "pm" / "kinds").mkdir(parents=True)
+        (repo / "pm" / "ledger.jsonl").write_text("")
+
+        def rk(*argv: str) -> None:
+            r: subprocess.CompletedProcess[str] = subprocess.run(
+                [sys.executable, "-I", str(RK_PY), "add", *argv, "--repo", str(repo)],
+                capture_output=True,
+                text=True,
+            )
+            assert r.returncode == 0, (argv, r.stdout, r.stderr)
+
+        rk("stage", "software-a", "--open")  # S-1, title 01-software-a
+        rk("stage", "paper-b")  # S-2 planned
+        rk("stage", "paper-c", "--before", "S-2")  # S-3 planned, ahead of S-2
+        rk("stage", "paper-d", "--follows", "S-1")  # S-4 planned follow-up of S-1
+        rk("debt", "dd", "--stage", "S-2")  # DB-1 in a planned stage
+        p: dict[str, Any] = ui.payload(repo)
+    json.dumps(p)
+    by_id: dict[str, dict[str, Any]] = {e["id"]: e for e in p["entries"]}
+    assert [by_id[s]["status"] for s in ("S-1", "S-2", "S-3", "S-4")] == [
+        "open",
+        "planned",
+        "planned",
+        "planned",
+    ]
+    assert by_id["S-4"]["extra"]["follows"] == "S-1"
+    assert all("queue" in by_id[s]["extra"] for s in ("S-2", "S-3", "S-4"))
+    assert "queue" not in by_id["S-1"]["extra"]
+    assert by_id["DB-1"]["stage"] == "S-2" and by_id["DB-1"]["status"] == "open"
+    assert p["plan"] == {
+        "queue": ["S-3", "S-2", "S-4"],
+        "forecast": {"S-3": "~02", "S-2": "~03", "S-4": "~01b"},
+    }, p["plan"]
+
+
+def test_plan_empty_without_planned_stage() -> None:
+    with tmpdir() as tmp:
+        p: dict[str, Any] = ui.payload(mk_repo(tmp, TWO))
+    assert p["plan"] == {"queue": [], "forecast": {}}
 
 
 def test_api_ledger_200() -> None:

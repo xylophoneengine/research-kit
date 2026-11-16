@@ -1,5 +1,6 @@
 import { createContext, useContext } from "react";
 import { StatusBadge } from "@/components/StatusBadge";
+import { Badge } from "@/components/ui/badge";
 import { TypeBadge } from "@/components/TypeBadge";
 import { typeClasses } from "@/lib/typeColor";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
@@ -11,12 +12,24 @@ export type Index = {
   entries: Map<string, Entry>;
   codes: Map<string, string>;
   labels: Map<string, string>;
+  staged: Set<string>; // ids shown with the `staged` badge (see stagedIds)
 };
 export const EntryIndex = createContext<Index>({
   entries: new Map(),
   codes: new Map(),
   labels: new Map(),
+  staged: new Set(),
 });
+
+// beside the status badge of an entry whose linked tasks are all done (display only)
+export function StagedBadge({ id }: { id: string }) {
+  const { staged } = useContext(EntryIndex);
+  return staged.has(id) ? (
+    <Badge variant="outline" className="text-muted-foreground" title="work done in linked tasks, not landed">
+      staged
+    </Badge>
+  ) : null;
+}
 
 function Preview({ e }: { e: Entry }) {
   const note = e.note.length > 200 ? e.note.slice(0, 200) + "…" : e.note;

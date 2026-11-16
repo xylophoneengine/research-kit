@@ -25,8 +25,11 @@ import {
   parseRoute,
   projectName,
   sortBy,
+  earlierTitles,
+  planRows,
   sortDefault,
   sortGroups,
+  stagedIds,
   STATUSES,
   stageCodeOf,
   stageCodes,
@@ -424,6 +427,66 @@ test("exact does not outlive id mode: id off drops exact=1 from the route (T-34)
   expect(formatRoute({ ...on, idOnly: false })).toBe("#/list?q=T-1");
   expect(formatRoute(parseRoute("#/list?q=T-1&exact=1"))).toBe("#/list?q=T-1");
   expect(parseRoute(formatRoute({ ...on, idOnly: false })).exact).toBe(false);
+});
+
+test("planRows: planned stages in plan.queue order with the kit's forecast, shelved apart (T-54)", () => {
+  const st = (id: string, status: string, title: string): Entry => ({ ...s1, id, status, title });
+  const stages = [st("S-2", "planned", "paper-b"), st("S-3", "planned", "paper-c"),
+    st("S-4", "planned", "paper-d"), st("S-5", "shelved", "paper-e"), st("S-1", "open", "01-x")];
+  const work = (id: string, stage: string, status: string): Entry => ({ ...t2, id, stage, status });
+  const entries = [...stages, work("T-1", "S-2", "open"), work("T-2", "S-2", "running"),
+    work("T-3", "S-2", "done"), work("T-4", "S-3", "dropped"), work("DB-1", "S-5", "open")];
+  const l: Ledger = { ...L, entries, plan: { queue: ["S-3", "S-2", "S-4", "S-9"], forecast: { "S-3": "~02", "S-2": "~03", "S-4": "~01b" } } };
+  const r = planRows(l);
+  expect(r.planned.map((x) => [x.stage.id, x.forecast, x.open])).toEqual([
+    ["S-3", "~02", 0], ["S-2", "~03", 2], ["S-4", "~01b", 0],  // unknown S-9 skipped
+  ]);
+  expect(r.shelved.map((x) => [x.stage.id, x.forecast, x.open])).toEqual([["S-5", "", 1]]);
+  // an older kit sends no plan: loads, no planned block rows, shelved still listed
+  const old: Ledger = { ...l, plan: undefined };
+  expect(planRows(old).planned).toEqual([]);
+  expect(planRows(old).shelved).toHaveLength(1);
+  expect(planRows({ ...L, entries: [t1] })).toEqual({ planned: [], shelved: [] });
+});
+
+test("earlierTitles: one line per earlier name of an entry, newest first (T-52)", () => {
+  const ev = (line: number, ts: string, e: "add" | "set", id: string, f: Record<string, unknown>): Ev =>
+    ({ line, ts, who: "lead", ev: e, id, f });
+  const evs = [
+    ev(1, "2026-11-10T09:00:00+01:00", "add", "S-2", { title: "paper-b", status: "planned" }),
+    ev(2, "2026-11-11T09:00:00+01:00", "set", "S-2", { status: "planned", note: "x" }),
+    ev(3, "2026-11-12T09:00:00+01:00", "set", "S-2", { title: "03-paper-b", status: "open" }),
+    ev(4, "2026-11-14T09:00:00+01:00", "set", "S-2", { title: "03-paper-bee" }),
+    ev(5, "2026-11-14T10:00:00+01:00", "set", "S-2", { title: "03-paper-bee" }), // same name: no line
+    ev(6, "2026-11-15T09:00:00+01:00", "set", "S-3", { title: "other" }),
+  ];
+  expect(earlierTitles(evs, "S-2")).toEqual([
+    { title: "03-paper-b", until: "2026-11-14" },
+    { title: "paper-b", until: "2026-11-12" },
+  ]);
+  expect(earlierTitles(evs, "S-3")).toEqual([]);
+  expect(earlierTitles(evs, "S-9")).toEqual([]);
+});
+
+test("stagedIds: open/running non-task non-stage entry whose linked tasks are all done (T-53)", () => {
+  const mk = (id: string, type: string, status: string, links: string[] = []): Entry =>
+    ({ ...t1, id, type, status, links });
+  const es = [
+    mk("DB-1", "debt", "open", ["T-1"]),            // links to a done task: staged
+    mk("DB-2", "debt", "running"),                   // task T-2 links to it: staged
+    mk("DB-3", "debt", "open", ["T-1", "T-3"]),     // one linked task not done
+    mk("DB-4", "debt", "open"),                      // no linked task
+    mk("DB-5", "debt", "done", ["T-1"]),            // not open or running
+    mk("DB-6", "debt", "open", ["D-1"]),            // linked entry is no task
+    mk("D-1", "decision", "done"),
+    mk("S-1", "stage", "open", ["T-1"]),            // a stage never
+    mk("T-1", "task", "done"),
+    mk("T-2", "task", "done", ["DB-2"]),
+    mk("T-3", "task", "open"),
+    mk("T-4", "task", "open", ["T-1"]),             // a task never
+    mk("DB-7", "debt", "open", ["T-1", "X-99"]),    // unknown id ignored
+  ];
+  expect([...stagedIds({ ...L, entries: es })].sort()).toEqual(["DB-1", "DB-2", "DB-7"]);
 });
 
 test("status planned: own status, never open (T-45)", () => {

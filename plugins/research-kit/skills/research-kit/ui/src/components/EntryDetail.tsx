@@ -1,12 +1,13 @@
 import { useContext, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/StatusBadge";
-import { EntryIndex, IdLink, Linked } from "@/components/IdLink";
+import { EntryIndex, IdLink, Linked, StagedBadge } from "@/components/IdLink";
 import { TypeBadge } from "@/components/TypeBadge";
 import {
   age,
   backlinks,
   byId,
+  earlierTitles,
   evMeta,
   stageCodeOf,
   type Entry,
@@ -188,11 +189,18 @@ export function EntryDetail({ ledger, id }: { ledger: Ledger; id: string }) {
         <span className="font-mono text-lg font-semibold">{e.id}</span>
         <TypeBadge type={e.type} />
         <StatusBadge status={e.status} />
+        <StagedBadge id={e.id} />
         {e.extra.imported === true && <Badge variant="outline">imported</Badge>}
       </div>
       <h2 className="mt-2 text-base font-medium">
         <Linked text={e.title} ledgerIds={ids} own={own} />
       </h2>
+      {e.type === "stage" &&
+        earlierTitles(ledger.events, e.id).map((t) => (
+          <p key={t.until + t.title} className="text-xs text-muted-foreground">
+            earlier: {t.title} (until {t.until})
+          </p>
+        ))}
       <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
         {fields.map(([k, v]) => (
           <div key={k} className="contents">

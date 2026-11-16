@@ -92,7 +92,8 @@ def _meta(ev: dict[str, object]) -> dict[str, object]:
 
 
 def payload(repo: Path) -> dict[str, object]:
-    """The whole ledger as JSON-ready data: entries, raw events, known types."""
+    """The whole ledger as JSON-ready data: entries, raw events, known types, and
+    the plan (planned stage ids in queue order, `~NN` forecast), both from the kit."""
     try:
         events, state = _read(repo)
     except ledger.LedgerError:
@@ -112,6 +113,10 @@ def payload(repo: Path) -> dict[str, object]:
             for n, ev in events
         ],
         "types": ledger.known_types(repo),
+        "plan": {
+            "queue": [e.id for e in ledger._queue(state)],
+            "forecast": ledger._forecast(state),
+        },
     }
 
 
