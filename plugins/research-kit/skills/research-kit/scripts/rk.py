@@ -7,9 +7,12 @@ Kind files pm/kinds/<kind>.md are generic as a whole.
 
 Usage:
   python3 -I rk.py init <repo_dir> --kinds paper,software --mode full --git user
+      [--pm local|tracked]
   python3 -I rk.py add-kind <repo_dir> <kind>
   python3 -I rk.py upgrade <repo_dir>
-  python3 -I rk.py sync <repo_dir> [--write] [--accept-drop]
+  python3 -I rk.py sync <repo_dir> [--write] [--accept-drop] [--pm local|tracked]
+      (--pm local: pm/ stays out of git: pm/config.json {"pm": "local"} and a
+      block in git's exclude file instead of .gitignore/.gitattributes)
 
 Ledger store (pm/ledger.jsonl, see ledger.py; every command takes --repo DIR
 and --who NAME; every ID argument also takes a label (form <stage code>/<item>,
@@ -89,6 +92,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import importlib.util
+import json
 import re
 import sys
 from importlib.machinery import ModuleSpec
@@ -122,6 +126,16 @@ KINDS_RE: re.Pattern[str] = re.compile(
 KIND_LINE_RE: re.Pattern[str] = re.compile(r"^- Kind `([^`]+)`", re.M)
 GI_START: str = "# >>> research-kit"
 GI_END: str = "# <<< research-kit"
+# local-only mode: block of git's exclude file (design I4) and output lines (I5)
+_EXCL_START: str = "# >>> research-kit (local only)"
+_EXCL_LINES: list[str] = ["pm/", "AGENTS.md", "CLAUDE.md", "**/_dry/"]  # I4
+_NO_GIT: str = "no git repo: exclude block not written"
+_REFUSAL: str = (
+    "pm/ has files in git; local-only needs them untracked first "
+    "(git rm -r --cached pm/ is yours to run)"
+)
+_EXCL_LABEL: str = ".git/info/exclude"
+_PM_MODES: tuple[str, ...] = ("local", "tracked")
 
 
 def _load_sibling(name: str, file: str) -> ModuleType:
@@ -231,18 +245,75 @@ def set_kinds(appendix: str, kinds: list[str]) -> str:
     return f"{appendix}{sep}{block}\n"
 
 
-def gitignore_text(old: str) -> str:
-    """`old` with the research-kit block added once or refreshed in place."""
-    lines: list[str] = (TEMPLATE_DIR / "gitignore").read_text().splitlines()
-    block: str = "\n".join([GI_START, *lines, GI_END]) + "\n"
+def _marked_block(old: str, start: str, lines: list[str]) -> str:
+    """`old` with the block start..GI_END added once or refreshed in place."""
+    block: str = "\n".join([start, *lines, GI_END]) + "\n"
     pat: re.Pattern[str] = re.compile(
-        rf"^{re.escape(GI_START)}$.*?^{re.escape(GI_END)}$\n?", re.M | re.S
+        rf"^{re.escape(start)}$.*?^{re.escape(GI_END)}$\n?", re.M | re.S
     )
     if pat.search(old):
         return pat.sub(lambda _m: block, old, count=1)
     if old and not old.endswith("\n"):
         old += "\n"
     return old + ("\n" if old else "") + block
+
+
+def gitignore_text(old: str) -> str:
+    """`old` with the research-kit block added once or refreshed in place."""
+    lines: list[str] = (TEMPLATE_DIR / "gitignore").read_text().splitlines()
+    return _marked_block(old, GI_START, lines)
+
+
+def _excl_start(prefix: str) -> str:
+    """Start line of this kit folder's block; the prefix tells folders apart (D-78)."""
+    return f"{_EXCL_START} {prefix}" if prefix else _EXCL_START
+
+
+def _exclude_state(repo_dir: Path) -> tuple[Path, str, str] | None:
+    """(git's exclude file, its text, text with the local block); None: no git."""
+    path: Path | None = ledger.git_exclude_file(repo_dir)
+    prefix: str | None = ledger.git_prefix(repo_dir)  # anchors the lines (D-76)
+    if path is None or prefix is None:
+        return None
+    old: str = path.read_text() if path.exists() else ""
+    lines: list[str] = [f"/{prefix}{ln}" for ln in _EXCL_LINES]
+    return path, old, _marked_block(old, _excl_start(prefix), lines)
+
+
+def _ensure_exclude(repo_dir: Path) -> Path | None:
+    """Add or refresh the local block in git's exclude file and return the
+    file; None (line printed) when there is no git repo."""
+    state: tuple[Path, str, str] | None = _exclude_state(repo_dir)
+    if state is None:
+        print(_NO_GIT)
+        return None
+    path, old, new = state
+    if new != old:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(new)
+    return path
+
+
+def _ensure_ignore(repo_dir: Path, local: bool) -> None:
+    """The ignore write of add-kind and upgrade for the repo's mode."""
+    if local:
+        _ensure_exclude(repo_dir)
+    else:
+        ensure_gitignore(repo_dir)
+
+
+def _config(repo_dir: Path) -> dict[str, object] | None:
+    """pm/config.json through the ledger's reader; None (line printed) if broken."""
+    try:
+        return ledger.read_config(repo_dir)
+    except ledger.LedgerError as e:
+        print(e)
+        return None
+
+
+def _config_text(cfg: dict[str, object], pm: str) -> str:
+    """The text of pm/config.json with `pm` set, every other key kept."""
+    return json.dumps({**cfg, "pm": pm}, indent=2, ensure_ascii=False) + "\n"
 
 
 def ensure_gitignore(repo_dir: Path) -> bool:
@@ -421,7 +492,9 @@ def _bad_kinds(kinds: list[str]) -> list[str]:
 # ---- commands ---------------------------------------------------------------
 
 
-def cmd_init(repo_dir: Path, kinds: list[str], mode: str, git_policy: str) -> int:
+def cmd_init(
+    repo_dir: Path, kinds: list[str], mode: str, git_policy: str, pm: str = "tracked"
+) -> int:
     target: Path = repo_dir / "AGENTS.md"
     bad: list[str] = _bad_kinds(kinds)
     if bad:
@@ -429,6 +502,9 @@ def cmd_init(repo_dir: Path, kinds: list[str], mode: str, git_policy: str) -> in
         return 1
     if mode not in MODES or git_policy not in GIT_POLICIES:
         print(f"mode must be one of {MODES}, git one of {tuple(GIT_POLICIES)}")
+        return 1
+    if pm not in _PM_MODES:
+        print(f"pm must be one of {_PM_MODES}")
         return 1
     if not repo_dir.is_dir():
         print(f"{repo_dir} is not a directory")
@@ -439,6 +515,13 @@ def cmd_init(repo_dir: Path, kinds: list[str], mode: str, git_policy: str) -> in
     missing: list[str] = [k for k in kinds if not _kind_template(k).exists()]
     if missing:
         print(f"template missing for kind(s): {', '.join(missing)}")
+        return 1
+    cfg: dict[str, object] | None = _config(repo_dir)
+    if cfg is None:
+        return 1
+    local: bool = pm == "local" or cfg["pm"] == "local"
+    if pm == "local" and ledger.git_tracked(repo_dir, "pm/"):
+        print(_REFUSAL)
         return 1
     template: str = (TEMPLATE_DIR / "AGENTS.md").read_text()
     head, app = split(template, "template")
@@ -452,16 +535,24 @@ def cmd_init(repo_dir: Path, kinds: list[str], mode: str, git_policy: str) -> in
         kpath: Path = repo_dir / "pm" / "kinds" / f"{k}.md"
         if not kpath.exists():
             kpath.write_text(_kind_template(k).read_text())
-    ensure_gitignore(repo_dir)
-    ensure_block(
-        repo_dir / ".gitattributes", ".gitattributes", "gitattributes",
-        GI_START, GI_END, True,
-    )  # fmt: skip
+    ignored: str = ".gitignore, .gitattributes"
+    if local:
+        if cfg["pm"] != "local":
+            (repo_dir / "pm" / "config.json").write_text(_config_text(cfg, "local"))
+        ignored = "pm/config.json" + (
+            f", {_EXCL_LABEL}" if _ensure_exclude(repo_dir) else ""
+        )
+    else:
+        ensure_gitignore(repo_dir)
+        ensure_block(
+            repo_dir / ".gitattributes", ".gitattributes", "gitattributes",
+            GI_START, GI_END, True,
+        )  # fmt: skip
     ensure_compact_block(repo_dir, True)
     print(f"created {target} (template {stamp(template)}), mode {mode}, "
           f"git policy '{GIT_POLICIES[git_policy]}', kinds {', '.join(kinds)}")
-    print(f"created pm/ ({len(dirs)} dirs, {len(files)} skeleton files), .gitignore, "
-          ".gitattributes, CLAUDE.md Compact Instructions block")
+    print(f"created pm/ ({len(dirs)} dirs, {len(files)} skeleton files), "
+          f"{ignored}, CLAUDE.md Compact Instructions block")
     return 0
 
 
@@ -474,6 +565,9 @@ def cmd_add_kind(repo_dir: Path, kind: str) -> int:
         return 1
     if is_legacy(text):
         print("legacy paper-playbook AGENTS.md; run sync first to migrate")
+        return 1
+    cfg: dict[str, object] | None = _config(repo_dir)
+    if cfg is None:
         return 1
     head, app = split(text, "repo AGENTS.md")
     kinds: list[str] = active_kinds(app)
@@ -491,7 +585,7 @@ def cmd_add_kind(repo_dir: Path, kind: str) -> int:
         kpath.parent.mkdir(parents=True, exist_ok=True)
         kpath.write_text(_kind_template(kind).read_text())
         print(f"created {kpath}")
-    ensure_gitignore(repo_dir)
+    _ensure_ignore(repo_dir, cfg["pm"] == "local")
     print(f"kind '{kind}' added to AGENTS.md appendix")
     return 0
 
@@ -503,13 +597,16 @@ def cmd_upgrade(repo_dir: Path) -> int:
     if is_legacy(text):
         print("legacy paper-playbook AGENTS.md; run sync first to migrate")
         return 1
+    cfg: dict[str, object] | None = _config(repo_dir)
+    if cfg is None:
+        return 1
     head, app = split(text, "repo AGENTS.md")
     if get_field(app, "Mode") == "full":
         print("already full; nothing to do")
         return 0
     (repo_dir / "AGENTS.md").write_text(head + set_field(app, "Mode", "full"))
     (repo_dir / "pm" / "stages").mkdir(parents=True, exist_ok=True)
-    ensure_gitignore(repo_dir)
+    _ensure_ignore(repo_dir, cfg["pm"] == "local")
     print("upgraded to full: Mode: full, pm/stages/ created")
     return 0
 
@@ -522,10 +619,24 @@ def _diff(old: str, new: str, name: str) -> str:
     )
 
 
-def cmd_sync(repo_dir: Path, write: bool, accept_drop: bool) -> int:
-    """Dry-run by default; one combined report and one write decision."""
+def cmd_sync(
+    repo_dir: Path, write: bool, accept_drop: bool, pm: str | None = None
+) -> int:
+    """Dry-run by default; one combined report and one write decision.
+
+    `pm` None: the mode is read from pm/config.json."""
+    if pm is not None and pm not in _PM_MODES:
+        print(f"pm must be one of {_PM_MODES}")
+        return 1
+    cfg: dict[str, object] | None = _config(repo_dir)
+    if cfg is None:
+        return 1
     repo: str | None = _read_agents(repo_dir)
     if repo is None:
+        return 1
+    local: bool = (pm or cfg["pm"]) == "local"
+    if pm == "local" and ledger.git_tracked(repo_dir, "pm/"):
+        print(_REFUSAL)
         return 1
     template: str = (TEMPLATE_DIR / "AGENTS.md").read_text()
     writes: dict[Path, str] = {}
@@ -574,20 +685,45 @@ def cmd_sync(repo_dir: Path, write: bool, accept_drop: bool) -> int:
             print(f"\n== {rel} == stamps {stamp(krepo)} -> {stamp(ktpl)}")
             print(_diff(krepo, knew, rel))
 
-    gi: Path = repo_dir / ".gitignore"
-    gi_old: str = gi.read_text() if gi.exists() else ""
-    gi_new: str = gitignore_text(gi_old)
-    if gi_new != gi_old:
-        writes[gi] = gi_new
-        print("\n== .gitignore == research-kit block added/refreshed")
+    excl: Path | None = None  # git's exclude file, when it gets the local block
+    if pm is not None and pm != cfg["pm"]:
+        writes[repo_dir / "pm" / "config.json"] = _config_text(cfg, pm)
+        print(f'\n== pm/config.json == "pm": {cfg["pm"]} -> {pm}')
 
-    ga: Path = repo_dir / ".gitattributes"
-    ga_old: str = ga.read_text() if ga.exists() else ""
-    ga_new: str = compact_text(ga_old, "gitattributes", GI_START, GI_END)
-    if ga_new != ga_old:
-        writes[ga] = ga_new
-        print(f"\n== .gitattributes == research-kit block (ledger merge=union)\n"
-              f"{_diff(ga_old, ga_new, '.gitattributes')}")
+    if local:
+        state: tuple[Path, str, str] | None = _exclude_state(repo_dir)
+        if state is None:
+            print(f"\n{_NO_GIT}")
+        elif state[2] != state[1]:
+            excl = state[0]
+            writes[excl] = state[2]
+            print(f"\n== {_EXCL_LABEL} == research-kit block added/refreshed")
+        for name in (".gitignore", ".gitattributes"):  # only to find a 0.2.5 block
+            f: Path = repo_dir / name
+            if f.exists() and GI_START in f.read_text().splitlines():
+                print(f"\nnote: {name} holds a research-kit block; remove it by hand")
+    else:
+        gi: Path = repo_dir / ".gitignore"
+        gi_old: str = gi.read_text() if gi.exists() else ""
+        gi_new: str = gitignore_text(gi_old)
+        if gi_new != gi_old:
+            writes[gi] = gi_new
+            print("\n== .gitignore == research-kit block added/refreshed")
+
+        ga: Path = repo_dir / ".gitattributes"
+        ga_old: str = ga.read_text() if ga.exists() else ""
+        ga_new: str = compact_text(ga_old, "gitattributes", GI_START, GI_END)
+        if ga_new != ga_old:
+            writes[ga] = ga_new
+            print(f"\n== .gitattributes == research-kit block (ledger merge=union)\n"
+                  f"{_diff(ga_old, ga_new, '.gitattributes')}")
+        if pm == "tracked" and cfg["pm"] == "local":  # the switch back
+            old_excl: Path | None = ledger.git_exclude_file(repo_dir)
+            prefix: str | None = ledger.git_prefix(repo_dir)
+            if (old_excl is not None and prefix is not None and old_excl.exists()
+                    and _excl_start(prefix) in old_excl.read_text().splitlines()):
+                print(f"\nnote: {_EXCL_LABEL} holds a research-kit block; "
+                      "remove it by hand")
 
     claude: Path = repo_dir / "CLAUDE.md"
     ptr_old: str = claude.read_bytes().decode() if claude.exists() else ""
@@ -634,7 +770,7 @@ def cmd_sync(repo_dir: Path, write: bool, accept_drop: bool) -> int:
     for path, content in writes.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
-        print(f"wrote {path.relative_to(repo_dir)}")
+        print(f"wrote {_EXCL_LABEL if path == excl else path.relative_to(repo_dir)}")
     return 0
 
 
@@ -653,6 +789,7 @@ def main() -> int:
     pi.add_argument("--kinds", required=True, help="comma list: " + ",".join(KINDS))
     pi.add_argument("--mode", required=True, choices=MODES)
     pi.add_argument("--git", default="user", choices=tuple(GIT_POLICIES))
+    pi.add_argument("--pm", default="tracked", choices=_PM_MODES)
     pa: argparse.ArgumentParser = sub.add_parser("add-kind")
     pa.add_argument("repo_dir", type=Path)
     pa.add_argument("kind")
@@ -662,6 +799,7 @@ def main() -> int:
     ps.add_argument("repo_dir", nargs="?", type=Path, default=Path.cwd())
     ps.add_argument("--write", action="store_true")
     ps.add_argument("--accept-drop", action="store_true")
+    ps.add_argument("--pm", choices=_PM_MODES)
     pg: argparse.ArgumentParser = sub.add_parser("global-rules")
     pg.add_argument("--claude-md", type=Path, default=Path("~/.claude/CLAUDE.md"))
     pg.add_argument("--write", action="store_true")
@@ -671,14 +809,14 @@ def main() -> int:
     a: argparse.Namespace = p.parse_args()
     if a.cmd == "init":
         kinds: list[str] = [k.strip() for k in a.kinds.split(",") if k.strip()]
-        return cmd_init(a.repo_dir, kinds, a.mode, a.git)
+        return cmd_init(a.repo_dir, kinds, a.mode, a.git, a.pm)
     if a.cmd == "add-kind":
         return cmd_add_kind(a.repo_dir, a.kind)
     if a.cmd == "upgrade":
         return cmd_upgrade(a.repo_dir)
     if a.cmd == "global-rules":
         return cmd_global_rules(a.claude_md.expanduser(), a.write)
-    return cmd_sync(a.repo_dir, a.write, a.accept_drop)
+    return cmd_sync(a.repo_dir, a.write, a.accept_drop, a.pm)
 
 
 if __name__ == "__main__":
