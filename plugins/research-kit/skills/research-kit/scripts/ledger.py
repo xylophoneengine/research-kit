@@ -177,12 +177,19 @@ def _main_checkout(d: Path) -> Path:
 def find_repo(start: Path, explicit: bool = False) -> Path:
     """Dir holding pm/ledger.jsonl: `start` itself, or (not explicit) a parent.
 
-    Not explicit: in a git worktree, the main checkout's ledger is the one used.
+    Not explicit: in a git worktree, the main checkout's ledger is the one used,
+    also when the worktree has no pm/ (local-only: pm/ is not in git).
     """
     start = start.resolve()
     for d in [start] if explicit else [start, *start.parents]:
         if (d / LEDGER_REL).is_file():
             return d if explicit else _main_checkout(d)
+    for d in [] if explicit else [start, *start.parents]:
+        if os.path.lexists(d / ".git"):  # the nearest git root: a worktree?
+            main: Path = _main_checkout(d)
+            if main != d:
+                return main
+            break
     where: str = "" if explicit else " or above"
     raise LedgerError(
         f"no {LEDGER_REL} in {start}{where}; run rk.py init or pass --repo"
@@ -940,11 +947,23 @@ def _clip(line: str, width: int = LINE_MAX) -> str:
     return line if len(line) <= width else line[: width - 3] + "..."
 
 
-def _item(e: Entry, now: datetime) -> str:
+def _item(e: Entry, now: datetime, width: int = LINE_MAX) -> str:
     return _clip(
         f"- {e.id} ({e.owner}, {age(_since(e), now)}) {e.title}"
-        + (" [imported]" if _imported(e) else "")
+        + (" [imported]" if _imported(e) else ""),
+        width,
     )
+
+
+def _staged_item(e: Entry, now: datetime) -> str:
+    """Staged block line: the item, then ` -- ` and the note. Over LINE_MAX the
+    note (first line, at most 40 characters) stays whole and the title is cut."""
+    reason: str = str(e.extra.get("reason") or "-")
+    line: str = f"{_item(e, now)} -- {_cut(reason)}"
+    if len(line) <= LINE_MAX:
+        return line
+    tail: str = f" -- {reason.splitlines()[0][:40]}"
+    return _clip(_item(e, now, LINE_MAX - len(tail)) + tail)
 
 
 def _stage_line(e: Entry, state: dict[str, Entry], now: datetime) -> str:
@@ -984,7 +1003,9 @@ def _planned_line(state: dict[str, Entry]) -> str:
     n: int = len(items)
     line: str = ""
     for k in range(n, -1, -1):  # k = items shown; k = 0 always fits
-        more: list[str] = [f"+{n - k} more"] if k < n else []
+        more: list[str] = (
+            [f"+{n - k} more: rk list --status planned"] if k < n else []
+        )
         line = f"planned {n}: " + ", ".join(items[:k] + more)
         if len(line) <= LINE_MAX:
             break
@@ -1012,11 +1033,7 @@ def render_status(state: dict[str, Entry], now: datetime) -> str:
     section("Stages", [_stage_line(e, state, now) for e in stages])
     section(  # D-49: work done, not on the base branch yet; the note says where
         "Staged (done, not landed)",
-        [
-            _clip(f"{_item(e, now)} -- {_cut(str(e.extra.get('reason') or '-'))}")
-            for e in rest
-            if e.status == "staged"
-        ],
+        [_staged_item(e, now) for e in rest if e.status == "staged"],
     )
     section(
         "Running",
@@ -1086,15 +1103,18 @@ def write_status(repo: Path, state: dict[str, Entry]) -> None:
     os.replace(tmp, path)
 
 
-def _list_key(e: Entry) -> tuple[int, int, tuple[int, int, str, int]]:
-    """Open before closed; within each: stages, handoffs, owner user, the rest."""
+def _list_key(
+    state: dict[str, Entry], e: Entry
+) -> tuple[int, int, tuple[int, int, str, int]]:
+    """Shown open before the rest (D-56); within each: stages, handoffs, owner
+    user, the rest."""
     group: int = (
         0 if e.type == "stage"
         else 1 if e.type == "handoff"
         else 2 if e.owner == "user"
         else 3
     )
-    return (0 if _is_open(e) else 1, group, _sort_key(e))
+    return (0 if _shown_open(state, e) else 1, group, _sort_key(e))
 
 
 def _more(k: int) -> str:
@@ -1125,7 +1145,8 @@ def format_list(
         e for e in rows if _is_open(e)
     ]
     shown: list[Entry] = sorted(
-        rows if include_closed or status is not None else listed, key=_list_key
+        rows if include_closed or status is not None else listed,
+        key=lambda e: _list_key(state, e),
     )
     fc: dict[str, str] = _forecast(state)
     if status in ("planned", "shelved"):  # each stage, then its entries (D-56)
@@ -1140,8 +1161,10 @@ def format_list(
             return (pos, 0 if e.type == "stage" else 1)
 
         shown.sort(key=at)  # stable: the list order within one stage
+    # --status of a not-open status: its own head, counts in list order (DB-41)
+    closed_view: bool = status is not None and status not in OPEN_STATUSES
     counts: dict[str, int] = {}
-    for e in sorted(opens, key=_sort_key):
+    for e in shown if closed_view else sorted(opens, key=_sort_key):
         counts[e.type] = counts.get(e.type, 0) + 1
     running: int = sum(1 for e in opens if e.status == "running")
     staged: int = sum(1 for e in opens if e.status == "staged")
@@ -1149,8 +1172,11 @@ def format_list(
     head: str = ""
     for k in range(len(parts), -1, -1):  # within LINE_MAX, cut between counts
         shown_parts: list[str] = parts[:k] + (["..."] if k < len(parts) else [])
-        head = f"open {len(opens)} (running {running}"
-        head += f", staged {staged})" if staged else ")"
+        if closed_view:
+            head = f"{status} {len(shown)}"
+        else:
+            head = f"open {len(opens)} (running {running}"
+            head += f", staged {staged})" if staged else ")"
         head += ": " + ", ".join(shown_parts) if shown_parts else ""
         if len(head) <= LINE_MAX:
             break
@@ -1642,6 +1668,12 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
                 f"{e.id} is a planned stage: use rk set {e.id} --status "
                 "shelved|dropped --note ..."
             )
+        if e.type == "stage" and cmd != "reopen" and e.status == "shelved":
+            back: str = "" if _imported(e) else " (or --status planned)"
+            raise LedgerError(
+                f"{e.id} is a shelved stage: use rk set {e.id} --status dropped "
+                f"--note ...{back}"
+            )
         if e.type == "stage" and cmd != "reopen":
             raise LedgerError(f"{e.id} is a stage: use stage-close")
         if e.type == "decision" and cmd != "drop":  # shelve: Q1, every type but this
@@ -1660,13 +1692,26 @@ def _close_drop_reopen(a: argparse.Namespace) -> int:
             ),
         }[cmd]
         if e.status not in allowed:
-            raise LedgerError(f"cannot {cmd} {e.id}: it is {e.status}")
+            how: str = ""
+            if cmd == "reopen" and e.type == "stage" and not _imported(e):
+                how = {
+                    "planned": f": rk stage-open {e.id}",
+                    "shelved": f": rk set {e.id} --status planned, then rk "
+                    f"stage-open {e.id}",
+                }.get(e.status, "")
+            raise LedgerError(f"cannot {cmd} {e.id}: it is {e.status}{how}")
         if cmd == "reopen":
             _check_stage_open(
                 state, e.stage, e.type, "open",
                 f"re-stage it first: set {e.id} --stage S-<x>",
             )
         if cmd == "reopen" and e.type == "stage":
+            if e.title in (".", "..") or not NAME_RE.match(e.title):
+                raise LedgerError(
+                    f"cannot reopen {e.id}: its title '{e.title}' is no folder "
+                    "name, so it can have no stage record (an imported stage); add "
+                    "a new stage"
+                )
             folder: Path | None = _record_folder(repo, e)
             if folder is None or not folder.is_dir():
                 raise LedgerError(
@@ -1732,6 +1777,18 @@ def _cmd_staged_land(a: argparse.Namespace) -> int:
                     f"cannot land {i}: it is in {e.stage or 'no stage'}, not {sid}"
                 )
             if staging:  # D-32: no work in a planned or shelved stage
+                st: Entry | None = state.get(e.stage) if e.stage else None
+                if st is not None and st.status in ("planned", "shelved"):
+                    way: str = (
+                        f"rk stage-open {st.id}" if st.status == "planned"
+                        else f"re-stage it: rk set {i} --stage S-<x>" if _imported(st)
+                        else f"rk set {st.id} --status planned, then rk stage-open "
+                        f"{st.id}"
+                    )
+                    raise LedgerError(
+                        f"cannot stage {i}: its stage {st.id} is {st.status} (work "
+                        f"runs only in an open stage): {way}"
+                    )
                 _check_stage_open(
                     state, e.stage, e.type, "staged", "pick an open stage"
                 )
@@ -1765,7 +1822,7 @@ def _stage_status(
     if e.type != "stage":
         raise LedgerError(
             f"--status {status}: set gives a status to a stage only; for {e.id} "
-            "use close, drop, shelve or reopen"
+            "use close, drop, shelve, staged or reopen"
         )
     if status == "open":
         raise LedgerError(f"--status open: only stage-open opens: rk stage-open {e.id}")
@@ -1793,8 +1850,8 @@ def _stage_status(
         )
         if busy:
             raise LedgerError(
-                f"cannot drop {e.id}: open entries are in it: "
-                + ", ".join(f"{x.id} {x.status}" for x in busy)
+                f"cannot drop {e.id}: entries of it are not closed: "
+                + ", ".join(x.id for x in busy)
                 + "; close, drop or re-stage each (set ID --stage S-x) first"
             )
     f: dict[str, object] = {"status": status}
@@ -1855,6 +1912,12 @@ def _cmd_set(a: argparse.Namespace) -> int:
                 what: str = e.status if e.type == "stage" else f"a {e.type}"
                 raise LedgerError(
                     f"{e.id} is {what}: --before/--after move a planned stage"
+                )
+            flag: str = "--before" if a.before is not None else "--after"
+            ref: str = a.before if a.before is not None else a.after
+            if resolve(state, ref, stage=True) == e.id:
+                raise LedgerError(
+                    f"{flag} {ref}: a stage cannot move relative to itself"
                 )
             others: dict[str, Entry] = {k: v for k, v in state.items() if k != e.id}
             f["queue"] = _queue_slot(others, a.before, a.after)
@@ -2017,7 +2080,13 @@ def _cmd_stage_open(a: argparse.Namespace) -> int:
         sid: str = resolve(state, a.id, stage=True)
         st: Entry = state[sid]
         if st.status != "planned":
-            raise LedgerError(f"{sid} is {st.status}: only a planned stage opens")
+            how: str = (
+                f": rk set {sid} --status planned first"
+                if st.status == "shelved" and not _imported(st) else ""
+            )
+            raise LedgerError(
+                f"{sid} is {st.status}: only a planned stage opens{how}"
+            )
         kept: object = st.extra.get("follows")  # given at plan time
         follows: str | None = (
             a.follows if a.follows is not None
@@ -2055,7 +2124,13 @@ def _folder_move_refs(
     never merged); then `_refs_moved` of the two."""
     if not (repo / old).is_dir():
         raise LedgerError(f"cannot {what}: no folder {old}; restore it first")
-    if os.path.lexists(repo / new):
+    same: bool = (  # a case-only rename where the file system ignores case
+        old.lower() == new.lower()
+        and not os.path.islink(repo / new)
+        and os.path.lexists(repo / new)
+        and os.path.samefile(repo / old, repo / new)
+    )
+    if os.path.lexists(repo / new) and not same:
         raise LedgerError(
             f"cannot {what}: {new} is there already; folders are not merged: move "
             "it away first"
@@ -2276,7 +2351,7 @@ def _show_one(
         *(
             (k, str(v).replace("\n", "\\n"))
             for k, v in e.extra.items()
-            if k != "legacy_id"
+            if k != "legacy_id" and (k != "queue" or e.status == "planned")
         ),
     ]
     for k, v in fields:
@@ -2288,7 +2363,10 @@ def _show_one(
         print("linked:")
         for lid in linked:
             x: Entry | None = state.get(lid)
-            print(_clip(f"  {lid} {x.status}: {x.title}") if x else f"  {lid} unknown")
+            print(
+                _clip(f"  {lid} {shown_status(state, x)}: {x.title}") if x
+                else f"  {lid} unknown"
+            )
     print("history:")
     for _, ev in events:
         if ev.get("id") != e.id:
@@ -2327,7 +2405,7 @@ def _cmd_search(a: argparse.Namespace) -> int:
     cap: list[Entry] = hits[:limit] if limit else hits
     for e in cap:
         src: str = f" [src {e.extra['source']}]" if _imported(e) else ""
-        print(f"{e.id} {e.status}: {e.title}{src}")
+        print(f"{e.id} {shown_status(state, e)}: {e.title}{src}")
     if len(cap) < len(hits):
         print(_more(len(hits) - len(cap)))
     return 0
@@ -2692,9 +2770,11 @@ def _cmd_stage_close(a: argparse.Namespace) -> int:
         sign: str = a.sign_off or ""
         if sign and sign not in state and _matches(state, sign):
             sign = resolve(state, sign)  # a label; an unknown ref stays as given
+        if stage.status != "open":  # the one reason: the rest would not apply
+            raise LedgerError(
+                f"stage-close {sid} refused: {sid} is {stage.status}, not open"
+            )
         problems: list[str] = []
-        if stage.status != "open":
-            problems.append(f"{sid} is {stage.status}, not open")
         busy: list[Entry] = sorted(
             (
                 e
@@ -2802,11 +2882,13 @@ _LOCAL_NOTICE: str = f"pm: local only ({_CONFIG_REL}): git checks on pm/ skipped
 
 def read_config(repo: Path) -> dict[str, object]:
     """The object of pm/config.json with `pm` always set ("tracked" without the
-    file or key). The only reader of the file; no git, no write."""
+    file or key); a linked worktree without the file reads its main checkout's
+    (`_main_checkout`). The only reader of the file; no git, no write."""
     try:
         raw: bytes = (repo / _CONFIG_REL).read_bytes()
     except (FileNotFoundError, NotADirectoryError):
-        return {"pm": "tracked"}
+        main: Path = _main_checkout(repo)
+        return {"pm": "tracked"} if main == repo else read_config(main)
     except OSError:  # a folder, no permission: as unreadable JSON
         raw = b""
     try:
@@ -3208,9 +3290,10 @@ def _print_findings(
 
 
 def _doctor_start(a: argparse.Namespace) -> int:
-    """Session start, at most 3 lines (the hook cuts at 3): kit line, then up to
-    two rule files behind the kit; with more than two, one and '+N more'. A
-    local or broken pm/config.json takes line 2, leaving one line (D-71)."""
+    """Session start. The kit part, at most 3 lines (the hook cuts it at 3): kit
+    line, then up to two rule files behind the kit; with more than two, one and
+    '+N more'. A local or broken pm/config.json takes line 2, leaving one line
+    (D-71). Then the `spec: ` lines (`_spec_lines`)."""
     print(f"kit {kit_version()}")
     try:
         repo: Path = _repo(a)
@@ -3232,7 +3315,34 @@ def _doctor_start(a: argparse.Namespace) -> int:
         print(f"{rel} {have}, kit {want}: run /rk-sync")
     if len(shown) < len(behind):
         print(f"+{len(behind) - len(shown)} more: rk doctor")
+    try:  # after the kit part; the hook passes every `spec: ` line (D1)
+        state: dict[str, Entry] = load(repo)
+    except (LedgerError, OSError):
+        return 0
+    for line in _spec_lines(state):
+        print(line)
     return 0
+
+
+def _spec_lines(state: dict[str, Entry]) -> list[str]:
+    """One line per open stage with an NN title and no done user decision
+    labelled `<stage code>/SPEC` (design-debt-batch I1, I2), in ledger order."""
+    labels: set[object] = {
+        e.extra.get("legacy_id")
+        for e in state.values()
+        if e.type == "decision" and e.status == "done" and e.owner == "user"
+    }
+    out: list[str] = []
+    for st in sorted(state.values(), key=lambda x: x.lines[0]):
+        if st.type != "stage" or st.status != "open" or not STAGE_RE.match(st.title):
+            continue
+        code: str = st.title.split("-", 1)[0]
+        if f"{code}/SPEC" not in labels:
+            out.append(
+                f"spec: {st.id} {st.title} has no user decision labelled "
+                f"{code}/SPEC (AGENTS.md 3.3)"
+            )
+    return out
 
 
 def _cmd_doctor(a: argparse.Namespace) -> int:
