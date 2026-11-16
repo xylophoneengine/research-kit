@@ -25,7 +25,7 @@ import string
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from fractions import Fraction
 from pathlib import Path
@@ -75,7 +75,7 @@ COMMANDS: frozenset[str] = frozenset(
     {
         "add", "start", "close", "drop", "shelve", "reopen", "set", "supersede",
         "list", "show", "search", "recent", "render", "stage-close", "brief-check",
-        "import", "doctor", "reref", "stage-open",
+        "import", "doctor", "reref", "stage-open", "stage-rename",
     }
 )
 BRIEF_RE: re.Pattern[str] = re.compile(r"^[ \t]*DELIVERABLE:", re.M)
@@ -1626,7 +1626,8 @@ def _cmd_set(a: argparse.Namespace) -> int:
             if e.type == "stage" and not _imported(e):
                 raise LedgerError(
                     f"{e.id} is a stage: its title is its folder name "
-                    f"({_stage_dir(e)}) and gives its code; it is not renamed"
+                    f"({_stage_dir(e)}) and gives its code; rename it with rk "
+                    f"stage-rename {e.id} <kind>-<topic>"
                 )
             f["title"] = title
         if owner is not None:
@@ -1785,16 +1786,7 @@ def _cmd_stage_open(a: argparse.Namespace) -> int:
         _check_one_per_kind(state, title, f"stage-open {sid}")
         old: str = _stage_dir(st)
         new: str = f"pm/stages/{title}/"
-        if not (repo / old).is_dir():
-            raise LedgerError(
-                f"cannot stage-open {sid}: no folder {old}; restore it first"
-            )
-        if os.path.lexists(repo / new):
-            raise LedgerError(
-                f"cannot stage-open {sid}: {new} is there already; folders are not "
-                "merged: move it away first"
-            )
-        refs, k = _refs_moved(repo, state, old.rstrip("/"), new.rstrip("/"))
+        refs, k = _folder_move_refs(repo, state, f"stage-open {sid}", old, new)
         ev: dict[str, object] = make_event(
             who, "set", sid,
             {"status": "open", "title": title, "refs": refs.pop(sid, st.refs)},
@@ -1803,19 +1795,112 @@ def _cmd_stage_open(a: argparse.Namespace) -> int:
         evs: list[dict[str, object]] = [ev] + [
             make_event(who, "set", i, {"refs": r}) for i, r in refs.items()
         ]
-        try:  # the last step: nothing above may fail after it
-            os.rename(repo / old, repo / new)
-        except OSError as err:
-            raise LedgerError(
-                f"cannot stage-open {sid}: {old} -> {new}: {err.strerror}"
-            ) from None
-        moves.append((repo / old, repo / new))
+        _rename_folder(repo, f"stage-open {sid}", old, new, moves)
         said[:] = [f"opened {sid}: {title}", f"folder {old} -> {new}"]
         said.append(f"refs: {k} rewritten")
         return evs
 
     _append_renaming(repo, build, moves)
     print("\n".join(said))
+    return 0
+
+
+def _folder_move_refs(
+    repo: Path, state: dict[str, Entry], what: str, old: str, new: str
+) -> tuple[dict[str, list[str]], int]:
+    """Before stage folder `old` becomes `new` (`what`: the command and id, for
+    the refusals): refuse a missing `old` or a `new` that is there (folders are
+    never merged); then `_refs_moved` of the two."""
+    if not (repo / old).is_dir():
+        raise LedgerError(f"cannot {what}: no folder {old}; restore it first")
+    if os.path.lexists(repo / new):
+        raise LedgerError(
+            f"cannot {what}: {new} is there already; folders are not merged: move "
+            "it away first"
+        )
+    return _refs_moved(repo, state, old.rstrip("/"), new.rstrip("/"))
+
+
+def _rename_folder(
+    repo: Path, what: str, old: str, new: str, moves: list[tuple[Path, Path]]
+) -> None:
+    """The last step of a `build` under `_append_renaming`: rename `old` to `new`
+    and list it in `moves`; nothing may fail in `build` after it."""
+    try:
+        os.rename(repo / old, repo / new)
+    except OSError as err:
+        raise LedgerError(f"cannot {what}: {old} -> {new}: {err.strerror}") from None
+    moves.append((repo / old, repo / new))
+
+
+def _renamed_title(e: Entry, topic: str) -> str:
+    """Stage `e`'s title with its kind-topic part replaced by `topic`: the
+    NN[letter]- prefix of an opened or done stage stays; a planned or shelved one
+    (no NN; its P-<n> is in the folder name) is just `topic`."""
+    if STAGE_RE.match(e.title):
+        return f"{e.title.split('-', 1)[0]}-{topic}"
+    return topic
+
+
+def _cmd_stage_rename(a: argparse.Namespace) -> int:
+    """Rename a stage's kind-topic in one locked step: the NN or P-<n> stays,
+    the folder is renamed, every ref under it rewritten (as stage-open); a done
+    stage needs --note and gets its record written again."""
+    repo: Path = _repo(a)
+    who: str = _name(a.who, "--who")
+    if not PLAN_RE.match(a.topic):
+        raise LedgerError(
+            f"stage-rename {a.id} '{a.topic}': want {PLAN_FORM} (letters, digits, "
+            "_ . - in the topic); the NN or P-<n> stays"
+        )
+    if a.note is not None and not a.note.strip():
+        raise LedgerError("--note needs text")
+    moves: list[tuple[Path, Path]] = []
+    said: list[str] = []
+    done: list[str] = []
+
+    def build(state: dict[str, Entry]) -> list[dict[str, object]]:
+        sid: str = resolve(state, a.id, stage=True)
+        st: Entry = state[sid]
+        if _imported(st):
+            raise LedgerError(
+                f"{sid} is imported: its folder is a legacy path and keeps its name"
+            )
+        if st.status in ("dropped", "superseded"):
+            raise LedgerError(
+                f"{sid} is {st.status}: a dropped or superseded stage is not renamed"
+            )
+        if st.status == "done" and a.note is None:
+            raise LedgerError(
+                f"{sid} is done: renaming a closed stage needs --note: why (text "
+                "outside the ledger keeps the old path)"
+            )
+        title: str = _title(_renamed_title(st, a.topic))
+        if title == st.title:
+            raise LedgerError(f"{sid} is named {title} already: nothing to rename")
+        others: dict[str, Entry] = {k: v for k, v in state.items() if k != sid}
+        _check_names(others, "stage", title, a)  # its own code stays its own
+        if st.status == "open":
+            _check_one_per_kind(others, title, f"stage-rename {sid}")
+        old: str = _stage_dir(st)
+        new: str = _stage_dir(replace(st, title=title))
+        refs, k = _folder_move_refs(repo, state, f"stage-rename {sid}", old, new)
+        f: dict[str, object] = {"title": title, "refs": refs.pop(sid, st.refs)}
+        if a.note is not None:
+            f["note"] = _note_plus(st.note, a.note)
+        evs: list[dict[str, object]] = [make_event(who, "set", sid, f)] + [
+            make_event(who, "set", i, {"refs": r}) for i, r in refs.items()
+        ]
+        _rename_folder(repo, f"stage-rename {sid}", old, new, moves)
+        said[:] = [f"renamed {sid}: {st.title} -> {title}", f"folder {old} -> {new}"]
+        said.append(f"refs: {k} rewritten")
+        done[:] = [sid] if st.status == "done" else []
+        return evs
+
+    state: dict[str, Entry] = _append_renaming(repo, build, moves)
+    print("\n".join(said))
+    if done:  # its record is written again with the stage-close writer
+        _write_stage_record(repo, state[done[0]])
     return 0
 
 
@@ -2115,7 +2200,10 @@ def render_stage_record(
     Stage entries, entries touched in the window (the stage's open spans: add or
     reopen to close), decisions by owner, what is left open, the kit, session
     and rule values seen. A reopened stage's record also carries RECORD_MARK and
-    a `Reopened` part; a stage never reopened gets no such line."""
+    a `Reopened` part; a stage never reopened gets no such line. The one thing
+    read after the close (D-43): a later title change adds the line `renamed to
+    <title> on <date>` (the last one) below the head, which keeps the title at
+    the close."""
     end: int = _close_line(events, sid) or 0
     upto: list[tuple[int, dict[str, object]]] = [(n, v) for n, v in events if n <= end]
     state: dict[str, Entry] = fold(upto)
@@ -2190,8 +2278,16 @@ def render_stage_record(
         return ", ".join(dict.fromkeys(vals)) or "none"
 
     close_ev: dict[str, object] = by_line[end]
+    renamed: list[str] = []  # D-43: a title change after the close, the last one
+    for n, v in events:
+        nf: object = v.get("f")
+        if n > end and v.get("id") == sid and isinstance(nf, dict) and "title" in nf:
+            renamed = [f"renamed to {nf['title']} on {str(v.get('ts'))[:10]}"]
+            if nf["title"] == st.title:  # back to the title at the close
+                renamed = []
     out: list[str] = [
         _record_head(st),
+        *renamed,
         *([RECORD_MARK.format(sid=sid, end=end)] if reopens else []),
         "",
         f"Generated from {LEDGER_REL} by rk.py when the stage was closed; frozen",
@@ -2234,6 +2330,14 @@ def _record_current(
         return False
     want: str = render_stage_record(events, sid)
     if text.split("\n", 1)[0] != want.split("\n", 1)[0]:
+        return False
+
+    def renamed(t: str) -> str | None:
+        """The `renamed to` line below the head (D-43), if there is one."""
+        second: list[str] = t.split("\n", 2)[1:2]
+        return second[0] if second and second[0].startswith("renamed to ") else None
+
+    if renamed(text) != renamed(want):  # a title change after the close
         return False
     mark: re.Match[str] | None = RECORD_MARK_RE.search(text)
     if mark is not None:
@@ -2982,6 +3086,11 @@ def _parser() -> argparse.ArgumentParser:
     po.add_argument("id")
     po.add_argument("--follows", default=None)
     po.set_defaults(imported=False, legacy_id=None)  # for _check_names
+    pr: argparse.ArgumentParser = sub.add_parser("stage-rename", parents=[common])
+    pr.add_argument("id")
+    pr.add_argument("topic")
+    pr.add_argument("--note", default=None)
+    pr.set_defaults(imported=False, legacy_id=None)  # for _check_names
     pv: argparse.ArgumentParser = sub.add_parser(
         "reref",
         parents=[common],
@@ -3043,6 +3152,7 @@ HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
     "doctor": _cmd_doctor,
     "reref": _cmd_reref,
     "stage-open": _cmd_stage_open,
+    "stage-rename": _cmd_stage_rename,
 }
 
 

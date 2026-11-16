@@ -3290,6 +3290,292 @@ def test_drop_planned_stage_with_open_entries() -> None:
         assert (repo / "pm/stages/P-2-software-p").is_dir()
 
 
+# T11, D-41/D-42: open stage: folder, refs, receipt; red: stage-rename unknown
+def test_stage_rename_open() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "paper-x", "--open")[0] == 0  # 01-paper-x
+        old: str = "pm/stages/01-paper-x"
+        new: str = "pm/stages/01-paper-y"
+        (repo / old / "notes/a.md").write_text("a")
+        (repo / "keep.md").write_text("k")
+        code, out = lrun(
+            repo, "add", "debt", "d", "--owner", "lead",
+            "--ref", f"{old}/notes/a.md", "--ref", "keep.md",
+        )  # fmt: skip
+        assert code == 0, out  # DB-1, in S-1
+        assert L._renamed_title(L.load(repo)["S-1"], "paper-y") == "01-paper-y"
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "stage-rename", "S-1", "paper-y")
+        assert code == 0 and out.splitlines() == [
+            "renamed S-1: 01-paper-x -> 01-paper-y",
+            f"folder {old}/ -> {new}/",
+            "refs: 2 rewritten",  # the stage's own ref and the debt's: every ref
+        ], out
+        st: Any = L.load(repo)
+        assert st["S-1"].status == "open" and st["S-1"].title == "01-paper-y"
+        assert st["S-1"].refs == [f"{new}/"], st["S-1"].refs
+        assert st["DB-1"].refs == [f"{new}/notes/a.md", "keep.md"], st["DB-1"].refs
+        assert not (repo / old).exists()
+        assert (repo / new / "notes/a.md").read_text() == "a"
+        assert sorted(p.name for p in (repo / new).iterdir()) == sorted(L.STAGE_DIRS)
+        evs: list[dict[str, Any]] = jl(repo)[n:]  # one set on the stage, one per entry
+        by_id: dict[str, dict[str, Any]] = {e["id"]: e for e in evs}
+        assert sorted(by_id) == ["DB-1", "S-1"] and len(evs) == 2, evs
+        assert all(e["ev"] == "set" for e in evs), evs
+        assert set(by_id["S-1"]["f"]) == {"title", "refs"}, evs  # no status change
+        assert list(by_id["DB-1"]["f"]) == ["refs"], evs
+        commit_all(repo)
+        code, out = doctor(repo)
+        assert code == 0 and "HARD" not in out, out
+        sign_off_close(repo, "S-1")  # a letter stays: 01b-paper-w -> 01b-paper-v
+        rec: str = (repo / new / "LEDGER.md").read_text()  # renamed before the close
+        assert rec.startswith("# Ledger of stage S-1 01-paper-y (generated)\n\n"), rec
+        assert "renamed to" not in rec, rec  # D-43: no line
+        code, out = lrun(repo, "add", "stage", "paper-w", "--open", "--follows", "S-1")
+        assert code == 0 and out.startswith("logged S-2: 01b-paper-w\n"), out
+        code, out = lrun(repo, "stage-rename", "S-2", "paper-v")
+        assert code == 0 and out.splitlines()[:2] == [
+            "renamed S-2: 01b-paper-w -> 01b-paper-v",
+            "folder pm/stages/01b-paper-w/ -> pm/stages/01b-paper-v/",
+        ], out
+
+
+# T11, D-41/D-34: planned stage: P-<n> stays, queue and status untouched; red: same
+def test_stage_rename_planned() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        for title in ("paper-scan", "paper-draft"):  # S-1, S-2: queue "1", "2"
+            assert lrun(repo, "add", "stage", title)[0] == 0
+        old: str = "pm/stages/P-1-paper-scan"
+        new: str = "pm/stages/P-1-paper-survey"
+        (repo / old / "notes/a.md").write_text("a")
+        code, out = lrun(
+            repo, "add", "debt", "d", "--owner", "lead", "--stage", "S-1",
+            "--ref", f"{old}/notes/a.md",
+        )  # fmt: skip
+        assert code == 0, out
+        assert L._renamed_title(L.load(repo)["S-1"], "paper-survey") == "paper-survey"
+        n: int = len(jl(repo))
+        code, out = lrun(repo, "stage-rename", "S-1", "paper-survey")
+        assert code == 0 and out.splitlines() == [
+            "renamed S-1: paper-scan -> paper-survey",
+            f"folder {old}/ -> {new}/",
+            "refs: 2 rewritten",
+        ], out
+        st: Any = L.load(repo)
+        assert st["S-1"].title == "paper-survey" and st["S-1"].status == "planned"
+        assert st["S-1"].extra["queue"] == "1" and st["S-2"].extra["queue"] == "2"
+        assert st["S-1"].refs == [f"{new}/"], st["S-1"].refs
+        assert st["DB-1"].refs == [f"{new}/notes/a.md"], st["DB-1"].refs
+        assert not (repo / old).exists()
+        assert (repo / new / "notes/a.md").read_text() == "a"
+        assert set(jl(repo)[n]["f"]) == {"title", "refs"}, jl(repo)[n]
+        assert lrun(repo, "show", "paper-survey")[1].startswith("id: S-1\n")
+        code, out = lrun(repo, "stage-rename", "S-2", "software-draft")  # kind free
+        assert code == 0 and out.splitlines()[:2] == [
+            "renamed S-2: paper-draft -> software-draft",
+            "folder pm/stages/P-2-paper-draft/ -> pm/stages/P-2-software-draft/",
+        ], out
+        assert (repo / "pm/stages/P-2-software-draft").is_dir()
+        assert L.load(repo)["S-2"].extra["queue"] == "2"
+
+
+# T11, D-42: done stage needs --note; record rewritten; red: stage-rename unknown
+def test_stage_rename_done() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        assert lrun(repo, "add", "stage", "paper-x", "--open")[0] == 0  # 01-paper-x
+        old: str = "pm/stages/01-paper-x"
+        new: str = "pm/stages/01-paper-y"
+        (repo / old / "notes/a.md").write_text("a")
+        code, out = lrun(
+            repo, "add", "debt", "d", "--owner", "lead", "--ref", f"{old}/notes/a.md"
+        )
+        assert code == 0, out
+        sign_off_close(repo, "S-1")
+        before: dict[str, bytes | None] = snapshot(root)
+        code, out = lrun(repo, "stage-rename", "S-1", "paper-y")
+        assert code == 1 and out == (
+            "error: S-1 is done: renaming a closed stage needs --note: why (text "
+            "outside the ledger keeps the old path)\n"
+        ), out  # a done stage: the cost is said
+        assert snapshot(root) == before
+        n: int = len(jl(repo))
+        code, out = lrun(
+            repo, "stage-rename", "S-1", "paper-y", "--note", "topic was wrong"
+        )
+        assert code == 0 and out.splitlines() == [
+            "renamed S-1: 01-paper-x -> 01-paper-y",
+            f"folder {old}/ -> {new}/",
+            "refs: 2 rewritten",
+        ], out
+        st: Any = L.load(repo)
+        assert st["S-1"].status == "done" and st["S-1"].title == "01-paper-y"
+        assert st["DB-1"].refs == [f"{new}/notes/a.md"]
+        ev: dict[str, Any] = next(e for e in jl(repo)[n:] if e["id"] == "S-1")
+        assert set(ev["f"]) == {"title", "refs", "note"}, ev  # the note: a new line
+        assert st["S-1"].note.endswith("\ntopic was wrong"), st["S-1"].note
+        assert not (repo / old).exists() and (repo / new / "notes/a.md").is_file()
+        rec: Path = repo / new / "LEDGER.md"
+        text: str = rec.read_text()
+        assert text == L.render_stage_record(L.read_events(repo), "S-1"), text
+        commit_all(repo)
+        code, out = doctor(repo)
+        assert code == 0 and "HARD" not in out, out
+        stable: dict[str, bytes | None] = snapshot(root)
+        code, out = lrun(repo, "stage-close", "S-1")  # the record is current
+        assert code == 1 and "S-1 is done, not open" in out, out
+        assert snapshot(root) == stable  # byte-stable: nothing rewritten
+        # D-43: head and body as of the close, plus one line for the rename
+        day: str = ev["ts"][:10]
+        assert text.startswith(
+            "# Ledger of stage S-1 01-paper-x (generated)\n"
+            f"renamed to 01-paper-y on {day}\n\n"
+        ), text
+        assert text.count("renamed to") == 1, text
+        # a second rename after the close: still one line, the last title
+        code, out = lrun(repo, "stage-rename", "S-1", "paper-z", "--note", "again")
+        assert code == 0, out
+        evs2: list[dict[str, Any]] = [e for e in jl(repo) if e["id"] == "S-1"]
+        last: str = evs2[-1]["ts"][:10]  # the date of the last title change
+        rec = repo / "pm/stages/01-paper-z/LEDGER.md"
+        text = rec.read_text()
+        assert text == L.render_stage_record(L.read_events(repo), "S-1"), text
+        assert text.startswith(
+            "# Ledger of stage S-1 01-paper-x (generated)\n"
+            f"renamed to 01-paper-z on {last}\n\n"
+        ), text
+        assert text.count("renamed to") == 1, text
+        commit_all(repo)
+        code, out = doctor(repo)
+        assert code == 0 and "HARD" not in out, out
+        stable = snapshot(root)
+        code, out = lrun(repo, "stage-close", "S-1")  # current: byte-stable
+        assert code == 1 and "S-1 is done, not open" in out, out
+        assert snapshot(root) == stable
+        # a record written before the rename (no line) is not current: rewritten
+        rec.write_text(text.replace(f"renamed to 01-paper-z on {last}\n", ""))
+        code, out = lrun(repo, "stage-close", "S-1")
+        assert code == 0 and "wrote pm/stages/01-paper-z/LEDGER.md" in out, out
+        assert rec.read_text() == text
+
+
+# T11, D-41/D-42: each refusal names its reason and changes nothing; red: same
+def test_stage_rename_refusals() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        repo: Path = new_repo(root)
+        stages: Path = repo / "pm/stages"
+
+        def refuse(argv: list[str], want: str) -> None:
+            """Refused with code 1 and exactly `want`, nothing changed."""
+            before: dict[str, bytes | None] = snapshot(root)
+            code, out = lrun(repo, *argv)
+            assert code == 1 and out == f"error: {want}\n", (argv, out)
+            assert snapshot(root) == before, argv
+
+        code, out = lrun(repo, "add", "stage", "old", "--imported", "--source", "a:1")
+        assert code == 0 and out == "logged S-1: old\n", out
+        for argv in (
+            ["add", "stage", "paper-a", "--open"],  # S-2 01-paper-a
+            ["add", "stage", "software-b"],  # S-3 planned
+            ["add", "stage", "paper-c"],  # S-4 planned
+            ["add", "stage", "software-d", "--open"],  # S-5 02-software-d
+        ):
+            assert lrun(repo, *argv)[0] == 0, argv
+        refuse(  # legacy path: frozen
+            ["stage-rename", "S-1", "paper-z"],
+            "S-1 is imported: its folder is a legacy path and keeps its name",
+        )
+        refuse(
+            ["stage-rename", "S-2", "paper-a"],
+            "S-2 is named 01-paper-a already: nothing to rename",
+        )
+        for sid, bad in (
+            ("S-2", "03-paper-x"), ("S-2", "paper"), ("S-3", "03-paper-x")
+        ):
+            refuse(  # planned too
+                ["stage-rename", sid, bad],
+                f"stage-rename {sid} '{bad}': want <kind>-<topic>, e.g. paper-scan "
+                "(letters, digits, _ . - in the topic); the NN or P-<n> stays",
+            )
+        refuse(  # a name clash: the existing _check_names text
+            ["stage-rename", "S-3", "paper-c"],
+            "stage 'paper-c': 'paper-c' already names S-4 (paper-c); stage codes, "
+            "stage titles and labels are unique",
+        )
+        refuse(  # kind change onto a kind with an open stage
+            ["stage-rename", "S-2", "software-e"],
+            "cannot stage-rename S-2: S-5 (02-software-d) is open, and at most one "
+            "software stage may be open: stage-close S-5 first",
+        )
+        (stages / "01-paper-z").mkdir()  # the target folder exists: no merge
+        refuse(
+            ["stage-rename", "S-2", "paper-z"],
+            "cannot stage-rename S-2: pm/stages/01-paper-z/ is there already; "
+            "folders are not merged: move it away first",
+        )
+        (stages / "01-paper-z").rmdir()
+        (stages / "01-paper-a").rename(root / "moved")  # the source folder is missing
+        refuse(
+            ["stage-rename", "S-2", "paper-z"],
+            "cannot stage-rename S-2: no folder pm/stages/01-paper-a/; restore it "
+            "first",
+        )
+        (root / "moved").rename(stages / "01-paper-a")
+        code, out = lrun(repo, "set", "S-4", "--status", "dropped", "--note", "x")
+        assert code == 0, out
+        refuse(
+            ["stage-rename", "S-4", "paper-q"],
+            "S-4 is dropped: a dropped or superseded stage is not renamed",
+        )
+        code, out = lrun(repo, "stage-rename", "S-2", "paper-z")  # only those reasons
+        assert code == 0, out
+        assert out.startswith("renamed S-2: 01-paper-a -> 01-paper-z\n"), out
+
+
+# T11, D-33 (rename undone if the write fails; injection as in T4): red: same
+def test_stage_rename_rolls_back() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "paper-x", "--open")[0] == 0  # 01-paper-x
+        old: Path = repo / "pm/stages/01-paper-x"
+        (old / "notes/a.md").write_text("a")
+        code, out = lrun(
+            repo, "add", "debt", "d", "--owner", "lead",
+            "--ref", "pm/stages/01-paper-x/notes/a.md",
+        )  # fmt: skip
+        assert code == 0, out
+        before: dict[str, bytes | None] = snapshot(Path(d))
+        real: Any = L.fold
+
+        def fold_fails_after_rename(events: Any) -> Any:
+            """append folds the new lines before it writes them; at that point the
+            folder has been renamed, so this is the write failing after the rename."""
+            if not old.exists():
+                raise OSError(28, "injected: no space left on device")
+            return real(events)
+
+        L.fold = fold_fails_after_rename
+        try:
+            try:
+                code, out = lrun(repo, "stage-rename", "S-1", "paper-y")
+            except OSError:  # re-raised, as in stage-open
+                pass
+            else:
+                raise AssertionError(f"no OSError: {code} {out}")
+        finally:
+            L.fold = real
+        assert snapshot(Path(d)) == before  # folder and file back, ledger as was
+        assert (old / "notes/a.md").read_text() == "a"
+        assert not (repo / "pm/stages/01-paper-y").exists()
+        assert L.load(repo)["S-1"].title == "01-paper-x"
+        code, out = lrun(repo, "stage-rename", "S-1", "paper-y")  # a retry works
+        assert code == 0 and out.startswith("renamed S-1: 01-paper-x -> 01-paper-y\n")
+
+
 def test_reopen_stage_without_folder() -> None:  # brief 025 fix 4
     with tempfile.TemporaryDirectory() as d:
         repo: Path = new_repo(Path(d))
