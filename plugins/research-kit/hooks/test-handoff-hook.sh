@@ -121,6 +121,24 @@ has stub-doctor "pm/kinds/paper.md 2026-11-01a" "$out"
 lacks stub-doctor "fourth line" "$out"; has stub-list "open 0 (stub list)" "$out"
 [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" -le 6 ] || { echo "FAIL stub block longer than function + explanation + 3 doctor + list"; fail=1; }
 out="$(CLAUDE_PLUGIN_ROOT="$P" bash "$H" post)"; has stub-post "run /rk-sync" "$out"; has stub-post "[surviving-compaction]" "$out"
+# doctor --start with 4 kit lines then 2 "spec: " lines: the cut keeps 3 kit lines, every spec: line passes
+cat > "$P/skills/research-kit/scripts/rk.py" <<'EOF'
+import sys
+a = sys.argv[1:]
+if a[:2] == ["doctor", "--start"]:
+    print("kit 0.9.0 (stub)")
+    print("kit line two")
+    print("kit line three")
+    print("kit line four")
+    print("spec: S-4 03-software-local-only-mode has no user decision labelled 03/SPEC (AGENTS.md 3.3)")
+    print("spec: S-5 04-paper-x has no user decision labelled 04/SPEC (AGENTS.md 3.3)")
+elif a[:1] == ["list"]:
+    print("open 0 (stub list)")
+EOF
+out="$(CLAUDE_PLUGIN_ROOT="$P" bash "$H" start)"
+has stub-spec "kit line three" "$out"; lacks stub-spec "kit line four" "$out"
+has stub-spec "spec: S-4 03-software-local-only-mode" "$out"; has stub-spec "spec: S-5 04-paper-x" "$out"
+[ "$(printf '%s\n' "$out" | grep -c '^spec: ')" = 2 ] || { echo "FAIL stub-spec: not exactly 2 spec: lines"; fail=1; }
 # doctor fails (exit 2, text on stdout): nothing from it, the rest intact, exit 0
 cat > "$P/skills/research-kit/scripts/rk.py" <<'EOF'
 import sys
@@ -141,7 +159,7 @@ out="$(CLAUDE_PLUGIN_ROOT="$NOPLUG" bash "$H" post)"; rc=$?
 [ "$rc" = 0 ] || { echo "FAIL missing rk.py post exit $rc"; fail=1; }; has no-rk-post "[surviving-compaction]" "$out"
 # PATH without jq: the notice appears, nothing else breaks
 NJ="$(mktemp -d)"
-for t in python3 dirname find stat date head tail cat grep wc tr sed; do ln -s "$(command -v $t)" "$NJ/$t" 2>/dev/null; done
+for t in python3 dirname find stat date head tail cat grep wc tr sed awk; do ln -s "$(command -v $t)" "$NJ/$t" 2>/dev/null; done
 out="$(PATH="$NJ" /bin/bash "$H" start)"; rc=$?
 has no-jq "jq not found: delete guard and brief check are OFF" "$out"; has no-jq "T-1" "$out"
 [ "$rc" = 0 ] || { echo "FAIL no-jq exit $rc"; fail=1; }
