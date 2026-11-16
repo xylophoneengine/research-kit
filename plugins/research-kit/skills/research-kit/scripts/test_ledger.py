@@ -4938,10 +4938,12 @@ def test_status_md_planned_block() -> None:
             "- ~04 S-4 thesis-c (open entries: 0)",
         ], rows
         assert "paper-scan" not in sec["## Stages"], sec["## Stages"]
-        assert "Open: 2." in st, st  # S-1 and DB-1; a planned stage is not open
+        assert "Open: 1." in st, st  # S-1; DB-1 in planned S-2 shows planned (D-56)
         # shelved stages leave the block and sit in `## Shelved`, which follows it
         code, out = lrun(repo, "set", "S-3", "--status", "shelved", "--note", "later")
         assert code == 0, out
+        # an open debt in S-1 for `## Open debt` (DB-1 shows planned, D-56)
+        assert lrun(repo, "add", "debt", "in S-1", "--stage", "S-1")[0] == 0  # DB-2
         st = (repo / L.STATUS_REL).read_text()
         sec = sections(st)
         assert [r.split()[2] for r in bullets(sec["## Planned stages"])] == [
@@ -4990,13 +4992,13 @@ def test_list_status_filter() -> None:
         code, out = lrun(repo, "list", "--status", "planned")
         lines: list[str] = out.splitlines()
         assert lines[0] == "open 0 (running 0)", lines
-        assert [ln.split()[0] for ln in lines[1:]] == ["S-3", "S-2"], lines
+        assert [ln.split()[0] for ln in lines[1:]] == ["S-3", "S-2", "DB-1"], lines
         assert lines[1].split()[:3] == ["S-3", "planned", "lead"], lines
         assert lines[1].endswith("  ~02 software-b (0 open)"), lines
         assert lines[2].endswith("  ~03 paper-scan (1 open)"), lines  # DB-1
         assert set(ids("--status", "shelved")) == {"T-3", "S-4"}
         assert "~" not in lrun(repo, "list", "--status", "shelved")[1]
-        assert set(ids("--status", "open")) == {"S-1", "T-1", "DB-1"}
+        assert set(ids("--status", "open")) == {"S-1", "T-1"}  # DB-1: planned, D-56
         assert ids("--status", "done") == ["T-2"]
         assert ids("--status", "planned", "--type", "task") == []
         assert lrun_exit(repo, "list", "--status", "bogus") == 2
@@ -5462,6 +5464,128 @@ def test_staged_probe() -> None:
         code, out = lrun(repo, "land", "--note", "merged to dev")
         assert code == 0 and out == "landed DB-1: merged to dev (no stage)\n", out
         assert L.load(repo)["DB-1"].status == "done"
+
+
+# ---- shown status (D-56, spec-staged-status "Addition ... (D-56)") -----------
+
+
+def shown_repo(root: Path) -> Path:
+    """S-1 01-software-a open; planned queue S-3 paper-c, S-2 paper-b, S-4
+    paper-d (follows S-1); DB-1 open in S-2; T-1, DB-2 open in S-3; DB-3 open in
+    S-1 (the spec example)."""
+    repo: Path = new_repo(root)
+    for argv in (
+        ("stage", "software-a", "--open"),
+        ("stage", "paper-b"),
+        ("stage", "paper-c", "--before", "S-2"),
+        ("stage", "paper-d", "--follows", "S-1"),
+        ("debt", "dd", "--stage", "S-2"),
+        ("task", "tt", "--note", "n", "--stage", "S-3"),
+        ("debt", "ee", "--stage", "S-3"),
+        ("debt", "ff", "--stage", "S-1"),
+    ):
+        code, out = lrun(repo, "add", *argv)
+        assert code == 0, (argv, out)
+    return repo
+
+
+# D-56: the rule, owned by one function
+def test_shown_status_rule() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = shown_repo(Path(d))
+        st: dict[str, Any] = L.load(repo)
+        shown: Any = L.shown_status
+        assert [shown(st, st[i]) for i in ("DB-1", "T-1", "DB-2", "DB-3")] == [
+            "planned", "planned", "planned", "open"
+        ]
+        assert [shown(st, st[i]) for i in ("S-1", "S-2")] == ["open", "planned"]
+        assert lrun(repo, "set", "S-2", "--status", "shelved", "--note", "l")[0] == 0
+        assert lrun(repo, "close", "DB-2", "--note", "x")[0] == 0
+        st = L.load(repo)
+        assert shown(st, st["DB-1"]) == "shelved" and st["DB-1"].status == "open"
+        assert shown(st, st["DB-2"]) == "done"  # only stored open inherits
+        assert lrun(repo, "start", "DB-3")[0] == 0
+        st = L.load(repo)
+        assert shown(st, st["DB-3"]) == "running"
+        assert lrun(repo, "stage-open", "S-3")[0] == 0  # turns open by itself
+        st = L.load(repo)
+        assert shown(st, st["T-1"]) == "open" and st["S-3"].title == "02-paper-c"
+
+
+# D-56: rk list: out of the open list and counts; planned line counts; filters
+def test_list_shown_status() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = shown_repo(Path(d))
+        lines: list[str] = lrun(repo, "list")[1].splitlines()
+        assert lines[:2] == [
+            "open 2 (running 0): debt 1, stage 1",
+            "planned 3: ~02 paper-c (2 entries), ~03 paper-b (1), ~01b paper-d",
+        ], lines
+        assert [ln.split()[0] for ln in lines[2:]] == ["S-1", "DB-3"], lines
+        lines = lrun(repo, "list", "--status", "planned")[1].splitlines()
+        assert [ln.split()[:2] for ln in lines[1:]] == [
+            ["S-3", "planned"], ["T-1", "planned"], ["DB-2", "planned"],
+            ["S-2", "planned"], ["DB-1", "planned"], ["S-4", "planned"],
+        ], lines
+        lines = lrun(repo, "list", "--status", "open")[1].splitlines()
+        assert [ln.split()[0] for ln in lines[1:]] == ["S-1", "DB-3"], lines
+        lines = lrun(repo, "list", "--stage", "S-2")[1].splitlines()
+        assert [ln.split()[:2] for ln in lines[1:]] == [["DB-1", "planned"]], lines
+        assert lrun(repo, "set", "S-2", "--status", "shelved", "--note", "l")[0] == 0
+        lines = lrun(repo, "list", "--status", "shelved")[1].splitlines()
+        assert [ln.split()[:2] for ln in lines[1:]] == [
+            ["S-2", "shelved"], ["DB-1", "shelved"]
+        ], lines
+        lines = lrun(repo, "list")[1].splitlines()
+        assert lines[1] == "planned 2: ~02 paper-c (2 entries), ~01b paper-d", lines
+
+
+# D-56: STATUS.md: out of the open list, "Open: N" and "Needs you"; the planned
+# block keeps its count
+def test_status_md_shown_status() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = shown_repo(Path(d))
+        code, out = lrun(
+            repo, "add", "debt", "ask", "--owner", "user", "--stage", "S-2"
+        )
+        assert code == 0, out  # DB-4
+        text: str = (repo / L.STATUS_REL).read_text()
+        assert "Open: 2." in text.splitlines()[2], text
+        sec: dict[str, str] = sections(text)
+        assert "DB-3" in sec["## Open debt"] and "DB-1" not in sec["## Open debt"]
+        assert "DB-4" not in sec.get("## Needs you", ""), sec
+        assert "T-1" not in sec.get("## Open tasks", ""), sec
+        assert "S-2 paper-b (open entries: 2)" in sec["## Planned stages"], sec
+        code, out = lrun(repo, "render")
+        assert code == 0 and out == f"wrote {L.STATUS_REL} (2 open)\n", out
+
+
+# D-56: rk show adds one line when the shown status differs
+def test_show_shown_status() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = shown_repo(Path(d))
+        out: str = lrun(repo, "show", "DB-1")[1]
+        lines: list[str] = out.splitlines()
+        i: int = lines.index("status: open")
+        assert lines[i + 1] == "shown: planned (stage S-2 is planned)", lines
+        out = lrun(repo, "show", "DB-3")[1]
+        assert "shown:" not in out, out
+
+
+# D-56, known for 0.2.4 ledgers: open entries of an imported shelved stage
+def test_shown_status_imported_shelved_stage() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        code, out = lrun(
+            repo, "add", "stage", "07-paper-old", "--imported", "--status",
+            "shelved", "--source", "old.md:1",
+        )  # fmt: skip
+        assert code == 0, out
+        assert lrun(repo, "add", "debt", "old one", "--stage", "S-1")[0] == 0
+        st: dict[str, Any] = L.load(repo)
+        assert L.shown_status(st, st["DB-1"]) == "shelved"
+        lines: list[str] = lrun(repo, "list")[1].splitlines()
+        assert lines == ["open 0 (running 0)"], lines
 
 
 def main() -> int:

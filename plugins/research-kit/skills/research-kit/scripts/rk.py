@@ -54,8 +54,10 @@ entries are exempt):
   python3 -I rk.py supersede ID TITLE --owner NAME [--note T] [--link ID]...
       [--ref PATH]...
   python3 -I rk.py list [--type T] [--owner N] [--stage S] [--status STATUS]
-      [--limit N] [--all]   (planned stages add a line "planned N: ~NN title, ...")
-  python3 -I rk.py show ID [ID ...]
+      [--limit N] [--all]   (planned stages add a line "planned N: ~NN title
+      (n entries), ..."; an open entry of a planned or shelved stage shows as
+      planned / shelved and is out of the open list; --status and --stage show it)
+  python3 -I rk.py show ID [ID ...]   (a shown status that differs: "shown:")
   python3 -I rk.py search [TEXT] [--source S] [--label L] [--type T] [--limit N]
   python3 -I rk.py recent [-n N]
   python3 -I rk.py render

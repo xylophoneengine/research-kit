@@ -904,7 +904,24 @@ def _num(eid: str) -> int:
 
 
 def _is_open(e: Entry) -> bool:
+    """Stored: what checks decide on (drop, stage-close, start, records)."""
     return e.status in OPEN_STATUSES
+
+
+def shown_status(state: dict[str, Entry], e: Entry) -> str:
+    """The status shown (D-56; display only, nothing stored): an open entry
+    that is not a stage, in a planned or shelved stage, shows that stage's
+    status; any other entry its stored status."""
+    st: Entry | None = state.get(e.stage) if e.stage else None
+    if e.type != "stage" and e.status == "open" and st is not None:
+        if st.status in ("planned", "shelved"):
+            return st.status
+    return e.status
+
+
+def _shown_open(state: dict[str, Entry], e: Entry) -> bool:
+    """In the open list and its counts (rk list, STATUS.md): shown open."""
+    return shown_status(state, e) in OPEN_STATUSES
 
 
 def _imported(e: Entry) -> bool:
@@ -951,10 +968,19 @@ def _open_entries(state: dict[str, Entry], stage: Entry) -> int:
 
 
 def _planned_line(state: dict[str, Entry]) -> str:
-    """`planned 3: ~03 paper-scan, ~04 paper-draft, ...` in queue order, cut
-    between items to LINE_MAX with `+k more`; "" when no stage is planned."""
+    """`planned 3: ~03 paper-scan (2 entries), ~04 paper-draft (1), ...` in
+    queue order, the open entries of each stage when not 0 (D-56; the first such
+    count names its unit), cut between items to LINE_MAX with `+k more`; ""
+    when no stage is planned."""
     fc: dict[str, str] = _forecast(state)
-    items: list[str] = [f"{fc.get(e.id, '~?')} {e.title}" for e in _queue(state)]
+    items: list[str] = []
+    first: bool = True  # the first count names its unit
+    for e in _queue(state):
+        k: int = _open_entries(state, e)
+        unit: str = (" entry" if k == 1 else " entries") if first else ""
+        first = first and not k
+        tail: str = f" ({k}{unit})" if k else ""
+        items.append(f"{fc.get(e.id, '~?')} {e.title}{tail}")
     n: int = len(items)
     line: str = ""
     for k in range(n, -1, -1):  # k = items shown; k = 0 always fits
@@ -966,8 +992,8 @@ def _planned_line(state: dict[str, Entry]) -> str:
 
 
 def render_status(state: dict[str, Entry], now: datetime) -> str:
-    open_: list[Entry] = sorted(
-        (e for e in state.values() if _is_open(e)), key=_sort_key
+    open_: list[Entry] = sorted(  # shown open: D-56
+        (e for e in state.values() if _shown_open(state, e)), key=_sort_key
     )
     stages: list[Entry] = [e for e in open_ if e.type == "stage"]
     rest: list[Entry] = [e for e in open_ if e.type != "stage"]
@@ -1087,16 +1113,28 @@ def format_list(
         if (type_ is None or e.type == type_)
         and (owner is None or e.owner == owner)
         and (stage is None or e.stage == stage)
-        and (status is None or e.status == status)
+        and (status is None or shown_status(state, e) == status)
     ]
-    opens: list[Entry] = [e for e in rows if _is_open(e)]
+    opens: list[Entry] = [e for e in rows if _shown_open(state, e)]  # D-56
+    listed: list[Entry] = opens if stage is None else [  # --stage: its entries too
+        e for e in rows if _is_open(e)
+    ]
     shown: list[Entry] = sorted(
-        rows if include_closed or status is not None else opens, key=_list_key
+        rows if include_closed or status is not None else listed, key=_list_key
     )
     fc: dict[str, str] = _forecast(state)
-    if status == "planned":  # the queue order, not the id order
-        queue: list[str] = [x.id for x in _queue(state)]
-        shown.sort(key=lambda e: queue.index(e.id))
+    if status in ("planned", "shelved"):  # each stage, then its entries (D-56)
+        order: list[str] = (
+            [x.id for x in _queue(state)] if status == "planned"  # queue order
+            else [x.id for x in shown if x.type == "stage"]
+        )
+
+        def at(e: Entry) -> tuple[int, int]:
+            anchor: str = e.id if e.type == "stage" else e.stage
+            pos: int = order.index(anchor) if anchor in order else len(order)
+            return (pos, 0 if e.type == "stage" else 1)
+
+        shown.sort(key=at)  # stable: the list order within one stage
     counts: dict[str, int] = {}
     for e in sorted(opens, key=_sort_key):
         counts[e.type] = counts.get(e.type, 0) + 1
@@ -1123,7 +1161,7 @@ def format_list(
             title = f"{fc.get(e.id, '~?')} {title} ({_open_entries(state, e)} open)"
         lines.append(
             _clip(
-                f"{e.id:<5} {e.status:<7} {e.owner[:8]:<8} "
+                f"{e.id:<5} {shown_status(state, e):<7} {e.owner[:8]:<8} "
                 f"{age(_since(e), now):>4}  {title}"
             )
         )
@@ -2221,6 +2259,10 @@ def _show_one(
     fields: list[tuple[str, str]] = [  # the legacy_id field shows as label
         ("id", e.id), ("label", str(e.extra.get("legacy_id", ""))),
         ("type", e.type), ("title", e.title), ("status", e.status),
+        *(  # D-56: one line when the shown status differs
+            [("shown", f"{s} (stage {e.stage} is {s})")]
+            if (s := shown_status(state, e)) != e.status else []
+        ),
         ("owner", e.owner), ("stage", e.stage),
         ("note", e.note.replace("\n", "\\n")),
         ("links", ", ".join(e.links)), ("refs", ", ".join(e.refs)),
@@ -2312,7 +2354,8 @@ def _cmd_recent(a: argparse.Namespace) -> int:
 def _cmd_render(a: argparse.Namespace) -> int:
     repo: Path = _repo(a)
     state: dict[str, Entry] = append(repo, lambda s: [])
-    print(f"wrote {STATUS_REL} ({sum(1 for e in state.values() if _is_open(e))} open)")
+    n: int = sum(1 for e in state.values() if _shown_open(state, e))  # D-56
+    print(f"wrote {STATUS_REL} ({n} open)")
     return 0
 
 

@@ -103,7 +103,10 @@ def payload(repo: Path) -> dict[str, object]:
         events, state = _read(repo)
     return {
         "repo": str(repo),  # first key on purpose: the port probe reads a prefix
-        "entries": [dataclasses.asdict(e) for e in state.values()],
+        "entries": [  # shown: the status to display (D-56); equal to status
+            {**dataclasses.asdict(e), "shown": ledger.shown_status(state, e)}
+            for e in state.values()
+        ],
         "events": [
             {
                 "line": n,

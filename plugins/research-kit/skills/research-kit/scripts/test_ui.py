@@ -202,10 +202,22 @@ def test_real_ledger_planned_stages() -> None:
     assert all("queue" in by_id[s]["extra"] for s in ("S-2", "S-3", "S-4"))
     assert "queue" not in by_id["S-1"]["extra"]
     assert by_id["DB-1"]["stage"] == "S-2" and by_id["DB-1"]["status"] == "open"
+    assert by_id["DB-1"]["shown"] == "planned"  # D-56: inherited from S-2
+    assert [by_id[s]["shown"] for s in ("S-1", "S-2")] == ["open", "planned"]
     assert p["plan"] == {
         "queue": ["S-3", "S-2", "S-4"],
         "forecast": {"S-3": "~02", "S-2": "~03", "S-4": "~01b"},
     }, p["plan"]
+
+
+def test_payload_shown_equals_status() -> None:  # D-56: nothing inherited here
+    with tmpdir() as tmp:
+        p: dict[str, Any] = ui.payload(mk_repo(tmp, TWO))
+    assert [(e["id"], e["shown"]) for e in p["entries"]] == [
+        ("T-1", "running"),
+        ("D-1", "done"),
+    ]
+    assert all(e["shown"] == e["status"] for e in p["entries"])
 
 
 def test_plan_empty_without_planned_stage() -> None:
