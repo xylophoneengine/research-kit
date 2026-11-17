@@ -58,7 +58,7 @@ export default function App() {
   const repo = ledger?.repo;
   useEffect(() => {
     if (!repo) return;
-    document.title = `rk ui · ${projectName(repo)} · :${window.location.port}`;
+    document.title = `rk-ui · ${projectName(repo)}`;
   }, [repo]);
 
   // Esc closes the detail pane, unless a dialog (palette) is open and takes the key itself

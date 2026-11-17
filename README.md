@@ -410,7 +410,7 @@ While it serves, the viewer keeps a small state file
 ends, also on SIGTERM. `rk ui --status` uses these files to list the running
 viewers, one line `<port>  <repo>` each, or `no viewer runs`; it only reports a
 viewer whose pid is alive and whose port answers as a viewer of that repo, and it
-starts nothing. The browser tab is titled `rk ui · <repo folder> · :<port>`.
+starts nothing. The browser tab is titled `rk-ui · <repo folder>`.
 
 To see the viewer in Claude Code, use this line, the same on every machine, as
 your status line command, or append its output to the one you have:

@@ -4,7 +4,7 @@ import { typeClasses } from "@/lib/typeColor";
 import {
   byType,
   entryDay,
-  revealKey,
+  nextReveal,
   revealTarget,
   shortDay,
   shownStatus,
@@ -13,6 +13,7 @@ import {
   stageSpan,
   type Entry,
   type Group,
+  type RevealState,
   type SortKey,
 } from "@/lib/ledger";
 import { Chev, Id, PAGE, StatusBadge, plural, statusClass, type TimelineProps } from "./parts";
@@ -146,11 +147,16 @@ function Block({
 
   // When the selection changes to something in this stage: open the stage and,
   // if the card is clipped out of its one-line branch, expand that branch and
-  // scroll the card into view. Nothing is closed. It runs again when revealKey
-  // changes: the selection, the sort (the card moved), or the card coming into or
-  // out of this block (a filter cleared or set); not on reloads, typing or a filter
-  // change that leaves the card where it is (g.items is a new array on each of those).
-  const due = revealKey(g.items, selected, sort, desc);
+  // scroll the card into view. Nothing is closed. It runs again when the key of
+  // nextReveal changes: the selection, the sort (the card moved), or the card coming
+  // back into this block (a filter cleared); not when it leaves (typing, a filter, a
+  // reload), nor on a reload that keeps it (g.items is a new array on each of those).
+  // `last` is the state of the last commit, kept by the effect below, not in render.
+  const last = useRef<RevealState | undefined>(undefined);
+  const reveal = nextReveal(last.current, g.items, selected, sort, desc);
+  useEffect(() => {
+    last.current = reveal; // every commit, so a card that left is known when it returns
+  });
   useEffect(() => {
     const t = revealTarget(g.items, selected, holds);
     if (t === null || selected === null) return;
@@ -178,7 +184,7 @@ function Block({
       });
     });
     return () => cancelAnimationFrame(frame);
-  }, [due]); // only the key: g.items is a new array on every reload, keystroke and filter change
+  }, [reveal.key]); // only the key: g.items is a new array on every reload, keystroke and filter change
 
   const dot = holds
     ? "selected"

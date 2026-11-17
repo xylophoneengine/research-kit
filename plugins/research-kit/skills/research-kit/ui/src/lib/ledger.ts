@@ -260,15 +260,17 @@ export function underStages(es: Entry[], forecast: Record<string, string> | unde
 }
 
 // the earlier titles of entry `id` from its events (in file order), newest first;
-// each with the day it was replaced. A title change in an event that also sets
-// `status: "open"` is `stage-open` (planned name -> NN name), no rename: not listed.
+// each with the day it was replaced. `stage-open` (planned name -> NN name) is no
+// rename, not listed: an event that sets `status: "open"` and turns a title without
+// the stage form into one with it (STAGE_RE).
 export function earlierTitles(events: Ev[], id: string): { title: string; until: string }[] {
   const out: { title: string; until: string }[] = [];
   let cur: string | null = null;
   for (const ev of events) {
     const t = ev.id === id ? ev.f.title : undefined;
     if (typeof t !== "string") continue;
-    if (cur !== null && t !== cur && ev.f.status !== "open") {
+    const opened = ev.f.status === "open" && STAGE_RE.test(t) && cur !== null && !STAGE_RE.test(cur);
+    if (cur !== null && t !== cur && !opened) {
       out.push({ title: cur, until: ev.ts.slice(0, 10) });
     }
     cur = t;
@@ -684,6 +686,29 @@ export function revealTarget(items: Entry[], selected: string | null, holds: boo
 export function revealKey(items: Entry[], selected: string | null, sort: SortKey, desc: boolean): string {
   const held = selected !== null && items.some((x) => x.id === selected);
   return JSON.stringify([selected, sort, desc, held]);
+}
+
+// A block's reveal state: `key` (equal keys = no new reveal) and whether the block
+// held the selected card last time.
+export type RevealState = { key: string; held: boolean };
+
+// The next reveal state from the last one (the caller keeps it; undefined at mount).
+// The key changes on a change of the selection, the sort key or direction, and when
+// the selected card comes back into the block (held false -> true, all else equal);
+// not when it leaves (typing, a filter, a reload), nor on a reload that keeps it.
+export function nextReveal(
+  prev: RevealState | undefined,
+  items: Entry[],
+  selected: string | null,
+  sort: SortKey,
+  desc: boolean,
+): RevealState {
+  const held = selected !== null && items.some((x) => x.id === selected);
+  const base = JSON.stringify([selected, sort, desc]);
+  // the key is `<base>#<n>`; n counts the returns of the card under the same base
+  const n = prev?.key.startsWith(`${base}#`) ? Number(prev.key.slice(base.length + 1)) : -1;
+  const next = n < 0 ? 0 : held && !prev?.held ? n + 1 : n;
+  return { key: `${base}#${next}`, held };
 }
 
 // the route sort inside every group (the stage path keeps its order); `default`
