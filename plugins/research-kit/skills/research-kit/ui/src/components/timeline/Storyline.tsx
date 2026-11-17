@@ -12,6 +12,7 @@ import {
   stageGroups,
   stageSpan,
   type Entry,
+  type Ev,
   type Group,
   type RevealState,
   type SortKey,
@@ -49,7 +50,7 @@ function save(v: number): void {
 
 // A vertical path of stage blocks; an open stage drops one branch of entry
 // cards per type from the path. No time scale.
-export function Storyline({ all, entries, ledgerIds, selected, onSelect, sort, desc, queue }: TimelineProps) {
+export function Storyline({ all, entries, events, ledgerIds, selected, onSelect, sort, desc, queue }: TimelineProps) {
   const groups = useMemo(
     () => sortGroups(stageGroups(all, entries), sort, desc),
     [all, entries, sort, desc],
@@ -101,6 +102,7 @@ export function Storyline({ all, entries, ledgerIds, selected, onSelect, sort, d
               sort={sort}
               desc={desc}
               queue={queue}
+              events={events}
               ledgerIds={ledgerIds}
               onSelect={onSelect}
             />
@@ -128,6 +130,7 @@ function Block({
   sort,
   desc,
   queue,
+  events,
   ledgerIds,
   onSelect,
 }: {
@@ -137,6 +140,7 @@ function Block({
   sort: SortKey;
   desc: boolean;
   queue: string[] | undefined;
+  events: Ev[]; // the ledger's events: the span reads the stage's own (R18)
   ledgerIds: Set<string>;
   onSelect: (id: string) => void;
 }) {
@@ -195,7 +199,7 @@ function Block({
         : g.live
           ? "live"
           : "closed";
-  const span = stageSpan(g, queue);
+  const span = stageSpan(g, queue, events);
   return (
     <div ref={root} className="relative pb-5 pl-5">
       <span data-dot={dot} className={"absolute top-2 -left-[5px] size-2.5 rounded-full " + DOTS[dot]} />

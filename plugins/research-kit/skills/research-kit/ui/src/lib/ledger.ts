@@ -199,11 +199,13 @@ export function backlinks(l: Ledger): Map<string, string[]> {
 const STAGE_RE = /^[0-9]{2,}[a-z]?-[a-z][a-z0-9]*-[A-Za-z0-9_.-]+$/;
 
 // The number a stage shows in the Stages table: the kit's forecast string as sent
-// (`~02`) for a planned stage ("" when `forecast` lacks it), else the NN[letter]
-// code of its title ("03b-paper-x" -> "03b"), "" when the title is not in the kit's
-// stage form ("2026-retro" has none). Nothing is computed.
+// (`~02`) for a planned stage ("" when `forecast` lacks it); else the code of its
+// title as the core reads it (ledger._matches): for an imported stage the title up
+// to the first "-" ("2026-retro" -> "2026"), for a kit-made one the NN[letter] code
+// when the title has the kit's stage form ("03b-paper-x" -> "03b"), else "".
 export function stageNumber(e: Entry, forecast: Record<string, string> | undefined): string {
   if (e.status === "planned") return forecast?.[e.id] ?? "";
+  if (e.extra.imported === true) return e.title.split("-", 1)[0];
   return STAGE_RE.test(e.title) ? (stageCodeOf(e.title) ?? "") : "";
 }
 
@@ -259,20 +261,41 @@ export function underStages(es: Entry[], forecast: Record<string, string> | unde
   return [...stages.flatMap((s) => [s, ...own(s)]), ...rest.filter((e) => !placed.has(e))];
 }
 
+// The stage-open events among `own` (the events of one entry, in file order): an
+// event that sets a title and `status: "open"` on an entry whose status before it was
+// `planned`. An event carries only what it sets, so that status is the last one the
+// earlier events set; when none set one, the title decides: a title without the
+// stage form (STAGE_RE) that becomes one.
+function stageOpens(own: Ev[]): Set<Ev> {
+  const out = new Set<Ev>();
+  let title: string | null = null;
+  let before: string | null = null;
+  for (const ev of own) {
+    const t = ev.f.title;
+    const s = ev.f.status;
+    if (typeof t === "string") {
+      const known = before !== null;
+      const moved = title !== null && STAGE_RE.test(t) && !STAGE_RE.test(title);
+      if (s === "open" && (known ? before === "planned" : moved)) out.add(ev);
+      title = t;
+    }
+    if (typeof s === "string") before = s;
+  }
+  return out;
+}
+
 // the earlier titles of entry `id` from its events (in file order), newest first;
-// each with the day it was replaced. `stage-open` (planned name -> NN name) is no
-// rename, not listed: an event that sets `status: "open"` and turns a title without
-// the stage form into one with it (STAGE_RE).
+// each with the day it was replaced. A stage-open (planned name -> NN name, see
+// stageOpens) is no rename: not listed.
 export function earlierTitles(events: Ev[], id: string): { title: string; until: string }[] {
+  const own = events.filter((ev) => ev.id === id);
+  const opens = stageOpens(own);
   const out: { title: string; until: string }[] = [];
   let cur: string | null = null;
-  for (const ev of events) {
-    const t = ev.id === id ? ev.f.title : undefined;
+  for (const ev of own) {
+    const t = ev.f.title;
     if (typeof t !== "string") continue;
-    const opened = ev.f.status === "open" && STAGE_RE.test(t) && cur !== null && !STAGE_RE.test(cur);
-    if (cur !== null && t !== cur && !opened) {
-      out.push({ title: cur, until: ev.ts.slice(0, 10) });
-    }
+    if (cur !== null && t !== cur && !opens.has(ev)) out.push({ title: cur, until: ev.ts.slice(0, 10) });
     cur = t;
   }
   return out.reverse();
@@ -654,16 +677,28 @@ export function stageGroups(all: Entry[], entries: Entry[]): Group[] {
   return items.has("") ? [...stages, make("", null)] : stages;
 }
 
-// The span text of a stage block. A planned stage has no dates: `queue <k> of <n>` (its
-// 1-based place in the kit's `queue`), "" when the queue lacks it (older kit). Else
-// "no date", "Nov 02 – now" or "Nov 02 – Nov 09".
-export function stageSpan(g: Group, queue: string[] | undefined): string {
-  if (g.stage?.status === "planned") {
-    const k = queue?.indexOf(g.stage.id) ?? -1;
+// The span text of a stage block (R18): opened to closed, read from the stage's own
+// events (`events` = the ledger's). A planned stage has no dates: `queue <k> of <n>`
+// (its 1-based place in the kit's `queue`), "" when the queue lacks it (older kit).
+// Opened: the day of its stage-open event (stageOpens), else its own day (entryDay).
+// To: `now` while live; else the day of the last event that set its status (done,
+// shelved, dropped, ...), the group's last day when no event did. The last update is
+// not in it (the detail pane has it). The unstaged group: the days of its entries.
+// "no date" without a start day.
+export function stageSpan(g: Group, queue: string[] | undefined, events: Ev[]): string {
+  const st = g.stage;
+  if (st?.status === "planned") {
+    const k = queue?.indexOf(st.id) ?? -1;
     return queue && k >= 0 ? `queue ${k + 1} of ${queue.length}` : "";
   }
-  if (!g.first) return "no date";
-  return `${shortDay(g.first)} – ${g.live ? "now" : shortDay(g.last)}`;
+  if (!st) return g.first ? `${shortDay(g.first)} – ${shortDay(g.last)}` : "no date";
+  const own = events.filter((ev) => ev.id === st.id);
+  const day = (ev: Ev | undefined): string => (ev && DAY_RE.test(ev.ts.slice(0, 10)) ? ev.ts.slice(0, 10) : "");
+  const start = day([...stageOpens(own)].pop()) || entryDay(st);
+  if (!start) return "no date";
+  if (g.live) return `${shortDay(start)} – now`;
+  const end = day(own.filter((ev) => ev.f.status === st.status).pop()) || g.last || start;
+  return `${shortDay(start)} – ${shortDay(end)}`;
 }
 
 // What a stage block's reveal reaches: the stage itself, or one card and its place
@@ -678,14 +713,6 @@ export function revealTarget(items: Entry[], selected: string | null, holds: boo
   if (!e) return { card: false };
   const idx = items.filter((x) => x.type === e.type).findIndex((x) => x.id === selected);
   return { card: true, type: e.type, idx };
-}
-
-// Equal keys = no new reveal. A reveal is due on a change of the selection, the sort
-// key or direction, or of whether the block holds the selected card (a filter was
-// cleared); not on a reload, typing, or a filter change that leaves the card in place.
-export function revealKey(items: Entry[], selected: string | null, sort: SortKey, desc: boolean): string {
-  const held = selected !== null && items.some((x) => x.id === selected);
-  return JSON.stringify([selected, sort, desc, held]);
 }
 
 // A block's reveal state: `key` (equal keys = no new reveal) and whether the block

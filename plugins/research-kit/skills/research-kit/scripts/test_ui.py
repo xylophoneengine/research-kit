@@ -1543,22 +1543,29 @@ def test_event_meta_passthrough() -> None:
 
 def dist_stamp(ui_dir: Path) -> str:
     """sha256 hex over the bundle inputs in sorted POSIX-path order, each as
-    <path> NUL <bytes> NUL: src/** and public/** (if present), index.html,
-    package.json, package-lock.json, vite.config.ts, ui/tsconfig*.json. Paths with
-    a segment starting with "." are skipped. Same as ui/stamp.mjs."""
-    rels: list[str] = [
-        rel
-        for sub in ("src", "public")
-        for p in (ui_dir / sub).rglob("*")
-        if p.is_file()
-        for rel in [p.relative_to(ui_dir).as_posix()]
-        if not any(seg.startswith(".") for seg in rel.split("/"))
-    ]
+    <path> NUL <bytes, CRLF read as LF> NUL: src/** and public/** (if present),
+    index.html, package.json, package-lock.json, vite.config.ts,
+    ui/tsconfig*.json. Paths with a segment starting with "." are skipped, and so
+    is every symlink (never followed). Same as ui/stamp.mjs."""
+    rels: list[str] = []
+    for sub in ("src", "public"):
+        for top, _dirs, names in os.walk(ui_dir / sub):  # does not enter a dir link
+            for name in names:
+                p: Path = Path(top) / name
+                rel: str = p.relative_to(ui_dir).as_posix()
+                dot: bool = any(seg.startswith(".") for seg in rel.split("/"))
+                if p.is_file() and not p.is_symlink() and not dot:
+                    rels.append(rel)
     rels += ["index.html", "package.json", "package-lock.json", "vite.config.ts"]
-    rels += [p.name for p in ui_dir.glob("tsconfig*.json") if p.is_file()]
+    rels += [
+        p.name
+        for p in ui_dir.glob("tsconfig*.json")
+        if p.is_file() and not p.is_symlink()
+    ]
     h = hashlib.sha256()
     for rel in sorted(rels):
-        h.update(rel.encode() + b"\0" + (ui_dir / rel).read_bytes() + b"\0")
+        data: bytes = (ui_dir / rel).read_bytes().replace(b"\r\n", b"\n")
+        h.update(rel.encode() + b"\0" + data + b"\0")
     return h.hexdigest()
 
 
@@ -1620,6 +1627,130 @@ def test_dist_stamp_detects_change() -> None:
         (tmp / "tsconfig.node.json").unlink()
         (tmp / "src" / "a.ts").rename(tmp / "src" / "z.ts")  # rename counts too
         assert dist_stamp(tmp) != base
+
+
+STAMP_INPUTS: tuple[str, ...] = (
+    "index.html",
+    "package.json",
+    "package-lock.json",
+    "vite.config.ts",
+    "tsconfig.json",
+    "tsconfig.app.json",
+)
+
+
+def mk_stamp_tree(tmp: Path) -> None:
+    """A small ui folder with every input of the dist stamp: src/ (with a
+    sub-folder), public/ and the six top-level files."""
+    (tmp / "src" / "sub").mkdir(parents=True)
+    (tmp / "public").mkdir()
+    (tmp / "src" / "a.ts").write_text("const a = 1;\nconst b = 2;\n")
+    (tmp / "src" / "sub" / "b.ts").write_text("b")
+    (tmp / "public" / "favicon.svg").write_text("<svg/>")
+    for name in STAMP_INPUTS:
+        (tmp / name).write_text(name)
+
+
+def node_stamp(ui_dir: Path) -> str | None:
+    """What ui/stamp.mjs writes for `ui_dir` (a copy of the script is run there);
+    None when node is not installed."""
+    node: str | None = shutil.which("node")
+    if node is None:
+        return None
+    shutil.copy(REAL_DIST.parent / "stamp.mjs", ui_dir / "stamp.mjs")
+    (ui_dir / "dist").mkdir(exist_ok=True)
+    r: subprocess.CompletedProcess[str] = subprocess.run(
+        [node, str(ui_dir / "stamp.mjs")], capture_output=True, text=True, timeout=60
+    )
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    return (ui_dir / "dist" / "src.sha256").read_text().strip()
+
+
+def test_ts_stage_pattern_matches_core() -> None:
+    """T-105 R4 (guard): STAGE_RE in ui/src/lib/ledger.ts is the core's, as the status
+    list is (test_ts_statuses_match_core). The pattern text is the same in both
+    languages, so it is compared as text."""
+    src: str = (REAL_DIST.parent / "src" / "lib" / "ledger.ts").read_text(
+        encoding="utf-8"
+    )
+    m: re.Match[str] | None = re.search(r"const STAGE_RE\s*=\s*/(.*)/;", src)
+    assert m is not None, "no `const STAGE_RE = /.../;` in ledger.ts"
+    assert m.group(1) == ui.ledger.STAGE_RE.pattern, (
+        m.group(1), ui.ledger.STAGE_RE.pattern,
+    )
+
+
+def test_dist_stamp_ignores_symlinks() -> None:
+    """T-105 R11 (DB-12): a symlink is neither followed nor hashed, wherever the
+    stamp looks (src/**, public/**, tsconfig*.json): the same on both sides, the
+    Python one here and ui/stamp.mjs (its walk must skip a dirent that
+    isSymbolicLink(), whatever the target is, and a missing target is no error)."""
+    with tmpdir() as tmp:
+        mk_stamp_tree(tmp)
+        base: str = dist_stamp(tmp)
+        node_base: str | None = node_stamp(tmp)
+        assert node_base in (None, base), (node_base, base)
+        (tmp / "src" / "link.ts").symlink_to("a.ts")  # a file
+        (tmp / "src" / "dirlink").symlink_to("sub")  # a folder
+        (tmp / "src" / "dead.ts").symlink_to("nowhere.ts")  # no target
+        (tmp / "public" / "icon.svg").symlink_to("favicon.svg")
+        (tmp / "tsconfig.extra.json").symlink_to("tsconfig.json")
+        assert dist_stamp(tmp) == base, "a symlink counted in the Python stamp"
+        assert node_stamp(tmp) in (None, base), "a symlink counted in stamp.mjs"
+        # a change of the target still counts, through the real file
+        (tmp / "src" / "a.ts").write_text("changed")
+        assert dist_stamp(tmp) != base
+
+
+def test_dist_stamp_ignores_line_endings() -> None:
+    """T-105 R12 (DB-13): a checkout with CRLF line endings (autocrlf) is not stale.
+    Assumed fix: both hashers read every hashed file with CRLF as LF. (If the fix is
+    a .gitattributes rule alone, this test goes away.)"""
+    with tmpdir() as tmp:
+        mk_stamp_tree(tmp)
+        lf: str = dist_stamp(tmp)
+        node_lf: str | None = node_stamp(tmp)
+        for rel in ("src/a.ts", "public/favicon.svg", "package.json"):
+            f: Path = tmp / rel
+            f.write_bytes(f.read_bytes().replace(b"\n", b"\r\n"))
+        (tmp / "src" / "a.ts").write_bytes(b"const a = 1;\r\nconst b = 2;\r\n")
+        assert dist_stamp(tmp) == lf, "CRLF changed the Python stamp"
+        assert node_stamp(tmp) in (None, node_lf), "CRLF changed the stamp.mjs stamp"
+        # a real change still counts, and a lone CR is no line ending
+        (tmp / "src" / "a.ts").write_bytes(b"const a = 1;\r\nconst b = 3;\r\n")
+        assert dist_stamp(tmp) != lf
+        (tmp / "src" / "a.ts").write_bytes(b"const a = 1;\rconst b = 2;\r")
+        assert dist_stamp(tmp) != lf
+
+
+def test_start_line_unencodable_repo() -> None:
+    """T-105 R3 (DB-73): the start line `rk ui: <repo> at <url>` goes to a terminal that
+    cannot encode the repo path (stdout ascii, strict): the characters it cannot
+    encode are replaced by `?` (errors="replace"), nothing raises, the exit code is
+    0. Black box through main(), so no function name is assumed."""
+    with tmpdir() as tmp, port_run(1) as (socks, ports):
+        repo: Path = mk_repo(tmp / "répø", TWO)  # not ascii
+        ui.DIST = mk_dist(tmp)
+        socks[0].close()
+        raw: io.BytesIO = io.BytesIO()
+        out: io.TextIOWrapper = io.TextIOWrapper(
+            raw, encoding="ascii", errors="strict", write_through=True
+        )
+        err: io.StringIO = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            with patched(
+                STATE_DIR=tmp / "state",
+                DEFAULT_PORT=ports[0],
+                PORT_TRIES=1,
+                ThreadingHTTPServer=QuickServer,
+            ):
+                rc: int = ui.main(["--repo", str(repo), "--no-open"])
+        assert rc == 0 and err.getvalue() == "", (rc, err.getvalue())
+        shown: str = str(repo).encode("ascii", "replace").decode("ascii")
+        assert "?" in shown and shown != str(repo)
+        assert raw.getvalue().decode("ascii") == (
+            f"rk ui: {shown} at http://127.0.0.1:{ports[0]}/\n"
+        ), raw.getvalue()
 
 
 def main() -> int:
