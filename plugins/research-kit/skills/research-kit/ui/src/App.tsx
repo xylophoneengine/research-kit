@@ -17,7 +17,17 @@ import { Palette } from "@/components/Palette";
 import { Split } from "@/components/Split";
 import { Stages } from "@/components/Stages";
 import { Timeline } from "@/components/Timeline";
-import { byId, exactHit, idHint, labelIndex, projectName, stageCodes, visible, type Tab } from "@/lib/ledger";
+import {
+  byId,
+  exactHit,
+  idHint,
+  labelIndex,
+  projectName,
+  shownStatus,
+  stageCodes,
+  visible,
+  type Tab,
+} from "@/lib/ledger";
 import { MoonIcon, RefreshCwIcon, SearchIcon, SunIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { applyTheme, initialTheme, storeTheme, type Theme } from "@/theme";
@@ -188,6 +198,8 @@ export default function App() {
                     desc={route.desc}
                     statusFilter={route.status}
                     forecast={ledger.plan?.forecast}
+                    // the whole ledger, before the filters: the planned column stays put while filtering
+                    planned={ledger.entries.filter((e) => shownStatus(e) === "planned").length}
                     selected={route.e}
                     onSelect={open}
                   />
@@ -199,6 +211,7 @@ export default function App() {
                     ledgerIds={ids}
                     status={route.status}
                     forecast={ledger.plan?.forecast}
+                    stageFilter={route.stage}
                     patch={patch}
                   />
                 )}
@@ -212,6 +225,7 @@ export default function App() {
                     onSelect={open}
                     sort={route.sort}
                     desc={route.desc}
+                    queue={ledger.plan?.queue}
                     patch={patch}
                   />
                 )}

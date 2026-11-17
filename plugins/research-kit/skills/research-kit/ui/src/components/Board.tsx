@@ -2,10 +2,22 @@ import { EyeOffIcon } from "lucide-react";
 import { useState } from "react";
 import { TypeBadge } from "@/components/TypeBadge";
 import { Button } from "@/components/ui/button";
-import { BOARD_COLS, boardCol, sortBy, underStages, type Entry, type SortKey } from "@/lib/ledger";
+import {
+  BOARD_COLS,
+  boardCol,
+  choiceFromFolded,
+  colShown,
+  narrowed,
+  sortBy,
+  underStages,
+  type Entry,
+  type SortKey,
+} from "@/lib/ledger";
 
-const KEY = "rk-ui-board-folded";
-const COLLAPSED = ["shelved", "dropped", "superseded"]; // hidden until the user shows them
+// the columns switched by hand, {"<column>": true|false} (true = on the board); the old
+// key (an array of hidden columns) is read only while this one is absent, never written
+const KEY = "rk-ui-board-cols";
+const OLD_KEY = "rk-ui-board-folded";
 const PAGE = 30;
 
 function Card({
@@ -39,29 +51,20 @@ function Card({
 
 function Cards({
   entries,
-  sort,
-  desc,
-  grouped,
   selected,
   onSelect,
 }: {
-  entries: Entry[];
-  grouped: boolean; // already in the column's own order (stage cards with their entries): no sort
-  sort: SortKey;
-  desc: boolean;
+  entries: Entry[]; // in the column's order
   selected: string | null;
   onSelect: (id: string) => void;
 }) {
   const [n, setN] = useState(PAGE);
-  // the board's own default: newest `updated` first (descending sort reverses it);
-  // any other sort key arrives already applied in `entries` (see visible())
-  const sorted = !grouped && sort === "default" ? sortBy(entries, "updated", !desc) : entries;
   return (
     <div className="space-y-2">
-      {sorted.slice(0, n).map((e) => (
+      {entries.slice(0, n).map((e) => (
         <Card key={e.id} e={e} selected={e.id === selected} onSelect={onSelect} />
       ))}
-      {sorted.length > n && (
+      {entries.length > n && (
         <Button variant="outline" size="sm" onClick={() => setN(n + PAGE)}>
           show {PAGE} more
         </Button>
@@ -70,19 +73,29 @@ function Cards({
   );
 }
 
-function load(): Set<string> {
+// The hand choices: the new key when it is there (anything but an object of booleans
+// counts as none), else the old array migrated (choiceFromFolded), else none.
+function load(): Record<string, boolean> {
   try {
-    const v: unknown = JSON.parse(localStorage.getItem(KEY) ?? "null");
-    if (Array.isArray(v) && v.every((x) => typeof x === "string")) return new Set<string>(v);
+    const raw = localStorage.getItem(KEY);
+    if (raw !== null) {
+      const v: unknown = JSON.parse(raw);
+      const ok =
+        typeof v === "object" && v !== null && !Array.isArray(v) &&
+        Object.values(v).every((x) => typeof x === "boolean");
+      return ok ? (v as Record<string, boolean>) : {};
+    }
+    const old: unknown = JSON.parse(localStorage.getItem(OLD_KEY) ?? "null");
+    if (Array.isArray(old) && old.every((x) => typeof x === "string")) return choiceFromFolded(old);
   } catch {
-    // storage blocked or not JSON: use the default
+    // storage blocked or not JSON: no choice
   }
-  return new Set(COLLAPSED);
+  return {};
 }
 
-function save(s: Set<string>): void {
+function save(choice: Record<string, boolean>): void {
   try {
-    localStorage.setItem(KEY, JSON.stringify([...s]));
+    localStorage.setItem(KEY, JSON.stringify(choice));
   } catch {
     // storage blocked: the choice just does not persist
   }
@@ -90,13 +103,17 @@ function save(s: Set<string>): void {
 
 // `entries` already passed visible(). A column gets a chip when its status
 // passes the status filter (deferred: when open or running does), even with 0
-// entries; a hidden column takes no room on the board.
+// entries; a column switched off takes no room on the board. Which columns are on:
+// colShown, from the hand choices and `planned` (entries of the whole ledger shown
+// as planned, before the filters), so an untouched planned column stays put while
+// filtering and may stand empty.
 export function Board({
   entries,
   sort,
   desc,
   statusFilter,
   forecast,
+  planned,
   selected,
   onSelect,
 }: {
@@ -105,38 +122,39 @@ export function Board({
   sort: SortKey;
   desc: boolean;
   statusFilter: string[] | null;
+  planned: number;
   selected: string | null;
   onSelect: (id: string) => void;
 }) {
-  const [hidden, setHidden] = useState<Set<string>>(load);
+  const [choice, setChoice] = useState<Record<string, boolean>>(load);
+  const on = (c: string): boolean => colShown(c, planned, choice);
   const flip = (c: string): void => {
-    const n = new Set(hidden);
-    if (!n.delete(c)) n.add(c);
-    setHidden(n);
+    const n = { ...choice, [c]: !on(c) };
+    setChoice(n);
     save(n);
   };
-  const pass = (s: string): boolean =>
-    !statusFilter || statusFilter.length === 0 || statusFilter.includes(s);
+  const sel = statusFilter && narrowed(statusFilter);
+  const pass = (s: string): boolean => !sel || sel.length === 0 || sel.includes(s);
   const cols = BOARD_COLS.filter((c) =>
     c === "deferred" ? pass("open") || pass("running") : pass(c),
   );
   const count = (c: string): number => entries.filter((e) => boardCol(e) === c).length;
-  const visibleCols = cols.filter((c) => !hidden.has(c));
+  const visibleCols = cols.filter(on);
   return (
     <div className="p-3">
       <div className="mb-3 flex flex-wrap gap-1.5">
         {cols.map((c) => {
-          const on = !hidden.has(c);
+          const shown = on(c);
           return (
             <button
               key={c}
               type="button"
-              aria-pressed={on}
-              title={on ? `hide ${c} column` : `show ${c} column`}
+              aria-pressed={shown}
+              title={shown ? `hide ${c} column` : `show ${c} column`}
               onClick={() => flip(c)}
               className={
                 "rounded-full border px-2.5 py-0.5 text-xs " +
-                (on
+                (shown
                   ? "bg-secondary font-medium text-secondary-foreground"
                   : "text-muted-foreground hover:bg-muted")
               }
@@ -151,11 +169,14 @@ export function Board({
       )}
       <div className="flex gap-3 overflow-x-auto">
         {visibleCols.map((c) => {
+          // the board's own default: newest `updated` first (descending sort reverses it);
+          // any other sort key arrives already applied in `entries` (see visible())
           const col = entries.filter((e) => boardCol(e) === c);
-          const grouped = c === "planned" || c === "shelved"; // each stage card, then its entries
-          const es = grouped ? underStages(col, forecast) : col;
+          const sorted = sort === "default" ? sortBy(col, "updated", !desc) : col;
+          // planned and shelved: each stage card, then its entries in that order
+          const es = c === "planned" || c === "shelved" ? underStages(sorted, forecast) : sorted;
           return (
-            <div key={c} className="min-w-[12rem] flex-1">
+            <div key={c} data-col={c} className="min-w-[12rem] flex-1">
               <div className="mb-2 flex items-center justify-between gap-1 text-xs font-semibold text-muted-foreground uppercase">
                 <span>
                   {c} ({es.length})
@@ -170,7 +191,7 @@ export function Board({
                   <EyeOffIcon className="size-3.5" />
                 </button>
               </div>
-              <Cards entries={es} sort={sort} desc={desc} grouped={grouped} selected={selected} onSelect={onSelect} />
+              <Cards entries={es} selected={selected} onSelect={onSelect} />
             </div>
           );
         })}

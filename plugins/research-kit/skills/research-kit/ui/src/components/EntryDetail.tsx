@@ -11,6 +11,7 @@ import {
   evMeta,
   shownStatus,
   stageCodeOf,
+  storedLine,
   type Entry,
   type Ev,
   type Ledger,
@@ -183,6 +184,7 @@ export function EntryDetail({ ledger, id }: { ledger: Ledger; id: string }) {
   }
   const from = back.get(e.id) ?? [];
   const events = ledger.events.filter((v) => v.id === e.id);
+  const stored = storedLine(e, stage); // "" when stored and shown status agree
 
   return (
     <div className="p-4">
@@ -192,11 +194,7 @@ export function EntryDetail({ ledger, id }: { ledger: Ledger; id: string }) {
         <StatusBadge status={shownStatus(e)} />
         {e.extra.imported === true && <Badge variant="outline">imported</Badge>}
       </div>
-      {shownStatus(e) !== e.status && (
-        <p className="mt-1 text-xs text-muted-foreground">
-          stored: {e.status} (stage {e.stage} is {shownStatus(e)})
-        </p>
-      )}
+      {stored && <p className="mt-1 text-xs text-muted-foreground">{stored}</p>}
       <h2 className="mt-2 text-base font-medium">
         <Linked text={e.title} ledgerIds={ids} own={own} />
       </h2>

@@ -13,6 +13,7 @@ export type TimelineProps = {
   onSelect: (id: string) => void;
   sort: SortKey; // the route sort: orders the items inside a stage group (storyline only)
   desc: boolean;
+  queue: string[] | undefined; // the kit's plan.queue (a planned stage's place); undefined from an older kit
 };
 
 export const PAGE = 200;

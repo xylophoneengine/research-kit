@@ -7,6 +7,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  ALL,
   DEFAULT_STATUS,
   NONE,
   STATUSES,
@@ -34,13 +35,17 @@ function Multi({
   selected: string[];
   onChange: (v: string[]) => void;
 }) {
+  // `all` sets the token ALL: every option checked, also one that appears later;
+  // unchecking one then leaves the explicit list of the others
+  const all = selected.includes(ALL);
+  const has = (v: string): boolean => all || selected.includes(v);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="outline" size="sm">
           {label}
           {selected.length > 0 && (
-            <span className="text-muted-foreground">({selected.length})</span>
+            <span className="text-muted-foreground">({all ? "all" : selected.length})</span>
           )}
         </Button>
       </DropdownMenuTrigger>
@@ -50,7 +55,7 @@ function Multi({
             className="text-muted-foreground"
             onSelect={(ev) => {
               ev.preventDefault(); // keep the menu open
-              onChange(options.map((o) => o.value));
+              onChange([ALL]);
             }}
           >
             all
@@ -68,11 +73,12 @@ function Multi({
         {options.map((o) => (
           <DropdownMenuCheckboxItem
             key={o.value}
-            checked={selected.includes(o.value)}
+            checked={has(o.value)}
             onSelect={(ev) => ev.preventDefault()} // keep the menu open
-            onCheckedChange={(on) =>
-              onChange(on ? [...selected, o.value] : selected.filter((s) => s !== o.value))
-            }
+            onCheckedChange={(on) => {
+              const now = all ? options.map((x) => x.value) : selected;
+              onChange(on ? [...now, o.value] : now.filter((s) => s !== o.value));
+            }}
           >
             <span className="max-w-[32ch] truncate" title={o.text}>
               {o.text}

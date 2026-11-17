@@ -1,7 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { typeClasses } from "@/lib/typeColor";
-import { byType, entryDay, shortDay, shownStatus, sortGroups, stageGroups, type Entry, type Group, type SortKey } from "@/lib/ledger";
+import {
+  byType,
+  entryDay,
+  revealKey,
+  revealTarget,
+  shortDay,
+  shownStatus,
+  sortGroups,
+  stageGroups,
+  stageSpan,
+  type Entry,
+  type Group,
+  type SortKey,
+} from "@/lib/ledger";
 import { Chev, Id, PAGE, StatusBadge, plural, statusClass, type TimelineProps } from "./parts";
 
 const FIRST_LINE = 40; // cards rendered in a collapsed (one line) branch
@@ -35,7 +48,7 @@ function save(v: number): void {
 
 // A vertical path of stage blocks; an open stage drops one branch of entry
 // cards per type from the path. No time scale.
-export function Storyline({ all, entries, ledgerIds, selected, onSelect, sort, desc }: TimelineProps) {
+export function Storyline({ all, entries, ledgerIds, selected, onSelect, sort, desc, queue }: TimelineProps) {
   const groups = useMemo(
     () => sortGroups(stageGroups(all, entries), sort, desc),
     [all, entries, sort, desc],
@@ -86,6 +99,7 @@ export function Storyline({ all, entries, ledgerIds, selected, onSelect, sort, d
               selected={selected}
               sort={sort}
               desc={desc}
+              queue={queue}
               ledgerIds={ledgerIds}
               onSelect={onSelect}
             />
@@ -96,10 +110,15 @@ export function Storyline({ all, entries, ledgerIds, selected, onSelect, sort, d
   );
 }
 
-function range(g: Group): string {
-  if (!g.first) return "no date";
-  return `${shortDay(g.first)} – ${g.live ? "now" : shortDay(g.last)}`;
-}
+// the dot of a stage block: data-dot names it, the class draws it; a planned stage is
+// hollow (background fill, solid border), the unstaged group dashed
+const DOTS: Record<string, string> = {
+  selected: "bg-primary ring-4 ring-primary/25",
+  unstaged: "border border-dashed border-muted-foreground bg-background",
+  planned: "border border-muted-foreground bg-background",
+  live: "bg-primary",
+  closed: "bg-muted-foreground/50",
+};
 
 function Block({
   g,
@@ -107,6 +126,7 @@ function Block({
   selected,
   sort,
   desc,
+  queue,
   ledgerIds,
   onSelect,
 }: {
@@ -115,6 +135,7 @@ function Block({
   selected: string | null;
   sort: SortKey;
   desc: boolean;
+  queue: string[] | undefined;
   ledgerIds: Set<string>;
   onSelect: (id: string) => void;
 }) {
@@ -125,18 +146,21 @@ function Block({
 
   // When the selection changes to something in this stage: open the stage and,
   // if the card is clipped out of its one-line branch, expand that branch and
-  // scroll the card into view. Nothing is closed; it runs again only when the sort
-  // changes (the card moved), not on reloads, typing or filters.
+  // scroll the card into view. Nothing is closed. It runs again when revealKey
+  // changes: the selection, the sort (the card moved), or the card coming into or
+  // out of this block (a filter cleared or set); not on reloads, typing or a filter
+  // change that leaves the card where it is (g.items is a new array on each of those).
+  const due = revealKey(g.items, selected, sort, desc);
   useEffect(() => {
-    if (!holds || selected === null) return;
+    const t = revealTarget(g.items, selected, holds);
+    if (t === null || selected === null) return;
     const sel = selected;
-    const e = g.items.find((x) => x.id === sel);
-    if (!e) {
+    if (!t.card) {
       root.current?.scrollIntoView({ block: "nearest" }); // the stage itself
       return;
     }
     setOpen(true);
-    const idx = g.items.filter((x) => x.type === e.type).findIndex((x) => x.id === sel);
+    const { type, idx } = t;
     const card = (): HTMLElement | null =>
       root.current?.querySelector<HTMLElement>(`[data-eid="${sel}"]`) ?? null;
     const clipped = (el: HTMLElement | null): boolean => {
@@ -146,7 +170,7 @@ function Block({
     const frame = requestAnimationFrame(() => {
       if (clipped(card())) {
         const n = (Math.floor(idx / PAGE) + 1) * PAGE;
-        setShown((s) => ((s[e.type] ?? 0) > idx ? s : { ...s, [e.type]: n }));
+        setShown((s) => ((s[type] ?? 0) > idx ? s : { ...s, [type]: n }));
       }
       requestAnimationFrame(() => {
         const el = card();
@@ -154,18 +178,21 @@ function Block({
       });
     });
     return () => cancelAnimationFrame(frame);
-  }, [selected, sort, desc]); // not g.items: that is a new array on every reload, keystroke and filter change
+  }, [due]); // only the key: g.items is a new array on every reload, keystroke and filter change
 
   const dot = holds
-    ? "bg-primary ring-4 ring-primary/25"
+    ? "selected"
     : !g.stage
-      ? "border border-dashed border-muted-foreground bg-background"
-      : g.live
-        ? "bg-primary"
-        : "bg-muted-foreground/50";
+      ? "unstaged"
+      : g.stage.status === "planned"
+        ? "planned"
+        : g.live
+          ? "live"
+          : "closed";
+  const span = stageSpan(g, queue);
   return (
     <div ref={root} className="relative pb-5 pl-5">
-      <span className={"absolute top-2 -left-[5px] size-2.5 rounded-full " + dot} />
+      <span data-dot={dot} className={"absolute top-2 -left-[5px] size-2.5 rounded-full " + DOTS[dot]} />
       <div
         className={"-ml-2 cursor-pointer rounded-md py-1 pl-2 " + (holds ? "bg-primary/10" : "")}
         onClick={() => setOpen(!open)}
@@ -188,7 +215,7 @@ function Block({
           )}
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 pl-6 text-xs text-muted-foreground">
-          <span className="whitespace-nowrap">{range(g)}</span>
+          {span && <span className="whitespace-nowrap">{span}</span>}
           <span className="whitespace-nowrap">{g.items.length} entries</span>
           {types.map((t) => (
             <span
