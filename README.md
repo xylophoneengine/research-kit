@@ -377,26 +377,33 @@ timeline; a search box (also Ctrl/Cmd-K) finds an entry by id, title or note, an
 a detail pane shows one entry with its history. The stages tab is one table:
 its first column `no.` holds the order number (the real NN, or for a planned stage
 the kit's `~NN` forecast, not computed in the viewer) and sorts the rows, lowest
-first, stages without a number last; the status `staged` (done, not
-landed) has its own amber badge, filter entry and board column between running and
-done, is in the default list filter with open and running, and is not counted as open.
-Every badge, filter, count and board column uses the status the kit shows for an
-entry (`shown`): an open entry of a planned stage reads `planned`, of a shelved
-stage `shelved` (the detail pane says what is stored), and the planned and shelved
-board columns list each stage card followed by its entries. It reads the ledger fresh on
-every request and reloads when the tab regains focus; it never writes the ledger
-or `pm/STATUS.md`. It listens on 127.0.0.1 only and has no login, so any user
-logged in on the same machine can read the ledger while it runs. Port 8765 by
-default, or the next free one up to 8774 when it is taken, but the start stops if a viewer of
-the same repo already answers on one of those ports (`--port N` names one;
-`--no-open`
-skips the browser; `--repo DIR` names the repo). `/rk-viewer stop` ends the
-viewer this session started; as a background task of the session it is expected
-to end with it. It needs Python only: the built frontend is committed under
+first, stages without a number last, below the row `unstaged / backlog`, which is
+always the first row; when a stage filter is set the tab still lists every stage,
+marks the filtered ones and says so in one line (the timeline shows only the
+filtered stages); the status `staged` (done, not landed) has its own amber badge,
+filter entry and board column between running and done, is in the default list
+filter with open and running, and is not counted as open. Every badge, filter,
+count and board column uses the status the kit shows for an entry (`shown`): an
+open entry of a planned stage reads `planned`, of a shelved stage `shelved` (the
+detail pane says what is stored), and the planned and shelved board columns list
+each stage card followed by its entries, in the chosen sort; the planned column is
+on the board by default only when the ledger holds something planned (it then
+stays while you filter), and a column you switched yourself stays as you set it.
+In the timeline a planned stage has a hollow dot and its place in the queue, no
+dates. `all` in a filter menu means all, also for owners or stages that appear
+later. It reads the ledger fresh on every request and reloads when the tab
+regains focus; it never writes the ledger or `pm/STATUS.md`. It listens on
+127.0.0.1 only and has no login, so any user logged in on the same machine can
+read the ledger while it runs. Port 8765 by default, or the next free one up to
+8774 when it is taken, but the start stops if a viewer of the same repo already
+answers on one of those ports (`--port N` names one; `--no-open` skips the
+browser; `--repo DIR` names the repo). `/rk-viewer stop` ends the viewer this
+session started; as a background task of the session it is expected to end with
+it. It needs Python only: the built frontend is committed under
 `skills/research-kit/ui/dist/`, and npm is needed only to rebuild it from
 `skills/research-kit/ui/`. The build writes a hash of the source files into
-`dist/src.sha256`; `test_ui.py` fails when that hash no longer matches the
-source (it does not compare the bundle itself).
+`dist/src.sha256`; `test_ui.py` fails when that hash no longer matches the source
+(it does not compare the bundle itself).
 
 While it serves, the viewer keeps a small state file
 `~/.cache/research-kit/ui/<port>.json` (pid, port, repo) and removes it when it
