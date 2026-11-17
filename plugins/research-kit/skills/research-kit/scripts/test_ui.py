@@ -13,6 +13,7 @@ import io
 import json
 import os
 import random
+import re
 import shutil
 import signal
 import socket
@@ -208,6 +209,98 @@ def test_real_ledger_planned_stages() -> None:
         "queue": ["S-3", "S-2", "S-4"],
         "forecast": {"S-3": "~02", "S-2": "~03", "S-4": "~01b"},
     }, p["plan"]
+
+
+def kit_repo(tmp: Path) -> Path:
+    """An empty repo dir tmp/repo with pm/ and pm/kinds/, for rk.py to write to."""
+    repo: Path = tmp / "repo"
+    (repo / "pm" / "kinds").mkdir(parents=True)
+    (repo / "pm" / "ledger.jsonl").write_text("")
+    return repo
+
+
+def rk_run(repo: Path, *argv: str) -> None:
+    """rk.py <argv> --repo <repo>; any non-zero exit fails the test."""
+    r: subprocess.CompletedProcess[str] = subprocess.run(
+        [sys.executable, "-I", str(RK_PY), *argv, "--repo", str(repo)],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, (argv, r.stdout, r.stderr)
+
+
+def test_ui_uses_public_core_names() -> None:
+    """R13a: ledger.py exports plan_queue and plan_forecast (the results of the
+    private _queue and _forecast); ui.py names no underscore name of the core."""
+    src: str = Path(ui.__file__).read_text(encoding="utf-8")
+    private: list[str] = re.findall(r"\bledger\._\w+", src)
+    assert private == [], private
+    for name in ("plan_queue", "plan_forecast"):
+        assert callable(getattr(ui.ledger, name, None)), f"ledger.{name} is missing"
+    with tmpdir() as tmp:
+        repo: Path = kit_repo(tmp)
+        rk_run(repo, "add", "stage", "software-a", "--open")  # S-1
+        rk_run(repo, "add", "stage", "paper-b")  # S-2 planned
+        rk_run(repo, "add", "stage", "paper-c", "--before", "S-2")  # S-3 ahead
+        _events, state = ui._read(repo)
+    assert [e.id for e in ui.ledger.plan_queue(state)] == ["S-3", "S-2"]
+    assert ui.ledger.plan_forecast(state) == {"S-3": "~02", "S-2": "~03"}
+    assert ui.ledger.plan_queue(state) == ui.ledger._queue(state)
+    assert ui.ledger.plan_forecast(state) == ui.ledger._forecast(state)
+
+
+def test_real_ledger_title_events() -> None:
+    """R13b: what the kit writes, as the viewer's earlier-names rule reads it:
+    stage-rename = a `set` with `title` and no `status`; stage-open = a `set`
+    with `title` and `status: "open"`. The payload passes both through."""
+    with tmpdir() as tmp:
+        repo: Path = kit_repo(tmp)
+        rk_run(repo, "add", "stage", "paper-b")  # S-1 planned, P-1-paper-b
+        rk_run(repo, "stage-rename", "S-1", "paper-bb")
+        rk_run(repo, "stage-open", "S-1")  # 01-paper-bb
+        p: dict[str, Any] = ui.payload(repo)
+        raw: list[dict[str, Any]] = [
+            json.loads(ln)
+            for ln in (repo / "pm" / "ledger.jsonl").read_text().splitlines()
+        ]
+    sets: list[dict[str, Any]] = [
+        ev for ev in p["events"] if ev["id"] == "S-1" and ev["ev"] == "set"
+    ]
+    assert len(sets) == 2, sets
+    rename, opened = sets[0]["f"], sets[1]["f"]
+    assert rename["title"] == "paper-bb" and "status" not in rename, rename
+    assert opened["title"] == "01-paper-bb" and opened["status"] == "open", opened
+    on_disk: list[dict[str, Any]] = [
+        ev["f"] for ev in raw if ev["id"] == "S-1" and ev["ev"] == "set"
+    ]
+    assert [s["f"] for s in sets] == on_disk  # passed through, nothing dropped
+
+
+def test_real_ledger_staged_entry() -> None:
+    """R15c: a staged entry written by rk.py comes through the payload with
+    status and shown both `staged`."""
+    with tmpdir() as tmp:
+        repo: Path = kit_repo(tmp)
+        rk_run(repo, "add", "task", "tt", "--owner", "lead", "--note", "a task")
+        rk_run(repo, "staged", "T-1", "--note", "built, not landed")
+        p: dict[str, Any] = ui.payload(repo)
+    json.dumps(p)
+    t1: dict[str, Any] = {e["id"]: e for e in p["entries"]}["T-1"]
+    assert (t1["status"], t1["shown"]) == ("staged", "staged"), t1
+
+
+def test_ts_statuses_match_core() -> None:
+    """R15b: STATUSES in ui/src/lib/ledger.ts holds the same set as the core."""
+    src: str = (REAL_DIST.parent / "src" / "lib" / "ledger.ts").read_text(
+        encoding="utf-8"
+    )
+    m: re.Match[str] | None = re.search(
+        r"export const STATUSES\s*=\s*\[(.*?)\]", src, re.S
+    )
+    assert m is not None, "no `export const STATUSES = [...]` in ledger.ts"
+    ts: list[str] = re.findall(r'"([^"]*)"', m.group(1))
+    assert len(ts) == len(set(ts)), ts
+    assert set(ts) == set(ui.ledger.STATUSES), (sorted(ts), ui.ledger.STATUSES)
 
 
 def test_payload_shown_equals_status() -> None:  # D-56: nothing inherited here
@@ -900,6 +993,45 @@ def test_state_temp_name_is_not_followed() -> None:
             got: dict[str, Any] = json.loads((state / "51504.json").read_text())
             assert got["port"] == 51504 and got["repo"] == str(repo), got
             assert (state / "rk_path").read_text() == f"{RK_PY.resolve()}\n"
+
+
+def test_state_write_unencodable_path() -> None:
+    """R9: the state files hold file-system bytes. A path the locale encoding
+    cannot encode (a lone surrogate, what os.fsdecode gives for the byte \\xff)
+    is written as its own bytes and the viewer starts; on any failure nothing
+    is raised, None comes back and no temp file stays."""
+    raw: bytes = b"/pl\xffg/rk.py"
+    bad: str = os.fsdecode(raw)  # '/pl\udcffg/rk.py'
+    with tmpdir() as tmp:
+        repo: Path = mk_repo(tmp, TWO)
+        state: Path = tmp / "research-kit" / "ui"
+        with patched(STATE_DIR=state, __file__=bad):  # rk_path = <bad dir>/rk.py
+            f: Path | None = ui._write_state(51600, repo)
+        assert f == state / "51600.json", f
+        assert (state / "rk_path").read_bytes() == raw + b"\n"
+        assert (state / "rk_path").stat().st_mode & 0o777 == 0o600
+        got: dict[str, Any] = json.loads((state / "51600.json").read_text())
+        assert got["port"] == 51600 and got["repo"] == str(repo), got
+        assert sorted(p.name for p in state.iterdir()) == ["51600.json", "rk_path"]
+
+        # a text no encoding takes (a surrogate that is no escaped byte): None
+        with patched(STATE_DIR=state):
+            assert ui._write_in_state_dir("odd", "\ud800") is None
+        assert sorted(p.name for p in state.iterdir()) == ["51600.json", "rk_path"]
+
+        # a failure after the temp file exists (the replace): None, no temp file
+        real_replace: Callable[..., None] = os.replace
+
+        def no_replace(src: Any, dst: Any) -> None:
+            raise OSError(errno.EIO, "replace failed")
+
+        os.replace = no_replace
+        try:
+            with patched(STATE_DIR=state):
+                assert ui._write_in_state_dir("odd", "text") is None
+        finally:
+            os.replace = real_replace
+        assert sorted(p.name for p in state.iterdir()) == ["51600.json", "rk_path"]
 
 
 def test_status_nothing_runs() -> None:

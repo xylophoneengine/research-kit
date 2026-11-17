@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { typeClasses } from "./typeColor";
+import * as lib from "./ledger"; // the names of the viewer batch (T-96): absent until the build, so only these tests are red
 import {
   NONE,
   age,
@@ -382,8 +383,11 @@ test("boardCol: deferred column holds open and running deferred entries only", (
   expect(boardCol(e("deferred", "dropped"))).toBe("dropped");
   expect(boardCol(e("task", "shelved"))).toBe("shelved");
   expect(boardCol(e("decision", "superseded"))).toBe("superseded");
-  // every column the board lists is reachable
-  expect(new Set(["open", "running", "done", "dropped", "superseded", "shelved"].map((s) => boardCol(e("task", s)))).size).toBe(6);
+  // every column the board lists is reachable: each of the 8 statuses lands in a column (T-96)
+  const cols = STATUSES.map((s) => boardCol(e("task", s)));
+  expect(STATUSES).toHaveLength(8);
+  for (const c of cols) expect(BOARD_COLS).toContain(c);
+  expect(new Set(cols).size).toBe(STATUSES.length);
   expect(BOARD_COLS).toHaveLength(9);
 });
 
@@ -466,12 +470,186 @@ test("earlierTitles: one line per earlier name of an entry, newest first (T-52)"
     ev(5, "2026-11-14T10:00:00+01:00", "set", "S-2", { title: "03-paper-bee" }), // same name: no line
     ev(6, "2026-11-15T09:00:00+01:00", "set", "S-3", { title: "other" }),
   ];
+  // (T-96) the title that `stage-open` replaced (paper-b, event 3 also sets status open) is no earlier name
   expect(earlierTitles(evs, "S-2")).toEqual([
     { title: "03-paper-b", until: "2026-11-14" },
-    { title: "paper-b", until: "2026-11-12" },
   ]);
   expect(earlierTitles(evs, "S-3")).toEqual([]);
   expect(earlierTitles(evs, "S-9")).toEqual([]);
+});
+
+// R7c (T-96): a planned stage renamed before its open keeps that earlier name; the open
+// itself (title and status open in one event) is no rename
+test("earlierTitles: a rename before the open stays, the open does not (T-96)", () => {
+  const ev = (line: number, ts: string, e: "add" | "set", id: string, f: Record<string, unknown>): Ev =>
+    ({ line, ts, who: "lead", ev: e, id, f });
+  const evs = [
+    ev(1, "2026-11-10T09:00:00+01:00", "add", "S-4", { title: "paper-x", status: "planned" }),
+    ev(2, "2026-11-11T09:00:00+01:00", "set", "S-4", { title: "paper-y" }),
+    ev(3, "2026-11-12T09:00:00+01:00", "set", "S-4", { title: "03-paper-y", status: "open" }),
+  ];
+  expect(earlierTitles(evs, "S-4")).toEqual([{ title: "paper-x", until: "2026-11-11" }]);
+});
+
+// ---- viewer batch (T-96): red first; the names come from `lib` (see the import) ----
+
+const vst = (id: string, status: string, title: string): Entry => ({ ...s1, id, status, title });
+
+// R1 (guard): the timeline keeps the stage filter that the Stages tab only marks
+test("timeline keeps the stage filter (T-96, R1)", () => {
+  const a = vst("S-1", "open", "01-software-a"), b = vst("S-2", "open", "02-paper-b");
+  const inA: Entry = { ...t2, id: "T-5", stage: "S-1" };
+  const inB: Entry = { ...t2, id: "T-6", stage: "S-2" };
+  const LT: Ledger = { ...L, entries: [a, b, inA, inB] };
+  const rows = visible(LT, route("#/timeline?status=all&stage=S-1"));
+  expect(stageGroups(LT.entries, rows).map((g) => g.key)).toEqual(["S-1"]);
+});
+
+// R2: the backlog row (null) is first under both directions, the sort orders the stages only
+test("stageRows: backlog first under both directions (T-96, R2)", () => {
+  const all = [
+    vst("S-1", "done", "01-software-a"), vst("S-2", "open", "02-paper-b"),
+    vst("S-3", "planned", "paper-c"), vst("S-4", "dropped", "old-name"), t1, d1,
+  ];
+  const fc = { "S-3": "~03" };
+  const key = (r: (Entry | null)[]): (string | null)[] => r.map((e) => (e ? e.id : null));
+  expect(key(lib.stageRows(all, fc, 1))).toEqual([null, "S-1", "S-2", "S-3", "S-4"]);
+  expect(key(lib.stageRows(all, fc, -1))).toEqual([null, "S-3", "S-2", "S-1", "S-4"]);
+  expect(key(lib.stageRows([], undefined, 1))).toEqual([null]);
+  expect(key(lib.stageRows([t1], undefined, -1))).toEqual([null]); // no stage entry: only the backlog row
+});
+
+// R3 (D-108, D-112, I3, I4): default per column, a hand choice wins, the old stored value
+test("colShown / choiceFromFolded: planned only when the ledger has something planned, a hand choice wins, the old stored value (T-96, R3)", () => {
+  expect(lib.BOARD_FOLDED).toEqual(["shelved", "dropped", "superseded"]);
+  for (const c of ["shelved", "dropped", "superseded"]) expect(lib.colShown(c, 5, {}), c).toBe(false);
+  expect(lib.colShown("planned", 0, {})).toBe(false);
+  expect(lib.colShown("planned", 1, {})).toBe(true);
+  expect(lib.colShown("planned", 7, {})).toBe(true);
+  for (const c of ["running", "open", "deferred", "staged", "done"]) expect(lib.colShown(c, 0, {}), c).toBe(true);
+  // a hand choice wins, both ways, whatever the count says
+  expect(lib.colShown("shelved", 0, { shelved: true })).toBe(true);
+  expect(lib.colShown("open", 3, { open: false })).toBe(false);
+  expect(lib.colShown("planned", 0, { planned: true })).toBe(true);
+  expect(lib.colShown("planned", 4, { planned: false })).toBe(false);
+  expect(lib.colShown("done", 0, { shelved: true })).toBe(true); // another column's choice is no choice
+  // the old value: an array of the columns hidden (I3)
+  expect(lib.choiceFromFolded(["shelved", "dropped", "superseded"])).toEqual({}); // the old default
+  expect(lib.choiceFromFolded(["shelved", "dropped"])).toEqual({ superseded: true });
+  expect(lib.choiceFromFolded([])).toEqual({ shelved: true, dropped: true, superseded: true }); // planned: no choice
+  expect(lib.choiceFromFolded(["planned", "shelved", "dropped", "superseded"])).toEqual({ planned: false });
+  expect(lib.choiceFromFolded(["open", "done", "shelved", "dropped", "superseded"])).toEqual({
+    open: false, done: false,
+  });
+});
+
+// R4 (D-109, I4): a planned stage shows its queue place, no dates; the other spans stay
+test("stageSpan: a planned stage shows its queue place, no dates (T-96, R4)", () => {
+  const grp = (stage: Entry | null, o: Partial<lib.Group> = {}): lib.Group =>
+    ({ key: stage?.id ?? "", stage, items: [], first: "", last: "", live: false, ...o });
+  const ps = vst("S-2", "planned", "paper-b");
+  const q = ["S-3", "S-2", "S-4"];
+  expect(lib.stageSpan(grp(ps, { first: "2026-11-02", last: "2026-11-09" }), q)).toBe("queue 2 of 3");
+  expect(lib.stageSpan(grp({ ...ps, id: "S-3" }), q)).toBe("queue 1 of 3");
+  expect(lib.stageSpan(grp({ ...ps, id: "S-4" }), q)).toBe("queue 3 of 3");
+  expect(lib.stageSpan(grp({ ...ps, id: "S-8" }, { first: "2026-11-02" }), q)).toBe(""); // not in the queue
+  expect(lib.stageSpan(grp(ps, { first: "2026-11-02" }), undefined)).toBe(""); // older kit: no plan
+  // not planned: today's text
+  expect(lib.stageSpan(grp(s1, { first: "2026-11-02", live: true }), q)).toBe("Nov 02 – now");
+  expect(lib.stageSpan(grp({ ...s1, status: "done" }, { first: "2026-11-02", last: "2026-11-09" }), q)).toBe(
+    "Nov 02 – Nov 09",
+  );
+  expect(lib.stageSpan(grp(s1, { live: true }), undefined)).toBe("no date");
+  expect(lib.stageSpan(grp(null, { first: "2026-11-02", last: "2026-11-09" }), q)).toBe("Nov 02 – Nov 09");
+});
+
+// R5, R10 (I4): when a reveal is due
+test("revealKey / revealTarget: selection, sort and the card's presence trigger, reloads and typing do not (T-96, R5, R10)", () => {
+  const items = [t1, d1, t2];
+  const k = (its: Entry[], sel: string | null, sort: lib.SortKey = "default", desc = false): string =>
+    lib.revealKey(its, sel, sort, desc);
+  const k0 = k(items, "T-2");
+  // a reload (new array, same entries, changed texts or order), typing: no new reveal
+  expect(k([...items], "T-2")).toBe(k0);
+  expect(k([t2, d1, t1], "T-2")).toBe(k0);
+  expect(k([{ ...t1, title: "other" }, d1, t2], "T-2")).toBe(k0);
+  expect(k([t1, d1, t2, { ...t2, id: "T-9" }], "T-2")).toBe(k0); // an entry more: the card is still there
+  expect(k([d1, t2], "T-2")).toBe(k0); // an entry less
+  // a new selection, sort key or direction: a new reveal
+  expect(k(items, "D-1")).not.toBe(k0);
+  expect(k(items, "T-2", "id")).not.toBe(k0);
+  expect(k(items, "T-2", "default", true)).not.toBe(k0);
+  expect(k(items, "T-2", "id")).not.toBe(k(items, "T-2", "default", true));
+  expect(k(items, null)).not.toBe(k0);
+  // R5: the card was filtered out and comes back: a new reveal; while it stays out, none
+  const hidden = k([t1, d1], "T-2");
+  expect(hidden).not.toBe(k0);
+  expect(k([d1], "T-2")).toBe(hidden);
+  expect(k([], "T-2")).toBe(hidden);
+  // the target: null when this block does not hold the selection; the stage itself when
+  // the selection is the stage or is filtered out; else the card and its place in its type
+  expect(lib.revealTarget(items, "T-2", true)).toEqual({ card: true, type: "task", idx: 1 });
+  expect(lib.revealTarget(items, "T-1", true)).toEqual({ card: true, type: "task", idx: 0 });
+  expect(lib.revealTarget(items, "D-1", true)).toEqual({ card: true, type: "decision", idx: 0 });
+  expect(lib.revealTarget(items, "S-1", true)).toEqual({ card: false }); // the stage itself
+  expect(lib.revealTarget(items, "T-9", true)).toEqual({ card: false }); // filtered out
+  expect(lib.revealTarget(items, "T-2", false)).toBeNull();
+  expect(lib.revealTarget(items, null, true)).toBeNull();
+});
+
+// R6 (D4, I2): `*` means all, also for values that come later
+test("ALL: a facet set to all filters nothing, also a value added later; a picked subset stays (T-96, R6)", () => {
+  expect(lib.ALL).toBe("*");
+  expect(lib.narrowed(["*"])).toEqual([]);
+  expect(lib.narrowed(["x", "*"])).toEqual([]);
+  expect(lib.narrowed(["x", "user"])).toEqual(["x", "user"]);
+  expect(lib.narrowed([])).toEqual([]);
+  expect(formatRoute(route("#/board?owner=*&status=*"))).toBe("#/board?status=*&owner=*"); // fixed order: status first
+  const four = ["T-1", "T-2", "S-1", "D-1"];
+  expect(ids(visible(L, route("#/board?owner=*&status=*&type=*")))).toEqual(four);
+  expect(ids(visible(L, route("#/list?status=*")))).toEqual(four); // not the open list
+  expect(ids(visible(L, route("#/list?status=all&owner=*,x")))).toEqual(four);
+  // an owner that appears after a reload is in
+  const zed: Entry = { ...t2, id: "T-7", owner: "zed" };
+  expect(ids(visible({ ...L, entries: [...L.entries, zed] }, route("#/board?owner=*")))).toEqual(["T-1", "T-2", "T-7", "S-1", "D-1"]);
+  // the stage facet: all lets stage entries through (the old snapshot list hid them); a pick hides them
+  expect(ids(visible(L, route("#/list?status=all&stage=*")))).toEqual(four);
+  expect(ids(visible(L, route("#/list?status=all&stage=S-1")))).toEqual(["T-2"]);
+  // a hand-picked subset stays as picked
+  expect(ids(visible(L, route("#/list?status=all&owner=x,user")))).toEqual(["T-1", "D-1"]);
+});
+
+// R8b (I4): the stored line only on a difference, the stage named only when it explains it
+test("storedLine: only on a difference, the stage named only when it explains it (T-96, R8)", () => {
+  const sp = vst("S-2", "planned", "paper-b");
+  const inP: Entry = { ...t2, id: "T-8", stage: "S-2", shown: "planned" }; // stored open, shown planned
+  expect(lib.storedLine(t2, undefined)).toBe(""); // no `shown`
+  expect(lib.storedLine({ ...t2, shown: "open" }, sp)).toBe(""); // same status: nothing
+  expect(lib.storedLine(inP, sp)).toBe("stored: open (stage S-2 is planned)");
+  expect(lib.storedLine(inP, undefined)).toBe("stored: open"); // no stage to name
+  expect(lib.storedLine(inP, vst("S-2", "open", "02-paper-b"))).toBe("stored: open"); // the stage does not explain it
+  expect(lib.storedLine({ ...inP, status: "dropped" }, sp)).toBe("stored: dropped (stage S-2 is planned)");
+});
+
+// R11 (I4): the texts of id mode
+test("idHint / searchPlaceholder: the texts of id mode (T-96, R11)", () => {
+  expect(lib.idHint(false)).toBe("ids match by prefix, labels match whole"); // guard: exists today
+  expect(lib.idHint(true)).toBe("ids match whole, labels match whole");
+  expect(lib.searchPlaceholder(false, false)).toBe("search id, title, note...");
+  expect(lib.searchPlaceholder(true, false)).toBe("id prefixes, whole labels");
+  expect(lib.searchPlaceholder(true, true)).toBe("whole ids and labels");
+  expect(lib.searchPlaceholder(false, true)).toBe("search id, title, note..."); // exact belongs to id mode
+});
+
+// R15d (I4): a number only for a title in the kit's stage form
+test("stageNumber: a title that is no stage title shows no number (T-96, R15)", () => {
+  const e = (title: string, status = "open"): Entry => vst("S-1", status, title);
+  expect(stageNumber(e("2026-retro"), undefined)).toBe("");
+  expect(stageNumber(e("03-paper"), undefined)).toBe(""); // no topic part
+  expect(stageNumber(e("old-name", "dropped"), undefined)).toBe("");
+  expect(stageNumber(e("01-software-a"), undefined)).toBe("01"); // the form stays
+  expect(stageNumber(e("03b-paper-x", "done"), undefined)).toBe("03b");
+  expect(stageNumber(e("paper-c", "planned"), { "S-1": "~03" })).toBe("~03"); // planned: the forecast
 });
 
 test("status staged: own status, filter entry and board column between running and done, never open (T-59)", () => {
@@ -533,13 +711,14 @@ test("shown status: the kit's `shown` is displayed, `status` when it is missing 
   expect(sortBy([inP, t2, t1], "status", false).map((e) => e.id)).toEqual(["T-2", "T-8", "T-1"]);
 });
 
-test("underStages: stage cards in no. order, each followed by its entries by id (T-64)", () => {
+test("underStages: stage cards in no. order, each followed by its entries in the incoming order (T-64, T-96)", () => {
   const st = (id: string, status: string, title: string): Entry => ({ ...s1, id, status, title });
   const e = (id: string, stage: string): Entry => ({ ...t2, id, stage, shown: "planned" });
   const a = st("S-2", "planned", "paper-b"), b = st("S-3", "planned", "paper-c");
   const fc = { "S-2": "~03", "S-3": "~02" };
   const col = [e("T-9", "S-2"), a, e("T-4", "S-3"), b, e("T-3", "S-2"), e("T-7", "S-9")];
-  expect(ids(underStages(col, fc))).toEqual(["S-3", "T-4", "S-2", "T-3", "T-9", "T-7"]); // T-7: no stage card here, last
+  // (T-96) inside a group the incoming order stays (T-9 before T-3), not by id; T-7: no stage card here, last
+  expect(ids(underStages(col, fc))).toEqual(["S-3", "T-4", "S-2", "T-9", "T-3", "T-7"]);
   expect(ids(underStages([e("T-1", "S-2")], undefined))).toEqual(["T-1"]);
   expect(ids(underStages([], fc))).toEqual([]);
 });
