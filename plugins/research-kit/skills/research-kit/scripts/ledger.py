@@ -839,6 +839,11 @@ def _forecast(state: dict[str, Entry]) -> dict[str, str]:
     return out
 
 
+# public names for the viewer (ui.py); the private ones stay for the tests
+plan_queue = _queue
+plan_forecast = _forecast
+
+
 def _open_title(state: dict[str, Entry], topic: str, follows: str | None) -> str:
     """The title of `add stage <kind>-<topic> --open`: the next NN, or with
     `follows` (a stage NN[letter]-...) its NN plus the next letter from b. A code

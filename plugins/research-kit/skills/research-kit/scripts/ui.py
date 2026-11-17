@@ -117,8 +117,8 @@ def payload(repo: Path) -> dict[str, object]:
         ],
         "types": ledger.known_types(repo),
         "plan": {
-            "queue": [e.id for e in ledger._queue(state)],
-            "forecast": ledger._forecast(state),
+            "queue": [e.id for e in ledger.plan_queue(state)],
+            "forecast": ledger.plan_forecast(state),
         },
     }
 
@@ -306,9 +306,11 @@ def _write_in_state_dir(name: str, text: str) -> Path | None:
     """STATE_DIR/<name> = text (mode 0600): a temp file created exclusively and
     without following a symlink, in the same dir, then os.replace. A leftover at
     the temp name (a crash, a reused pid, a planted link) is unlinked, not
-    followed, and the create is tried once more. None if the dirs are not ours
-    or private, or on any write error."""
+    followed, and the create is tried once more. The file holds os.fsencode(text),
+    so a path the locale cannot encode is written as the file system has it. None
+    if the dirs are not ours or private, or on any error; no temp file stays."""
     try:
+        data: bytes = os.fsencode(text)  # before the create: nothing to clean up
         cache: Path = STATE_DIR.parent.parent  # ~/.cache: private if we create it
         cache.parent.mkdir(parents=True, exist_ok=True)
         _mkdir_private(cache)
@@ -324,11 +326,15 @@ def _write_in_state_dir(name: str, text: str) -> Path | None:
         except FileExistsError:
             os.unlink(tmp)
             fd = os.open(tmp, flags, 0o600)
-        with os.fdopen(fd, "w") as f:
-            f.write(text)
         final: Path = STATE_DIR / name
-        os.replace(tmp, final)
-    except OSError:
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            os.replace(tmp, final)
+        except OSError:
+            tmp.unlink(missing_ok=True)  # ours: created O_EXCL above
+            raise
+    except (OSError, ValueError):
         return None
     return final
 
