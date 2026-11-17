@@ -1380,6 +1380,7 @@ def _cmd_add(a: argparse.Namespace) -> int:
     print(f"logged {e.id}: {e.title}{_add_tail(e, state)}")
     if e.type == "stage" and not a.imported:  # after the write: a refused add
         folder: Path = repo / _stage_dir(e)  # makes no folder
+        there: str = " (uses the existing folder)" if folder.is_dir() else ""
         try:
             for sub in STAGE_DIRS:
                 (folder / sub).mkdir(parents=True, exist_ok=True)
@@ -1389,7 +1390,7 @@ def _cmd_add(a: argparse.Namespace) -> int:
                 f"{err.strerror}; make it by hand"
             ) from None
         dirs: str = " ".join(f"{s}/" for s in STAGE_DIRS)
-        print(f"folder {_stage_dir(e)} ({dirs})")
+        print(f"folder {_stage_dir(e)} ({dirs}){there}")
     return 0
 
 
@@ -2900,7 +2901,13 @@ def read_config(repo: Path) -> dict[str, object]:
         raw: bytes = (repo / _CONFIG_REL).read_bytes()
     except (FileNotFoundError, NotADirectoryError):
         main: Path = _main_checkout(repo)
-        return {"pm": "tracked"} if main == repo else read_config(main)
+        if main == repo:
+            return {"pm": "tracked"}
+        try:
+            return read_config(main)
+        except LedgerError as e:  # name the file read: the main checkout's (DB-68)
+            msg: str = str(e).removeprefix(_CONFIG_REL)
+            raise LedgerError(f"{main / _CONFIG_REL}{msg}") from None
     except OSError:  # a folder, no permission: as unreadable JSON
         raw = b""
     try:

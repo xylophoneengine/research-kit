@@ -600,7 +600,10 @@ def main(argv: list[str]) -> int:
     state: Path | None = None
     try:
         state = _write_state(server.server_port, repo)
-        print(f"rk ui: {repo} at {url}", flush=True)
+        # what the terminal cannot encode in the repo path becomes "?" (DB-73)
+        enc: str = getattr(sys.stdout, "encoding", None) or "utf-8"
+        line: str = f"rk ui: {repo} at {url}"
+        print(line.encode(enc, "replace").decode(enc), flush=True)
         if state is None:  # after the first line, which is the one that is read
             print(
                 f"warning: cannot write a state file in {STATE_DIR}; --status "
