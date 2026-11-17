@@ -491,6 +491,29 @@ test("earlierTitles: a rename before the open stays, the open does not (T-96)", 
   expect(earlierTitles(evs, "S-4")).toEqual([{ title: "paper-x", until: "2026-11-11" }]);
 });
 
+// F2 (T-103): only what `stage-open` writes is no rename: a title that moves to the
+// NN stage form (03-paper-b) with status open. No signature change: the rule is read
+// from the titles. A task, an imported stage or an NN stage renamed and reopened in one
+// event (`rk set --title X --status open`) keeps its earlier title.
+test("earlierTitles: a rename with status open is no stage-open unless the title becomes a stage title (T-103, F2)", () => {
+  const ev = (line: number, ts: string, e: "add" | "set", id: string, f: Record<string, unknown>): Ev =>
+    ({ line, ts, who: "lead", ev: e, id, f });
+  const evs = [
+    ev(1, "2026-11-10T09:00:00+01:00", "add", "T-1", { title: "fix parser", status: "done" }),
+    ev(2, "2026-11-12T09:00:00+01:00", "set", "T-1", { title: "fix parser v2", status: "open" }),
+    ev(3, "2026-11-10T09:00:00+01:00", "add", "S-5", { title: "phase one", status: "done" }),
+    ev(4, "2026-11-12T09:00:00+01:00", "set", "S-5", { title: "phase two", status: "open" }),
+    ev(5, "2026-11-10T09:00:00+01:00", "add", "S-6", { title: "03-paper-b", status: "done" }),
+    ev(6, "2026-11-13T09:00:00+01:00", "set", "S-6", { title: "03-paper-bee", status: "open" }),
+    ev(7, "2026-11-10T09:00:00+01:00", "add", "S-7", { title: "paper-q", status: "planned" }),
+    ev(8, "2026-11-12T09:00:00+01:00", "set", "S-7", { title: "04-paper-q", status: "open" }),
+  ];
+  expect(earlierTitles(evs, "T-1")).toEqual([{ title: "fix parser", until: "2026-11-12" }]);
+  expect(earlierTitles(evs, "S-5")).toEqual([{ title: "phase one", until: "2026-11-12" }]);
+  expect(earlierTitles(evs, "S-6")).toEqual([{ title: "03-paper-b", until: "2026-11-13" }]);
+  expect(earlierTitles(evs, "S-7")).toEqual([]); // the stage-open shape stays hidden
+});
+
 // ---- viewer batch (T-96): red first; the names come from `lib` (see the import) ----
 
 const vst = (id: string, status: string, title: string): Entry => ({ ...s1, id, status, title });
@@ -595,6 +618,51 @@ test("revealKey / revealTarget: selection, sort and the card's presence trigger,
   expect(lib.revealTarget(items, "T-9", true)).toEqual({ card: false }); // filtered out
   expect(lib.revealTarget(items, "T-2", false)).toBeNull();
   expect(lib.revealTarget(items, null, true)).toBeNull();
+});
+
+// F1 (T-103): a reveal is due when the selected card comes back into its block
+// (false -> true), not when typing, a filter or a reload takes it out (true -> false).
+// Contract (lead's ruling): `nextReveal(prev, items, selected, sort, desc)` gives
+// `{ key, held }`; `prev` is what the block got from its last call (undefined at the
+// first); the caller keeps it in a ref and puts `key` in the effect deps. The key changes
+// when selected, sort or desc change, and when `held` goes false -> true with those three
+// unchanged (the card came back); never when the card leaves or on a reload.
+test("nextReveal: the card leaving the block is no reveal, coming back is (T-103, F1)", () => {
+  const items = [t1, d1, t2];
+  const gone = [t1, d1]; // T-2 filtered out, the block stays
+  const nr = lib.nextReveal;
+  // first call: a key, held as found
+  const s0 = nr(undefined, items, "T-2", "default", false);
+  expect(typeof s0.key).toBe("string");
+  expect(s0.held).toBe(true);
+  expect(nr(undefined, gone, "T-2", "default", false).held).toBe(false);
+  expect(nr(undefined, items, null, "default", false).held).toBe(false);
+  // true -> false (typing, a filter, a reload that drops the card): same key, held false
+  const s1 = nr(s0, gone, "T-2", "default", false);
+  expect(s1).toEqual({ key: s0.key, held: false });
+  expect(nr(s1, [d1], "T-2", "default", false)).toEqual({ key: s0.key, held: false }); // still out
+  expect(nr(s1, [], "T-2", "default", false)).toEqual({ key: s0.key, held: false });
+  // false -> true (the filter is cleared): a new key, held true
+  const s2 = nr(s1, items, "T-2", "default", false);
+  expect(s2.held).toBe(true);
+  expect(s2.key).not.toBe(s1.key);
+  // a reload with the card still there (new array, other texts or order): same key
+  expect(nr(s2, [...items], "T-2", "default", false)).toEqual(s2);
+  expect(nr(s2, [t2, { ...d1, title: "x" }, t1], "T-2", "default", false)).toEqual(s2);
+  // out and back a second time: a new key again
+  const s3 = nr(nr(s2, gone, "T-2", "default", false), items, "T-2", "default", false);
+  expect(s3.held).toBe(true);
+  expect(s3.key).not.toBe(s2.key);
+  // a new selection, sort key or direction: a new key, held as found (also with the card out)
+  expect(nr(s2, items, "D-1", "default", false).key).not.toBe(s2.key);
+  expect(nr(s2, items, "T-2", "id", false).key).not.toBe(s2.key);
+  expect(nr(s2, items, "T-2", "default", true).key).not.toBe(s2.key);
+  const other = nr(s1, gone, "T-9", "default", false); // a card that is not in the block
+  expect(other.key).not.toBe(s1.key);
+  expect(other.held).toBe(false);
+  expect(nr(s1, gone, "T-2", "id", false).key).not.toBe(s1.key);
+  expect(nr(s1, gone, "T-2", "default", true)).toMatchObject({ held: false });
+  expect(nr(s1, gone, "T-2", "default", true).key).not.toBe(s1.key);
 });
 
 // R6 (D4, I2): `*` means all, also for values that come later
