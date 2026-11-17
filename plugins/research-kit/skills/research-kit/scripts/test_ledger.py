@@ -6250,6 +6250,96 @@ def test_spec_start_line_after_kit_part() -> None:
         assert start_lines(repo) == [kit, a_line, p_line, want]
 
 
+# R3 (T-88, DB-67): a superseded SPEC decision counts when its chain of
+# replacements ends in a done decision owned by the user; another owner or a
+# dropped end gives the line
+def test_spec_start_line_superseded_chain() -> None:
+    kit: str = f"kit {L.kit_version()}"
+    want: str = spec_line("S-1", "01-software-x", "01")
+    add: list[str] = ["add", "decision", "spec approved", "--owner", "user"]
+    add += ["--label", "01/SPEC"]
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+
+        def spec_repo(name: str) -> Path:  # S-1 open, D-1 = the user's SPEC
+            repo: Path = new_repo(root / name)
+            assert lrun(repo, "add", "stage", "software-x", "--open")[0] == 0
+            assert lrun(repo, *add)[0] == 0
+            return repo
+
+        def sup(repo: Path, old: str, owner: str) -> None:
+            code, out = lrun(repo, "supersede", old, "spec v2", "--owner", owner)
+            assert code == 0, out
+
+        # (name, owners of the replacements in order, drop the last one, line?)
+        cases: tuple[tuple[str, tuple[str, ...], bool, bool], ...] = (
+            ("user", ("user",), False, False),
+            ("lead", ("lead",), False, True),
+            ("chain-user", ("lead", "user"), False, False),
+            ("chain-lead", ("user", "lead"), False, True),
+            ("end-dropped", ("user",), True, True),
+        )
+        for name, owners, drop, line in cases:
+            repo = spec_repo(name)
+            for i, owner in enumerate(owners):
+                sup(repo, f"D-{i + 1}", owner)
+            if drop:
+                assert lrun(repo, "drop", f"D-{len(owners) + 1}", "--note", "x")[0] == 0
+            assert start_lines(repo) == [kit, *([want] * line)], (
+                name, start_lines(repo),
+            )
+        # the SPEC decision itself dropped: the line (as before)
+        repo = spec_repo("dropped")
+        assert lrun(repo, "drop", "D-1", "--note", "withdrawn")[0] == 0
+        assert start_lines(repo) == [kit, want], start_lines(repo)
+        # a chain of another stage's label does not clear this stage's line
+        other: Path = new_repo(root / "other")
+        assert lrun(other, "add", "stage", "software-x", "--open")[0] == 0
+        add2: list[str] = [*add[:-1], "02/SPEC"]
+        assert lrun(other, *add2)[0] == 0
+        sup(other, "D-1", "user")
+        assert start_lines(other) == [kit, want], start_lines(other)
+
+
+# R4 (T-88, DB-67): the label refusal for a dropped or superseded holder adds the
+# way out; the text for a live holder stays as it was
+def test_label_refusal_hint_for_dead_holder() -> None:
+    hint: str = "rk set D-1 --label"
+    base: str = "--label '01/SPEC' already names D-1"
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        for name, how in (("live", ""), ("sup", "supersede"), ("drop", "drop")):
+            repo: Path = new_repo(root / name)
+            code, out = lrun(
+                repo, "add", "decision", "spec approved", "--owner", "user",
+                "--label", "01/SPEC",
+            )  # fmt: skip
+            assert code == 0, out
+            if how == "supersede":  # D-2 replaces D-1; D-3 is the one to label
+                assert lrun(repo, "supersede", "D-1", "v2", "--owner", "user")[0] == 0
+            if how == "drop":
+                assert lrun(repo, "drop", "D-1", "--note", "x")[0] == 0
+            code, out = lrun(repo, "add", "decision", "spec v2", "--owner", "user")
+            assert code == 0, out
+            new: str = out.split()[1].rstrip(":")  # "logged D-n: ..."
+            n: int = len(jl(repo))
+            code, out = lrun(repo, "set", new, "--label", "01/SPEC")
+            assert code == 1, (name, out)
+            assert base in out and "labels are unique" in out, (name, out)
+            assert (hint in out) == bool(how), (name, out)
+            if how:  # the hint names the way out; so does `add` with the label
+                code, out = lrun(
+                    repo, "add", "decision", "x", "--owner", "user",
+                    "--label", "01/SPEC",
+                )  # fmt: skip
+                assert code == 1 and hint in out, (name, out)
+            assert len(jl(repo)) == n, name
+            if how:  # the way out works: free the label, then take it
+                assert lrun(repo, "set", "D-1", "--label", "01/old")[0] == 0
+                code, out = lrun(repo, "set", new, "--label", "01/SPEC")
+                assert code == 0, (name, out)
+
+
 # R5 (guard): no command is refused, and none changes its output, because the
 # decision is missing; green before and after the build
 def test_spec_missing_refuses_nothing() -> None:

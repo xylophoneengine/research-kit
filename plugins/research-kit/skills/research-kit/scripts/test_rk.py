@@ -1509,13 +1509,26 @@ def test_template_design_step() -> None:
         "brief before the user said yes to it",
         '(4) the yes is logged as `rk add decision "<spec approved>" --owner user '
         "--label <stage code>/SPEC --ref <spec file>`",
-        "(stage code = NN of the stage folder, e.g. `03/SPEC`)",
+        "(03, 03b)",  # (T-88) was "(stage code = NN of the stage folder, ...)"
         "has no user decision labelled <stage code>/SPEC (AGENTS.md 3.3)",
         "no `rk` command is refused",
     )
     missing: list[str] = [s for s in need if s not in text]
     assert not missing, f"design step lacks: {missing}"
     assert rk.stamp(text) != "2026-11-16d", "template stamp not bumped"
+
+
+# T-88 (design-step follow-up R1, R2, R5, R6, R7): one key string each; the
+# stage code reads (03, 03b); no "takeover prompt"; the stamp moved
+def test_template_design_step_followup() -> None:
+    lines: list[str] = (REAL_TEMPLATE / "AGENTS.md").read_text().splitlines()
+    text: str = "\n".join(lines)
+    for s in ("the user's answer wins", "only the user decides", "(03, 03b)"):
+        assert s in text, s
+    assert "takeover prompt" not in text
+    assert "NN of the stage folder" not in text
+    assert len(lines) <= 300, f"core template has {len(lines)} lines (> 300)"
+    assert "2026-11-17b" in lines[0], lines[0]
 
 
 # R2: the software kind's stage row 1 is the design step; its stamp moved
