@@ -1380,7 +1380,8 @@ def _cmd_add(a: argparse.Namespace) -> int:
     print(f"logged {e.id}: {e.title}{_add_tail(e, state)}")
     if e.type == "stage" and not a.imported:  # after the write: a refused add
         folder: Path = repo / _stage_dir(e)  # makes no folder
-        there: str = " (uses the existing folder)" if folder.is_dir() else ""
+        # D-119: `add stage --open` uses an NN folder that is there; say so
+        there: str = " (uses the existing folder)" if a.open and folder.is_dir() else ""
         try:
             for sub in STAGE_DIRS:
                 (folder / sub).mkdir(parents=True, exist_ok=True)
