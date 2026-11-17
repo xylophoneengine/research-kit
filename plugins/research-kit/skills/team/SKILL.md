@@ -42,7 +42,9 @@ worker reports anchor a critic on their framing; a fresh one judges the outcome.
 
 **Architect.** Staff `arch1` when the work items of two or more workers
 meet at an interface (one consumes what another produces), or when the task
-changes or relaxes a rule that tests, code or texts already encode. With
+changes or relaxes a rule that tests, code or texts already encode. These
+triggers are your recommendation in the design-step question (AGENTS.md
+3.3), not the choice: the user's answer decides. With
 only one such interface or rule, write the blocks into the briefs yourself
 instead: `INTERFACES:` (producer, consumer, exact format, example) and
 `CHANGE IMPACT:` (each changed rule, every place that encodes it, owner).
@@ -61,9 +63,10 @@ stays stale elsewhere; an architect that routes or builds is a second lead.
    observable behavior; research: the question answered, the decision it
    informs). Decompose into work items; tag each junior / senior / expert
    by how defined it is. Between two tiers, take the higher. Note where
-   items meet at an interface or change a rule: that decides the architect.
+   items meet at an interface or change a rule: that is your recommendation
+   on the architect in the design-step question (AGENTS.md 3.3), not the choice.
 2. **Size the team.** Default: 2 juniors, 2 seniors, 1 expert, 1 loop
-   critic, 1 disposable critic; plus `arch1` when step 1 found a trigger.
+   critic, 1 disposable critic; plus `arch1` when the user answered yes in the design-step question (a step 1 trigger only recommends it).
    Sizes or a roster in the invocation (`/team juniors=3 critics=1 <task>`,
    "5 Opus critics, no seniors") override the defaults and are final: skip
    to 4. Otherwise propose sizes from the work items.

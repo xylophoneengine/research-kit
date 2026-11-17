@@ -1,4 +1,4 @@
-<!-- research-kit-kind software: 2026-11-17a -->
+<!-- research-kit-kind software: 2026-11-17b -->
 # Kind: software
 
 Applies to an app, library, tool or driver built with an orchestrator plus
