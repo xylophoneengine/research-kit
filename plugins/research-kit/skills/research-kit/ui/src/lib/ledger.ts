@@ -38,6 +38,12 @@ export const DEFAULT_ORDER: Record<SortTab, string> = {
 };
 
 export const NONE = "-"; // filter token for an empty owner / stage
+// A facet list that holds ALL means "all, also what comes later": it restricts nothing.
+// Only `Filters` reads the raw list (to show the checks); everyone else reads `narrowed`.
+export const ALL = "*";
+export function narrowed(sel: string[]): string[] {
+  return sel.includes(ALL) ? [] : sel;
+}
 export const STATUSES = ["open", "running", "staged", "done", "dropped", "superseded", "shelved", "planned"];
 
 export const BOARD_COLS = ["running", "open", "deferred", "planned", "shelved", "staged", "done", "dropped", "superseded"];
@@ -61,6 +67,34 @@ export function statusCounts(es: Entry[]): [string, number][] {
 export function boardCol(e: Entry): string {
   const s = shownStatus(e);
   return e.type === "deferred" && (s === "open" || s === "running") ? "deferred" : s;
+}
+
+// Board columns that are off until the user switches them on by hand
+export const BOARD_FOLDED = ["shelved", "dropped", "superseded"];
+
+// Is board column `col` shown? A hand choice (`choice[col]`) wins; else the default:
+// off for BOARD_FOLDED, on for `planned` only when `planned` (the entries of the whole
+// ledger shown as planned, before any filter) is above 0, on for every other column.
+export function colShown(col: string, planned: number, choice: Record<string, boolean>): boolean {
+  const c = choice[col];
+  if (c !== undefined) return c;
+  if (BOARD_FOLDED.includes(col)) return false;
+  return col === "planned" ? planned > 0 : true;
+}
+
+// The hand choices an old stored value (the array of hidden columns) stands for: of
+// BOARD_FOLDED a column missing from it was switched on, of the other columns one in
+// it was switched off. `planned` missing is no choice (it was on by default).
+export function choiceFromFolded(folded: string[]): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  for (const c of BOARD_COLS) {
+    if (BOARD_FOLDED.includes(c)) {
+      if (!folded.includes(c)) out[c] = true;
+    } else if (folded.includes(c)) {
+      out[c] = false;
+    }
+  }
+  return out;
 }
 
 const TABS: readonly string[] = ["list", "board", "stages", "timeline"];
@@ -161,13 +195,16 @@ export function backlinks(l: Ledger): Map<string, string[]> {
   return m;
 }
 
+// the kit's stage title form NN[letter]-<kind>-<topic> (ledger.STAGE_RE)
+const STAGE_RE = /^[0-9]{2,}[a-z]?-[a-z][a-z0-9]*-[A-Za-z0-9_.-]+$/;
+
 // The number a stage shows in the Stages table: the kit's forecast string as sent
 // (`~02`) for a planned stage ("" when `forecast` lacks it), else the NN[letter]
-// code of its title ("03b-paper-x" -> "03b"), "" when it has none. Nothing is computed.
+// code of its title ("03b-paper-x" -> "03b"), "" when the title is not in the kit's
+// stage form ("2026-retro" has none). Nothing is computed.
 export function stageNumber(e: Entry, forecast: Record<string, string> | undefined): string {
   if (e.status === "planned") return forecast?.[e.id] ?? "";
-  const c = stageCodeOf(e.title) ?? "";
-  return /^\d+[a-z]?$/.test(c) ? c : "";
+  return STAGE_RE.test(e.title) ? (stageCodeOf(e.title) ?? "") : "";
 }
 
 // Stages by number (the "~" ignored): NN, then letter (none before b); `dir` -1
@@ -196,27 +233,44 @@ export function orderStages(
     .map((x) => x.e);
 }
 
+// The Stages table's body rows: `null` (the "unstaged / backlog" row) first under both
+// directions, then the stage entries by number (orderStages; `dir` orders them only).
+export function stageRows(
+  all: Entry[],
+  forecast: Record<string, string> | undefined,
+  dir: 1 | -1,
+): (Entry | null)[] {
+  return [null, ...orderStages(all.filter((e) => e.type === "stage"), forecast, dir)];
+}
+
+// the hint above the Stages table while a stage filter is set (it only marks rows)
+export const stageFilterHint = (n: number): string =>
+  `stage filter set (${n}): the marked rows are in it; this tab lists every stage`;
+
 // A board column's entries with the stages grouped: the stage entries in no. order
-// (orderStages, lowest first), each followed directly by the entries of that stage
-// by id number; entries whose stage card is not in `es` come last in their order.
+// (orderStages, lowest first), each followed directly by the entries of that stage in
+// the incoming order (the caller's sort); entries whose stage card is not in `es` come
+// last in their order.
 export function underStages(es: Entry[], forecast: Record<string, string> | undefined): Entry[] {
   const stages = orderStages(es.filter((e) => e.type === "stage"), forecast, 1);
   const rest = es.filter((e) => e.type !== "stage");
-  const own = (s: Entry): Entry[] =>
-    rest.filter((e) => e.stage === s.id).sort((a, b) => num(a.id) - num(b.id));
+  const own = (s: Entry): Entry[] => rest.filter((e) => e.stage === s.id);
   const placed = new Set(stages.flatMap(own));
   return [...stages.flatMap((s) => [s, ...own(s)]), ...rest.filter((e) => !placed.has(e))];
 }
 
 // the earlier titles of entry `id` from its events (in file order), newest first;
-// each with the day it was replaced
+// each with the day it was replaced. A title change in an event that also sets
+// `status: "open"` is `stage-open` (planned name -> NN name), no rename: not listed.
 export function earlierTitles(events: Ev[], id: string): { title: string; until: string }[] {
   const out: { title: string; until: string }[] = [];
   let cur: string | null = null;
   for (const ev of events) {
     const t = ev.id === id ? ev.f.title : undefined;
     if (typeof t !== "string") continue;
-    if (cur !== null && t !== cur) out.push({ title: cur, until: ev.ts.slice(0, 10) });
+    if (cur !== null && t !== cur && ev.f.status !== "open") {
+      out.push({ title: cur, until: ev.ts.slice(0, 10) });
+    }
     cur = t;
   }
   return out.reverse();
@@ -225,6 +279,20 @@ export function earlierTitles(events: Ev[], id: string): { title: string; until:
 // the one text for what id mode matches (id button, exact button, palette hint)
 export const idHint = (exact: boolean): string =>
   `ids match ${exact ? "whole" : "by prefix"}, labels match whole`;
+
+// the search box placeholder; `exact` belongs to id mode
+export const searchPlaceholder = (idOnly: boolean, exact: boolean): string =>
+  !idOnly ? "search id, title, note..." : exact ? "whole ids and labels" : "id prefixes, whole labels";
+
+// the detail pane's `stored:` line: "" unless the stored and the shown status differ;
+// the stage is named only when its status is the shown one (it explains the difference)
+export function storedLine(e: Entry, stage: Entry | undefined): string {
+  const shown = shownStatus(e);
+  if (shown === e.status) return "";
+  return stage && stage.status === shown
+    ? `stored: ${e.status} (stage ${stage.id} is ${shown})`
+    : `stored: ${e.status}`;
+}
 
 // idOnly: the query is a list of ids / labels (split on spaces and commas);
 // an entry matches when its id starts with one of them (equals one, with `exact`)
@@ -259,13 +327,17 @@ export function visible(l: Ledger, r: Route): Entry[] {
   const q = r.q.trim();
   const st: string[] | null =
     r.status ?? (r.tab === "list" && !q ? DEFAULT_STATUS : null);
+  const sSt = st && narrowed(st);
+  const sType = narrowed(r.type);
+  const sStage = narrowed(r.stage); // `*` restricts nothing: stage entries stay in too
+  const sOwner = narrowed(r.owner);
   const out = l.entries.filter(
     (e) =>
-      (st === null || st.length === 0 || st.includes(shownStatus(e))) &&
-      (r.type.length === 0 || r.type.includes(e.type)) &&
-      (r.stage.length === 0 || e.type !== "stage" || e.stage !== "") && // a stage entry is never "-" (see backlog)
-      pick(r.stage, e.stage) &&
-      pick(r.owner, e.owner) &&
+      (sSt === null || sSt.length === 0 || sSt.includes(shownStatus(e))) &&
+      (sType.length === 0 || sType.includes(e.type)) &&
+      (sStage.length === 0 || e.type !== "stage" || e.stage !== "") && // a stage entry is never "-" (see backlog)
+      pick(sStage, e.stage) &&
+      pick(sOwner, e.owner) &&
       matches(e, q, r.idOnly, r.exact),
   );
   // the sort (header click and menu alike) applies on the list and board tabs; the others keep the default order
@@ -578,6 +650,40 @@ export function stageGroups(all: Entry[], entries: Entry[]): Group[] {
     .sort((a, b) => num(a.id) - num(b.id))
     .map((s) => make(s.id, s));
   return items.has("") ? [...stages, make("", null)] : stages;
+}
+
+// The span text of a stage block. A planned stage has no dates: `queue <k> of <n>` (its
+// 1-based place in the kit's `queue`), "" when the queue lacks it (older kit). Else
+// "no date", "Nov 02 – now" or "Nov 02 – Nov 09".
+export function stageSpan(g: Group, queue: string[] | undefined): string {
+  if (g.stage?.status === "planned") {
+    const k = queue?.indexOf(g.stage.id) ?? -1;
+    return queue && k >= 0 ? `queue ${k + 1} of ${queue.length}` : "";
+  }
+  if (!g.first) return "no date";
+  return `${shortDay(g.first)} – ${g.live ? "now" : shortDay(g.last)}`;
+}
+
+// What a stage block's reveal reaches: the stage itself, or one card and its place
+// (`idx`) among the items of its type.
+export type Reveal = { card: false } | { card: true; type: string; idx: number };
+
+// null: the selection is not in this block (`holds` false) or there is none. The stage
+// itself when the selection is the stage or a card the filters hide.
+export function revealTarget(items: Entry[], selected: string | null, holds: boolean): Reveal | null {
+  if (!holds || selected === null) return null;
+  const e = items.find((x) => x.id === selected);
+  if (!e) return { card: false };
+  const idx = items.filter((x) => x.type === e.type).findIndex((x) => x.id === selected);
+  return { card: true, type: e.type, idx };
+}
+
+// Equal keys = no new reveal. A reveal is due on a change of the selection, the sort
+// key or direction, or of whether the block holds the selected card (a filter was
+// cleared); not on a reload, typing, or a filter change that leaves the card in place.
+export function revealKey(items: Entry[], selected: string | null, sort: SortKey, desc: boolean): string {
+  const held = selected !== null && items.some((x) => x.id === selected);
+  return JSON.stringify([selected, sort, desc, held]);
 }
 
 // the route sort inside every group (the stage path keeps its order); `default`
