@@ -6253,52 +6253,84 @@ def test_spec_start_line_after_kit_part() -> None:
 # R3 (T-88, DB-67): a superseded SPEC decision counts when its chain of
 # replacements ends in a done decision owned by the user; another owner or a
 # dropped end gives the line
-def test_spec_start_line_superseded_chain() -> None:
-    kit: str = f"kit {L.kit_version()}"
-    want: str = spec_line("S-1", "01-software-x", "01")
-    add: list[str] = ["add", "decision", "spec approved", "--owner", "user"]
-    add += ["--label", "01/SPEC"]
+def spec_chain_lines(
+    holder_owner: str,
+    owners: tuple[str, ...],
+    drop_last: bool = False,
+    label: str = "01/SPEC",
+) -> tuple[list[str], list[str]]:
+    """(the start lines, the lines the run should show without a spec line) of a
+    repo whose open stage S-1 has D-1 labelled `label` by `holder_owner`, then
+    superseded step by step with a decision of each of `owners` (D-2, D-3, ...);
+    `drop_last` drops the newest decision (or D-1 when there is no step)."""
     with tempfile.TemporaryDirectory() as d:
-        root: Path = Path(d)
-
-        def spec_repo(name: str) -> Path:  # S-1 open, D-1 = the user's SPEC
-            repo: Path = new_repo(root / name)
-            assert lrun(repo, "add", "stage", "software-x", "--open")[0] == 0
-            assert lrun(repo, *add)[0] == 0
-            return repo
-
-        def sup(repo: Path, old: str, owner: str) -> None:
-            code, out = lrun(repo, "supersede", old, "spec v2", "--owner", owner)
-            assert code == 0, out
-
-        # (name, owners of the replacements in order, drop the last one, line?)
-        cases: tuple[tuple[str, tuple[str, ...], bool, bool], ...] = (
-            ("user", ("user",), False, False),
-            ("lead", ("lead",), False, True),
-            ("chain-user", ("lead", "user"), False, False),
-            ("chain-lead", ("user", "lead"), False, True),
-            ("end-dropped", ("user",), True, True),
-        )
-        for name, owners, drop, line in cases:
-            repo = spec_repo(name)
-            for i, owner in enumerate(owners):
-                sup(repo, f"D-{i + 1}", owner)
-            if drop:
-                assert lrun(repo, "drop", f"D-{len(owners) + 1}", "--note", "x")[0] == 0
-            assert start_lines(repo) == [kit, *([want] * line)], (
-                name, start_lines(repo),
+        repo: Path = new_repo(Path(d))
+        assert lrun(repo, "add", "stage", "software-x", "--open")[0] == 0
+        code, out = lrun(
+            repo, "add", "decision", "spec approved", "--owner", holder_owner,
+            "--label", label,
+        )  # fmt: skip
+        assert code == 0, out
+        for i, owner in enumerate(owners):
+            code, out = lrun(
+                repo, "supersede", f"D-{i + 1}", "spec v2", "--owner", owner
             )
-        # the SPEC decision itself dropped: the line (as before)
-        repo = spec_repo("dropped")
-        assert lrun(repo, "drop", "D-1", "--note", "withdrawn")[0] == 0
-        assert start_lines(repo) == [kit, want], start_lines(repo)
-        # a chain of another stage's label does not clear this stage's line
-        other: Path = new_repo(root / "other")
-        assert lrun(other, "add", "stage", "software-x", "--open")[0] == 0
-        add2: list[str] = [*add[:-1], "02/SPEC"]
-        assert lrun(other, *add2)[0] == 0
-        sup(other, "D-1", "user")
-        assert start_lines(other) == [kit, want], start_lines(other)
+            assert code == 0, out
+        if drop_last:
+            last: str = f"D-{len(owners) + 1}"
+            assert lrun(repo, "drop", last, "--note", "withdrawn")[0] == 0
+        return start_lines(repo), [f"kit {L.kit_version()}"]
+
+
+# T-105 (crit1 F5 c): one test per case, so a failing case masks no other
+def test_spec_line_cleared_by_a_user_replacement() -> None:
+    got, clear = spec_chain_lines("user", ("user",))
+    assert got == clear, got
+
+
+def test_spec_line_stays_for_a_lead_replacement() -> None:
+    want: str = spec_line("S-1", "01-software-x", "01")
+    got, clear = spec_chain_lines("user", ("lead",))
+    assert got == [*clear, want], got
+
+
+def test_spec_line_cleared_by_a_chain_ending_in_the_user() -> None:
+    got, clear = spec_chain_lines("user", ("lead", "user"))
+    assert got == clear, got
+
+
+def test_spec_line_stays_for_a_chain_ending_in_the_lead() -> None:
+    want: str = spec_line("S-1", "01-software-x", "01")
+    got, clear = spec_chain_lines("user", ("user", "lead"))
+    assert got == [*clear, want], got
+
+
+def test_spec_line_stays_when_the_end_of_the_chain_is_dropped() -> None:
+    want: str = spec_line("S-1", "01-software-x", "01")
+    got, clear = spec_chain_lines("user", ("user",), drop_last=True)
+    assert got == [*clear, want], got
+
+
+def test_spec_line_stays_when_the_spec_decision_is_dropped() -> None:
+    want: str = spec_line("S-1", "01-software-x", "01")
+    got, clear = spec_chain_lines("user", (), drop_last=True)
+    assert got == [*clear, want], got
+
+
+def test_spec_line_stays_for_another_stages_label() -> None:
+    want: str = spec_line("S-1", "01-software-x", "01")
+    got, clear = spec_chain_lines("user", ("user",), label="02/SPEC")
+    assert got == [*clear, want], got
+
+
+# T-105 (crit1 F5 a): the holder's own owner does not matter, only the end of the
+# chain does: a lead-owned SPEC decision that a user decision supersedes clears the
+# line (the old rule needed the holder itself to be the user's); green, by design
+def test_spec_line_cleared_when_a_user_replaces_a_lead_holder() -> None:
+    got, clear = spec_chain_lines("lead", ("user",))
+    assert got == clear, got
+    got, clear = spec_chain_lines("lead", ())  # no replacement: not the user's, a line
+    assert got == [*clear, spec_line("S-1", "01-software-x", "01")], got
 
 
 # R4 (T-88, DB-67): the label refusal for a dropped or superseded holder adds the
@@ -6501,6 +6533,92 @@ def test_reopen_and_open_planned_shelved_texts() -> None:
         assert refused(repo, "stage-open", "S-3") == (
             "error: S-3 is shelved: only a planned stage opens\n"
         )
+
+
+# T-105 R7 (DB-69, guard): an imported shelved stage is never planned again, so its
+# refusals carry no `rk set S-n --status planned` hint (a kit-made one does)
+def test_imported_shelved_stage_refusal_texts() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        code, out = lrun(
+            repo, "add", "stage", "old-run", "--imported", "--source", "a:1",
+            "--status", "shelved",
+        )  # fmt: skip
+        assert code == 0 and out == "logged S-1: old-run\n", out
+        assert refused(repo, "reopen", "S-1", "--note", "x") == (
+            "error: cannot reopen S-1: it is shelved\n"
+        )
+        assert refused(repo, "stage-open", "S-1") == (
+            "error: S-1 is shelved: only a planned stage opens\n"
+        )
+        plan_stages(repo, "paper-a")  # S-2 planned, then shelved: the hints stay
+        assert lrun(repo, "set", "S-2", "--status", "shelved", "--note", "l")[0] == 0
+        assert refused(repo, "stage-open", "S-2") == (
+            "error: S-2 is shelved: only a planned stage opens: rk set S-2 "
+            "--status planned first\n"
+        )
+
+
+# T-105 R1 (DB-43, D-119): `add stage <kind>-<topic> --open` on an NN folder that is
+# there already says so in its receipt; without such a folder the receipt is as it
+# was; `stage-open` still refuses a folder that is there (folders are not merged)
+def test_add_stage_open_receipt_names_an_existing_folder() -> None:
+    said: str = "(uses the existing folder)"
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d)
+        fresh: Path = new_repo(root / "fresh")
+        code, out = lrun(fresh, "add", "stage", "software-x", "--open")
+        assert code == 0 and said not in out, out
+        assert out == (
+            "logged S-1: 01-software-x\n"
+            "folder pm/stages/01-software-x/ (deliverables/ notes/ code/ chat/)\n"
+        ), out
+        repo: Path = new_repo(root / "there")
+        (repo / "pm/stages/01-software-x/notes").mkdir(parents=True)  # an old folder
+        code, out = lrun(repo, "add", "stage", "software-x", "--open")
+        assert code == 0, out
+        assert out.startswith("logged S-1: 01-software-x\n"), out
+        assert out.count(said) == 1, out
+        assert "folder pm/stages/01-software-x/" in out, out
+        assert (repo / "pm/stages/01-software-x/notes").is_dir()
+        # the same stage planned, its NN folder there: stage-open refuses as before
+        other: Path = new_repo(root / "plan")
+        assert lrun(other, "add", "stage", "paper-b")[0] == 0  # S-1 planned
+        (other / "pm/stages/01-paper-b").mkdir()
+        assert refused(other, "stage-open", "S-1") == (
+            "error: cannot stage-open S-1: pm/stages/01-paper-b/ is there already; "
+            "folders are not merged: move it away first\n"
+        )
+
+
+# T-105 R2 (DB-68): a config error found through the worktree fallback names the
+# main checkout's file; a broken file in the checkout itself reads as before
+def test_worktree_config_error_names_the_main_checkout_file() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root: Path = Path(d).resolve()
+        main: Path = new_repo(root)
+        (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+        wt: Path = root / "wt"
+        wt.mkdir()
+        (wt / ".git").write_text(f"gitdir: {main}/.git/worktrees/wt\n")
+        for text, what in (
+            ("{torn", "not a JSON object"),
+            ('{"pm": "x"}', '"pm" must be "local" or "tracked"'),
+        ):
+            make_local(main, text)
+            msg: str = ""
+            try:
+                L.read_config(wt)
+            except L.LedgerError as e:
+                msg = str(e)
+            assert str(main / "pm/config.json") in msg, (text, msg)
+            assert msg.endswith(what), (text, msg)
+            msg = ""
+            try:
+                L.read_config(main)  # the file read in place: its short name
+            except L.LedgerError as e:
+                msg = str(e)
+            assert msg == f"pm/config.json: {what}", (text, msg)
 
 
 # R12: stage-close of a stage that is not open prints the status, nothing else

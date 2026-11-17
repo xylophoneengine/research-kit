@@ -1528,7 +1528,31 @@ def test_template_design_step_followup() -> None:
     assert "takeover prompt" not in text
     assert "NN of the stage folder" not in text
     assert len(lines) <= 300, f"core template has {len(lines)} lines (> 300)"
-    assert "2026-11-17b" in lines[0], lines[0]
+    # (T-105, DB-70) the stamp is read from line 1, not named by a date: it has the
+    # stamp form and the software kind, which this batch changed too, carries the same
+    stamp_form: str = r"\d{4}-\d{2}-\d{2}[a-z]"
+    tpl: re.Match[str] | None = re.fullmatch(
+        rf"<!-- research-kit: ({stamp_form}) -->", lines[0]
+    )
+    assert tpl is not None, lines[0]
+    kind_line: str = (REAL_TEMPLATE / "kinds/software.md").read_text().splitlines()[0]
+    assert kind_line == f"<!-- research-kit-kind software: {tpl.group(1)} -->", (
+        lines[0], kind_line,
+    )
+
+
+# T-105 (DB-70, crit1 F5 d): 2.1 and the team skill call the architect triggers a
+# recommendation in the design-step question, not the choice (R1 of the follow-up)
+def test_architect_triggers_are_a_recommendation() -> None:
+    def flat(path: Path) -> str:
+        return " ".join(path.read_text().split())  # a wrapped line reads as one
+
+    core: str = flat(REAL_TEMPLATE / "AGENTS.md")
+    skill: str = flat(PLUGIN_ROOT / "skills/team/SKILL.md")
+    for name, text in (("AGENTS.md 2.1", core), ("team SKILL.md", skill)):
+        assert "recommendation in the design-step question" in text, name
+        assert "not the choice" in text, name
+    assert "a step 1 trigger only recommends it" in skill
 
 
 # R2: the software kind's stage row 1 is the design step; its stamp moved

@@ -572,43 +572,81 @@ test("stageSpan: a planned stage shows its queue place, no dates (T-96, R4)", ()
     ({ key: stage?.id ?? "", stage, items: [], first: "", last: "", live: false, ...o });
   const ps = vst("S-2", "planned", "paper-b");
   const q = ["S-3", "S-2", "S-4"];
-  expect(lib.stageSpan(grp(ps, { first: "2026-11-02", last: "2026-11-09" }), q)).toBe("queue 2 of 3");
-  expect(lib.stageSpan(grp({ ...ps, id: "S-3" }), q)).toBe("queue 1 of 3");
-  expect(lib.stageSpan(grp({ ...ps, id: "S-4" }), q)).toBe("queue 3 of 3");
-  expect(lib.stageSpan(grp({ ...ps, id: "S-8" }, { first: "2026-11-02" }), q)).toBe(""); // not in the queue
-  expect(lib.stageSpan(grp(ps, { first: "2026-11-02" }), undefined)).toBe(""); // older kit: no plan
-  // not planned: today's text
-  expect(lib.stageSpan(grp(s1, { first: "2026-11-02", live: true }), q)).toBe("Nov 02 – now");
-  expect(lib.stageSpan(grp({ ...s1, status: "done" }, { first: "2026-11-02", last: "2026-11-09" }), q)).toBe(
-    "Nov 02 – Nov 09",
-  );
-  expect(lib.stageSpan(grp(s1, { live: true }), undefined)).toBe("no date");
-  expect(lib.stageSpan(grp(null, { first: "2026-11-02", last: "2026-11-09" }), q)).toBe("Nov 02 – Nov 09");
+  // (T-105) the third argument is the ledger's events (R18); a planned stage ignores them
+  expect(lib.stageSpan(grp(ps, { first: "2026-11-02", last: "2026-11-09" }), q, [])).toBe("queue 2 of 3");
+  expect(lib.stageSpan(grp({ ...ps, id: "S-3" }), q, [])).toBe("queue 1 of 3");
+  expect(lib.stageSpan(grp({ ...ps, id: "S-4" }), q, [])).toBe("queue 3 of 3");
+  expect(lib.stageSpan(grp({ ...ps, id: "S-8" }, { first: "2026-11-02" }), q, [])).toBe(""); // not in the queue
+  expect(lib.stageSpan(grp(ps, { first: "2026-11-02" }), undefined, [])).toBe(""); // older kit: no plan
+  // the unstaged group has no stage and no events: the days of its entries, as before
+  expect(lib.stageSpan(grp(null, { first: "2026-11-02", last: "2026-11-09" }), q, [])).toBe("Nov 02 – Nov 09");
+  // (T-105) the spans of the other stages: see "stageSpan: opened to closed" below
 });
 
-// R5, R10 (I4): when a reveal is due
-test("revealKey / revealTarget: selection, sort and the card's presence trigger, reloads and typing do not (T-96, R5, R10)", () => {
+// T-105 R18 (DB-76, D-121): the span of a stage is opened to closed, read from the stage's
+// own events: opened = the stage-open event (status open with the title moving into stage
+// form, as earlierTitles knows it), else the created date; done: the last event that set
+// done; open: now; shelved or dropped: the event that set that status. The last update is
+// not in it. Assumed signature: `stageSpan(g, queue, events)`, `events` = the ledger's
+// events (all of them; the function picks those of `g.stage`).
+test("stageSpan: opened to closed, from the stage's own events (T-105, R18)", () => {
+  const ev = (line: number, ts: string, e: "add" | "set", id: string, f: Record<string, unknown>): Ev =>
+    ({ line, ts, who: "lead", ev: e, id, f });
+  const at = (d: string): string => `2026-11-${d}T09:00:00+01:00`;
+  const q = ["S-9"];
+  // the group as the timeline builds it: an entry of the stage is newer than any close
+  const group = (stage: Entry): lib.Group => {
+    const late: Entry = { ...t2, id: "T-9", stage: stage.id, created: at("20"), updated: at("20") };
+    const g = stageGroups([stage, late], [stage, late]).find((x) => x.key === stage.id);
+    if (!g) throw new Error("no group");
+    return g;
+  };
+  const stg = (id: string, status: string, title: string, created = at("02")): Entry =>
+    ({ ...vst(id, status, title), created, updated: at("20") });
+  const span = (stage: Entry, evs: Ev[]): string => lib.stageSpan(group(stage), q, evs);
+  const born = ev(1, at("02"), "add", "S-1", { title: "01-software-a", status: "open" });
+  // done: to the close, not to the later update of the stage or of its entries
+  expect(span(stg("S-1", "done", "01-software-a"), [born, ev(2, at("09"), "set", "S-1", { status: "done" })])).toBe(
+    "Nov 02 – Nov 09",
+  );
+  // reopened and closed again: the last close; reopened and not closed: now
+  const reopen = [
+    born, ev(2, at("09"), "set", "S-1", { status: "done" }), ev(3, at("12"), "set", "S-1", { status: "open" }),
+  ];
+  expect(span(stg("S-1", "done", "01-software-a"), [...reopen, ev(4, at("15"), "set", "S-1", { status: "done" })])).toBe(
+    "Nov 02 – Nov 15",
+  );
+  expect(span(stg("S-1", "open", "01-software-a"), reopen)).toBe("Nov 02 – now");
+  // opened from planned: from the stage-open event, not from the created date
+  const planned = ev(5, at("05"), "add", "S-2", { title: "paper-q", status: "planned" });
+  const opened = ev(6, at("10"), "set", "S-2", { title: "04-paper-q", status: "open" });
+  expect(span(stg("S-2", "open", "04-paper-q", at("05")), [planned, opened])).toBe("Nov 10 – now");
+  expect(
+    span(stg("S-2", "done", "04-paper-q", at("05")), [planned, opened, ev(7, at("18"), "set", "S-2", { status: "done" })]),
+  ).toBe("Nov 10 – Nov 18");
+  // another stage's events, and a reopen with no title move, are no stage-open
+  const other = ev(8, at("30"), "set", "S-3", { title: "05-paper-z", status: "open" });
+  expect(span(stg("S-2", "open", "04-paper-q", at("05")), [planned, opened, other])).toBe("Nov 10 – now");
+  // shelved and dropped: to the date of that status
+  const born4 = ev(9, at("02"), "add", "S-4", { title: "02-paper-b", status: "open" });
+  expect(span(stg("S-4", "shelved", "02-paper-b"), [born4, ev(10, at("08"), "set", "S-4", { status: "shelved" })])).toBe(
+    "Nov 02 – Nov 08",
+  );
+  expect(span(stg("S-4", "dropped", "02-paper-b"), [born4, ev(11, at("09"), "set", "S-4", { status: "dropped" })])).toBe(
+    "Nov 02 – Nov 09",
+  );
+  // a planned stage keeps its queue place, with or without events
+  expect(span(stg("S-9", "planned", "paper-y"), [ev(12, at("05"), "add", "S-9", { title: "paper-y", status: "planned" })])).toBe(
+    "queue 1 of 1",
+  );
+  // no usable start date: no date
+  expect(span(stg("S-5", "open", "01-x-y", ""), [])).toBe("no date");
+});
+
+// R10 (I4): what a reveal reaches. (T-105: the stateless `revealKey` and its assertions
+// are gone, `nextReveal` below is the one rule for when a reveal is due)
+test("revealTarget: the stage or the card with its place in its type (T-96, R10)", () => {
   const items = [t1, d1, t2];
-  const k = (its: Entry[], sel: string | null, sort: lib.SortKey = "default", desc = false): string =>
-    lib.revealKey(its, sel, sort, desc);
-  const k0 = k(items, "T-2");
-  // a reload (new array, same entries, changed texts or order), typing: no new reveal
-  expect(k([...items], "T-2")).toBe(k0);
-  expect(k([t2, d1, t1], "T-2")).toBe(k0);
-  expect(k([{ ...t1, title: "other" }, d1, t2], "T-2")).toBe(k0);
-  expect(k([t1, d1, t2, { ...t2, id: "T-9" }], "T-2")).toBe(k0); // an entry more: the card is still there
-  expect(k([d1, t2], "T-2")).toBe(k0); // an entry less
-  // a new selection, sort key or direction: a new reveal
-  expect(k(items, "D-1")).not.toBe(k0);
-  expect(k(items, "T-2", "id")).not.toBe(k0);
-  expect(k(items, "T-2", "default", true)).not.toBe(k0);
-  expect(k(items, "T-2", "id")).not.toBe(k(items, "T-2", "default", true));
-  expect(k(items, null)).not.toBe(k0);
-  // R5: the card was filtered out and comes back: a new reveal; while it stays out, none
-  const hidden = k([t1, d1], "T-2");
-  expect(hidden).not.toBe(k0);
-  expect(k([d1], "T-2")).toBe(hidden);
-  expect(k([], "T-2")).toBe(hidden);
   // the target: null when this block does not hold the selection; the stage itself when
   // the selection is the stage or is filtered out; else the card and its place in its type
   expect(lib.revealTarget(items, "T-2", true)).toEqual({ card: true, type: "task", idx: 1 });
@@ -620,49 +658,60 @@ test("revealKey / revealTarget: selection, sort and the card's presence trigger,
   expect(lib.revealTarget(items, null, true)).toBeNull();
 });
 
-// F1 (T-103): a reveal is due when the selected card comes back into its block
-// (false -> true), not when typing, a filter or a reload takes it out (true -> false).
-// Contract (lead's ruling): `nextReveal(prev, items, selected, sort, desc)` gives
-// `{ key, held }`; `prev` is what the block got from its last call (undefined at the
-// first); the caller keeps it in a ref and puts `key` in the effect deps. The key changes
-// when selected, sort or desc change, and when `held` goes false -> true with those three
-// unchanged (the card came back); never when the card leaves or on a reload.
-test("nextReveal: the card leaving the block is no reveal, coming back is (T-103, F1)", () => {
-  const items = [t1, d1, t2];
-  const gone = [t1, d1]; // T-2 filtered out, the block stays
+// When a reveal is due. Contract (lead's ruling, T-103): `nextReveal(prev, items,
+// selected, sort, desc)` gives `{ key, held }`; `prev` is what the block got from its
+// last call (undefined at the first); the caller keeps it in a ref and puts `key` in the
+// effect deps. The key text is opaque: only equal or not equal is tested.
+// T-105 (DB-74): one test for each rule, R10 and R5 (with the F1 side).
+const items3 = [t1, d1, t2];
+const gone3 = [t1, d1]; // T-2 filtered out, the block stays
+
+// R10: selection, sort key and direction make a new key; a reload and typing do not
+test("nextReveal: selection, sort and direction trigger, reloads and typing do not (T-96, R10)", () => {
   const nr = lib.nextReveal;
-  // first call: a key, held as found
-  const s0 = nr(undefined, items, "T-2", "default", false);
+  const items = items3;
+  const s0 = nr(undefined, items, "T-2", "default", false); // first call: a key, held as found
   expect(typeof s0.key).toBe("string");
   expect(s0.held).toBe(true);
-  expect(nr(undefined, gone, "T-2", "default", false).held).toBe(false);
+  expect(nr(undefined, gone3, "T-2", "default", false).held).toBe(false);
   expect(nr(undefined, items, null, "default", false).held).toBe(false);
-  // true -> false (typing, a filter, a reload that drops the card): same key, held false
-  const s1 = nr(s0, gone, "T-2", "default", false);
+  // a reload (new array, same entries, changed texts or order), typing, an entry more or less
+  expect(nr(s0, [...items], "T-2", "default", false)).toEqual(s0);
+  expect(nr(s0, [t2, { ...d1, title: "x" }, t1], "T-2", "default", false)).toEqual(s0);
+  expect(nr(s0, [...items, { ...t2, id: "T-9" }], "T-2", "default", false)).toEqual(s0);
+  expect(nr(s0, [d1, t2], "T-2", "default", false)).toEqual(s0);
+  // a new selection, sort key or direction: a new key
+  expect(nr(s0, items, "D-1", "default", false).key).not.toBe(s0.key);
+  expect(nr(s0, items, "T-2", "id", false).key).not.toBe(s0.key);
+  expect(nr(s0, items, "T-2", "default", true).key).not.toBe(s0.key);
+  expect(nr(s0, items, null, "default", false).key).not.toBe(s0.key);
+  // also with the card out of the block: held as found
+  const s1 = nr(s0, gone3, "T-2", "default", false);
+  const other = nr(s1, gone3, "T-9", "default", false); // a card that is not in the block
+  expect(other.key).not.toBe(s1.key);
+  expect(other.held).toBe(false);
+  expect(nr(s1, gone3, "T-2", "id", false).key).not.toBe(s1.key);
+  expect(nr(s1, gone3, "T-2", "default", true)).toMatchObject({ held: false });
+  expect(nr(s1, gone3, "T-2", "default", true).key).not.toBe(s1.key);
+});
+
+// R5 (F1): the card comes back into its block (false -> true): a new key; it leaves
+// (typing, a filter, a reload): the same key, held false
+test("nextReveal: the card leaving the block is no reveal, coming back is (T-103, R5, F1)", () => {
+  const nr = lib.nextReveal;
+  const s0 = nr(undefined, items3, "T-2", "default", false);
+  const s1 = nr(s0, gone3, "T-2", "default", false); // true -> false
   expect(s1).toEqual({ key: s0.key, held: false });
   expect(nr(s1, [d1], "T-2", "default", false)).toEqual({ key: s0.key, held: false }); // still out
   expect(nr(s1, [], "T-2", "default", false)).toEqual({ key: s0.key, held: false });
-  // false -> true (the filter is cleared): a new key, held true
-  const s2 = nr(s1, items, "T-2", "default", false);
+  const s2 = nr(s1, items3, "T-2", "default", false); // false -> true: the filter is cleared
   expect(s2.held).toBe(true);
   expect(s2.key).not.toBe(s1.key);
-  // a reload with the card still there (new array, other texts or order): same key
-  expect(nr(s2, [...items], "T-2", "default", false)).toEqual(s2);
-  expect(nr(s2, [t2, { ...d1, title: "x" }, t1], "T-2", "default", false)).toEqual(s2);
+  expect(nr(s2, [...items3], "T-2", "default", false)).toEqual(s2); // a reload now: none
   // out and back a second time: a new key again
-  const s3 = nr(nr(s2, gone, "T-2", "default", false), items, "T-2", "default", false);
+  const s3 = nr(nr(s2, gone3, "T-2", "default", false), items3, "T-2", "default", false);
   expect(s3.held).toBe(true);
   expect(s3.key).not.toBe(s2.key);
-  // a new selection, sort key or direction: a new key, held as found (also with the card out)
-  expect(nr(s2, items, "D-1", "default", false).key).not.toBe(s2.key);
-  expect(nr(s2, items, "T-2", "id", false).key).not.toBe(s2.key);
-  expect(nr(s2, items, "T-2", "default", true).key).not.toBe(s2.key);
-  const other = nr(s1, gone, "T-9", "default", false); // a card that is not in the block
-  expect(other.key).not.toBe(s1.key);
-  expect(other.held).toBe(false);
-  expect(nr(s1, gone, "T-2", "id", false).key).not.toBe(s1.key);
-  expect(nr(s1, gone, "T-2", "default", true)).toMatchObject({ held: false });
-  expect(nr(s1, gone, "T-2", "default", true).key).not.toBe(s1.key);
 });
 
 // R6 (D4, I2): `*` means all, also for values that come later
@@ -802,4 +851,46 @@ test("status planned: own status, never open (T-45)", () => {
   expect(ids(visible(LP, route("#/list?status=all")))).toContain("P-1");
   expect(sortDefault([p, t2], LP.types).map((e) => e.id)).toEqual(["T-2", "P-1"]); // after open
   expect(stageGroups(LP.entries, LP.entries).find((g) => g.key === "P-1")?.live).toBe(false);
+});
+
+// T-105 R4 (DB-73): `stageNumber` follows the core's rule (ledger._matches): an
+// imported stage (the payload marks it `extra.imported: true`) or one whose title has
+// the stage form shows its code, the title up to the first "-"; any other stage has none
+test("stageNumber: an imported stage shows its code, a title of no stage form does not (T-105, R4)", () => {
+  const imp = (title: string): Entry => ({ ...vst("S-1", "done", title), extra: { imported: true } });
+  expect(stageNumber(imp("2026-retro"), undefined)).toBe("2026");
+  expect(stageNumber(imp("phase-one"), undefined)).toBe("phase");
+  expect(stageNumber(imp("03b-paper-scan"), undefined)).toBe("03b");
+  expect(stageNumber(vst("S-1", "done", "2026-retro"), undefined)).toBe(""); // kit-made, no stage form
+  expect(stageNumber(vst("S-1", "open", "03b-paper-scan"), undefined)).toBe("03b");
+  // the code of an imported stage that has a number sorts as one
+  const s = [imp("2026-retro"), { ...vst("S-3", "done", "01-software-a") }, vst("S-4", "dropped", "old-name")]
+    .map((e, i) => ({ ...e, id: `S-${i + 2}` }));
+  expect(orderStages(s, undefined, 1).map((e) => e.id)).toEqual(["S-3", "S-2", "S-4"]);
+});
+
+// T-105 R6 (DB-75): the earlier-titles rule uses the status before the event. A payload
+// event carries only what it sets, so that status is read from the earlier events of
+// the same entry (the last `status` they set). A planned stage that is opened is the
+// stage-open; a done stage that is renamed to a stage title and reopened keeps its name
+test("earlierTitles: the status before the event decides what stage-open is (T-105, R6)", () => {
+  const ev = (line: number, ts: string, e: "add" | "set", id: string, f: Record<string, unknown>): Ev =>
+    ({ line, ts, who: "lead", ev: e, id, f });
+  const evs = [
+    ev(1, "2026-11-10T09:00:00+01:00", "add", "S-1", { title: "paper-q", status: "planned" }),
+    ev(2, "2026-11-12T09:00:00+01:00", "set", "S-1", { title: "04-paper-q", status: "open" }),
+    ev(3, "2026-11-10T09:00:00+01:00", "add", "S-2", { title: "paper-r", status: "done" }),
+    ev(4, "2026-11-12T09:00:00+01:00", "set", "S-2", { title: "05-paper-r", status: "open" }),
+    ev(5, "2026-11-10T09:00:00+01:00", "add", "S-3", { title: "paper-s", status: "planned" }),
+    ev(6, "2026-11-11T09:00:00+01:00", "set", "S-3", { status: "shelved" }),
+    ev(7, "2026-11-11T10:00:00+01:00", "set", "S-3", { status: "planned", note: "x" }),
+    ev(8, "2026-11-12T09:00:00+01:00", "set", "S-3", { title: "06-paper-s", status: "open" }),
+    ev(9, "2026-11-10T09:00:00+01:00", "add", "S-4", { title: "paper-t", status: "planned" }),
+    ev(10, "2026-11-11T09:00:00+01:00", "set", "S-4", { title: "paper-u" }), // rename: no status
+    ev(11, "2026-11-12T09:00:00+01:00", "set", "S-4", { title: "07-paper-u", status: "open" }),
+  ];
+  expect(earlierTitles(evs, "S-1")).toEqual([]); // planned -> opened
+  expect(earlierTitles(evs, "S-2")).toEqual([{ title: "paper-r", until: "2026-11-12" }]); // done -> reopened
+  expect(earlierTitles(evs, "S-3")).toEqual([]); // planned again after a shelve, then opened
+  expect(earlierTitles(evs, "S-4")).toEqual([{ title: "paper-t", until: "2026-11-11" }]);
 });

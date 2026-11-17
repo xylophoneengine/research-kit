@@ -10,7 +10,8 @@ import { Board } from "@/components/Board";
 import { Filters } from "@/components/Filters";
 import { Stages } from "@/components/Stages";
 import { Storyline } from "@/components/timeline/Storyline";
-import { parseRoute, type Entry, type Ledger } from "@/lib/ledger";
+import { EntryDetail } from "@/components/EntryDetail";
+import { parseRoute, type Entry, type Ev, type Ledger } from "@/lib/ledger";
 
 const base = {
   note: "", links: [], refs: [], started: "", extra: {},
@@ -134,6 +135,11 @@ test("stages: defaults", () => {
   expect(row("unstaged / backlog")).toMatch(/done 1\b/); // ... and T-4; no stage entry in it
   expect(row("unstaged / backlog")).not.toMatch(/open 3\b/);
   expect(row("02-paper-b")).toMatch(/open 1\b/); // T-1
+  // (T-105, DB-74) the planned stage's own cell is the forecast as sent, and its badge says planned
+  expect(html).toContain(">~04<");
+  expect(trs(html).find((r) => r.includes(">paper-d<"))).toContain(">~04<");
+  expect(row("paper-d")).toMatch(/\bplanned\b/);
+  expect(row("paper-d")).toMatch(/~04/);
 });
 
 // ---- Board ----------------------------------------------------------------------
@@ -271,7 +277,12 @@ test("filters: a facet set to all reads (all)", () => {
 // R4: a planned stage has the hollow dot (a solid border on the background fill, not
 // the dashed dot of the unstaged group), the planned badge, its queue place and no dates
 test("timeline: a planned stage has the hollow dot, the badge and its queue place", () => {
-  const late = { created: "2026-11-02T09:00:00+01:00", updated: "2026-11-09T09:00:00+01:00" };
+  // (T-105, R18) S-4 was updated long after its close: its span ends at the close event
+  const late = { created: "2026-11-02T09:00:00+01:00", updated: "2026-11-20T09:00:00+01:00" };
+  const events: Ev[] = [
+    { line: 1, ts: late.created, who: "lead", ev: "add", id: "S-4", f: { title: "02-paper-d", status: "open" } },
+    { line: 2, ts: "2026-11-09T09:00:00+01:00", who: "lead", ev: "set", id: "S-4", f: { status: "done" } },
+  ];
   const all = [
     stage("S-1", "open", "01-software-a"), task("T-1", "S-1"),
     stage("S-2", "planned", "paper-b"), stage("S-3", "planned", "paper-c"),
@@ -279,7 +290,7 @@ test("timeline: a planned stage has the hollow dot, the badge and its queue plac
     task("T-9", ""),
   ];
   const props = {
-    all, entries: all, events: [], ledgerIds: new Set(all.map((e) => e.id)),
+    all, entries: all, events, ledgerIds: new Set(all.map((e) => e.id)),
     onSelect: () => {}, sort: "default" as const, desc: false, queue: ["S-3", "S-2"],
   };
   const render = (selected: string | null): string =>
@@ -305,6 +316,15 @@ test("timeline: a planned stage has the hollow dot, the badge and its queue plac
   expect(txt(bs[3])).toContain("Nov 02 – Nov 09");
   // the selected block keeps the selection dot
   expect(blocks(render("S-2")).map(dotOf)).toEqual(["live", "selected", "planned", "closed", "planned", "unstaged"]);
+});
+
+// T-105 R18 (guard): the last-updated date is not in the timeline span, it is in the
+// stage detail
+test("detail: a stage shows its updated line", () => {
+  const s = stage("S-4", "done", "02-paper-d", { updated: "2026-11-20" });
+  const ledger: Ledger = { repo: "/r", entries: [s], events: [], types: { stage: "S" } };
+  const html = renderToStaticMarkup(<EntryDetail ledger={ledger} id="S-4" />);
+  expect(html).toMatch(/<dt[^>]*>updated<\/dt><dd[^>]*>2026-11-20<\/dd>/);
 });
 
 // ---- Header ---------------------------------------------------------------------
