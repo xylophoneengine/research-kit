@@ -537,9 +537,16 @@ def _check_label(state: dict[str, Entry], label: str, eid: str) -> None:
     """Refuse a label that already names another entry (label, stage title/code)."""
     others: list[Entry] = [x for x in _matches(state, label) if x.id != eid]
     if others:
+        o: Entry = others[0]
+        hint: str = (
+            f"; {o.id} is {o.status}: free the label first with "
+            f"`rk set {o.id} --label <other>`"
+            if o.status in ("dropped", "superseded")
+            else ""
+        )
         raise LedgerError(
-            f"--label '{label}' already names {others[0].id} ({others[0].title}); "
-            "labels are unique"
+            f"--label '{label}' already names {o.id} ({o.title}); "
+            f"labels are unique{hint}"
         )
 
 
@@ -3326,11 +3333,24 @@ def _doctor_start(a: argparse.Namespace) -> int:
 
 def _spec_lines(state: dict[str, Entry]) -> list[str]:
     """One line per open stage with an NN title and no done user decision
-    labelled `<stage code>/SPEC` (design-debt-batch I1, I2), in ledger order."""
+    labelled `<stage code>/SPEC` (design-debt-batch I1, I2), in ledger order.
+    A superseded holder counts when its chain of replacements ends in a done
+    user decision (DB-67); its own owner does not matter."""
+
+    def held(e: Entry) -> bool:
+        seen: set[str] = set()
+        while e.status == "superseded" and e.id not in seen:  # a cycle: False
+            seen.add(e.id)
+            nxt: Entry | None = state.get(str(e.extra.get("superseded_by")))
+            if nxt is None:
+                return False
+            e = nxt
+        return e.status == "done" and e.owner == "user"
+
     labels: set[object] = {
         e.extra.get("legacy_id")
         for e in state.values()
-        if e.type == "decision" and e.status == "done" and e.owner == "user"
+        if e.type == "decision" and held(e)
     }
     out: list[str] = []
     for st in sorted(state.values(), key=lambda x: x.lines[0]):
