@@ -376,9 +376,9 @@ With `--pm local` (the local-only `/rk-init` question, asked with the kinds, mod
 timeline; a search box (also Ctrl/Cmd-K) finds an entry by id, title or note, and
 a detail pane shows one entry with its history. The stages tab is one table:
 its first column `no.` holds the order number (the real NN, or for a planned stage
-the kit's `~NN` forecast, not computed in the viewer) and sorts the rows, lowest
-first, stages without a number last, below the row `unstaged / backlog`, which is
-always the first row; when a stage filter is set the tab still lists every stage,
+the kit's `~NN` forecast, not computed in the viewer) and sorts the stage
+rows, lowest first, stages without a number last among them; the row
+`unstaged / backlog` is always the first row, above all stage rows; when a stage filter is set the tab still lists every stage,
 marks the filtered ones and says so in one line (the timeline shows only the
 filtered stages); the status `staged` (done, not landed) has its own amber badge,
 filter entry and board column between running and done, is in the default list

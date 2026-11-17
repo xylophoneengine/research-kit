@@ -44,9 +44,9 @@ worker reports anchor a critic on their framing; a fresh one judges the outcome.
 meet at an interface (one consumes what another produces), or when the task
 changes or relaxes a rule that tests, code or texts already encode. These
 triggers are your recommendation in the design-step question (AGENTS.md
-3.3), not the choice: the user's answer wins. On a no, or with only one
-such interface or rule, you plan and write the blocks into the briefs
-yourself instead: `INTERFACES:` (producer, consumer, exact format, example) and
+3.3), not the choice: the user's answer wins. With only one such
+interface or rule, recommend no. On a no, you plan and write the blocks
+into the briefs yourself instead: `INTERFACES:` (producer, consumer, exact format, example) and
 `CHANGE IMPACT:` (each changed rule, every place that encodes it, owner).
 Brief `arch1` from `architect-brief.md` in this folder. It thinks and
 designs: one design file at the path you give, before any worker starts.
@@ -115,7 +115,9 @@ stays stale elsewhere; an architect that routes or builds is a second lead.
    Team: <name: one-line task, for every teammate>.
    Coordinate with teammates via SendMessage only when your work touches
    theirs.
-   CHECK: <command that tests your work, or none>.
+   CHECK: <command that tests your work, or none>. An npm or vitest CHECK
+   names the absolute folder to run it in (`npm --prefix <abs ui folder>
+   test`), never the repo root: a run from the root leaves its cache there.
    Scratch folder: <lead's scratchpad>/<name>/.
    Run yourself only one-line read commands, the named check, one-line `rk`
    commands, and one-line writes inside your own scratch folder; anything
