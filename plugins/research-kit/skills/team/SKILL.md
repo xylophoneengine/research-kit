@@ -24,8 +24,12 @@ Every teammate: `Agent` with `name` (role + number, never a task name; an
 unnamed spawn cannot be reached by `SendMessage`), `model` as above,
 `subagent_type: "research-kit:worker-high"` (Zotero work:
 `"research-kit-lit:zotero-worker"`, same model).
+For a requested worker effort, use `research-kit:worker-<effort>` instead
+(`low`, `medium`, `high`, `xhigh`); the model still comes from the roster.
 The roster holds for the whole session ("have a junior" = a named teammate
-on that tier).
+on that tier). Run at most 7 Sonnet and 5 Opus teammates concurrently.
+Show the staffed model assignments before dispatch, even for a user-supplied
+roster. Ask before substituting for an unavailable model.
 
 | Critic | Engineering lens | Research lens |
 |--------|------------------|---------------|

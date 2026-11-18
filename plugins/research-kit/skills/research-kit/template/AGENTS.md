@@ -1,4 +1,4 @@
-<!-- research-kit: 2026-11-18a -->
+<!-- research-kit: 2026-11-18b -->
 # AGENTS.md - how we work on a research project (research-kit core)
 
 Generic working method for every project kind (paper, software, reverse engineering, experiment, thesis), distilled from completed projects. Installed and updated by the `research-kit` plugin (`/rk-init`, `/rk-add-kind`, `/rk-upgrade`, `/rk-sync`, `/rk-close`). Everything above "Project appendix" is generic and replaced on sync: never edit it in a repo copy; repo-specific lines go into the appendix. Kind rules live in `pm/kinds/<kind>.md`, one file per active kind, listed in the kinds block of the appendix; they add to this file, never relax it. Every rule carries a one-clause reason so a later session can judge an edge case instead of obeying blind. Placeholders: `<ID>` = short project id (session prefix, appendix), `NN` = stage number, `<kind>` = kind id, `<topic>` = stage topic.
@@ -9,7 +9,7 @@ Generic working method for every project kind (paper, software, reverse engineer
 
 1. Read every kind file named in the appendix kinds block. Why: kind rules are not loaded automatically.
 2. Read `pm/living/GOALS.md`, then `pm/README.md` "Load-bearing numbers" and "Do not quote / known traps". Why: facts established in later stages override earlier ones.
-3. Read the open list (4.2): the research-kit SessionStart hook prints it; else `rk list`; full view `pm/STATUS.md` (generated). After a compaction also the newest `pm/handoffs/compact/handoff-*.md`. Note the appendix `Mode:` and `Git policy:` values: sections 3, 7 and 9 branch on them. **Harness:** Claude Code tool names, model pins, hooks and transcript paths below apply only there. In OpenCode or Hermes, load `research-kit` for the `rk` path and manual handoff/archive, and `/team` for delegation. Use the native question tool or chat, and leave `CLAUDE.md` untouched.
+3. Read the open list (4.2): the research-kit SessionStart hook prints it; else `rk list`; full view `pm/STATUS.md` (generated). After a compaction also the newest `pm/handoffs/compact/handoff-*.md`. Note the appendix `Mode:` and `Git policy:` values: sections 3, 7 and 9 branch on them. **Harness:** Claude Code tool names, hooks and transcript paths below apply only there. In OpenCode or Hermes, load `research-kit` for the `rk` path and manual handoff/archive, and `/team` for delegation. Use the native question tool or chat, and leave `CLAUDE.md` untouched.
 
 ### 0.2 First session in a new repo
 
@@ -23,7 +23,7 @@ Generic working method for every project kind (paper, software, reverse engineer
 ## 1. Roles
 
 - **User** = project owner. Decides scope, claims, targets, what is quotable, what touches hardware or costs money. All work is the user's work.
-- **Teamlead** = main session. Plans, sizes team, writes briefs, routes messages, integrates, reports. Discusses goals/targets/issues with user. Session model not Opus or Fable: say so in one line, continue.
+- **Teamlead** = main session. Plans, sizes team, writes briefs, routes messages, integrates, reports. Discusses goals/targets/issues with user.
   Does NOT do teammates' work: no code, no diagnostics, no fetching, no edits of teammate-owned files, no file moves (except waste moves, section 7), no codebase search, no verification re-runs. Reading a deliverable to judge it is fine. Re-running tools to check it is not. One exception: command lines a teammate handed over in a file (2.3) are read and run inline, line by line, never as a command that executes the file.
   Lead writes only: `AGENTS.md` appendix, `pm/README.md`, `pm/living/*` (except files a kind file assigns to teammates), handoffs, stage `BRIEF.md`, memory. Everything else = teammate deliverable.
   Ledger entries (4.2) are written only through `rk`, by anyone; the tool's lock and `who` replace one writer per ledger. The lead logs decisions and opens and closes tasks.
@@ -35,15 +35,15 @@ Load `/team` before dispatch. Names are stable work owners for briefs, reports a
 
 ### 2.1 Roster (names fixed so briefs, logs, critic findings can point at an owner)
 
-| role | names | Claude Code model | engineering work | research work |
-|------|-------|-------|------------------|---------------|
-| Junior | `jr1..jrN` | haiku | mechanical, spec'd, verifiable edits; run-and-report | look up one fact, fetch/extract from given source |
-| Senior | `sr1..srN` | sonnet | clear goal, some judgment on how | survey sub-area, run defined analysis, summarize source set |
-| Expert | `exp1..expM` | opus | critical, open-ended, subtle-error-prone | hard/contested question, method choice, weighing conflicting evidence |
-| Architect | `arch1` (optional, one) | fable | interfaces between work items, rules a change touches; one design file, never code | shared output format, what each source set must answer, what counts as verified |
-| Critic | `crit1`, `blind<round>` | opus | review only, never implement | review only, never write the report |
+| role | names | engineering work | research work |
+|------|-------|------------------|---------------|
+| Junior | `jr1..jrN` | mechanical, spec'd, verifiable edits; run-and-report | look up one fact, fetch/extract from given source |
+| Senior | `sr1..srN` | clear goal, some judgment on how | survey sub-area, run defined analysis, summarize source set |
+| Expert | `exp1..expM` | critical, open-ended, subtle-error-prone | hard/contested question, method choice, weighing conflicting evidence |
+| Architect | `arch1` (optional, one) | interfaces between work items, rules a change touches; one design file, never code | shared output format, what each source set must answer, what counts as verified |
+| Critic | `crit1`, `blind<round>` | review only, never implement | review only, never write the report |
 
-Use the active `/team` implementation's model mapping and dispatch method. Name already taken: use the next free name (e.g. `jr1-2`) and record it on the task (`rk set T-<n> --owner jr1-2`).
+Roles describe the work, not model assignments. Use the active `/team` implementation's model mapping and dispatch method. Name already taken: use the next free name (e.g. `jr1-2`) and record it on the task (`rk set T-<n> --owner jr1-2`).
 
 Tiering: by how defined item is. Between two tiers take higher. Anything where subtle error wouldn't surface as test failure goes to expert. Typing/format passes: senior, never junior. Min team: 2 jr, 2 sr, 1 exp, plus a loop critic and a disposable critic at review time. Sizes user types = final. `arch1` when the items of two or more workers meet at an interface, or the task changes or relaxes a rule that tests, code or texts already encode (else the lead writes INTERFACES and CHANGE IMPACT blocks into the briefs): it designs, delivers one design file (requirements and checks, interfaces, change impact, decisions) at the path the lead gives before any worker starts, never routes, spawns or implements, and after integration checks the result against its design and reports deviations to the lead. These triggers are the lead's recommendation in the design-step question (3.3), not the choice (question not asked, e.g. light mode or mid-stage: the lead asks it at team sizing); on a no the lead plans and writes the INTERFACES and CHANGE IMPACT blocks into the briefs itself.
 
@@ -56,7 +56,7 @@ Critic lenses:
 1. **Goal statement** (lead): problem or question, intended outcome, how to check (metric / test / observable behaviour; or question answered + decision it informs). Decompose into work items, tag each jr/sr/exp.
 2. **Size + confirm**: propose sizes via AskUserQuestion (first option = proposal, recommended, with work-item split; plus one smaller, one larger). Confirmation also authorizes team to read user's code and files for this task. No further ask inside task.
 3. **Dispatch**: with a ledger, first one task per work item. An item the stage BRIEF lists already has its task (3.3): `rk set <label> --owner <name>`. Any other item: `rk add task "<item>" --owner <name> --note "<deliverable, scope>" [--label <stage code>/<item>] [--ref <brief file>] [--stage S-<n>]` (no `--note`: refused). Link binding decisions (`--link D-<n>`); the brief's `TASK:` names ids or labels, listed first (`TASK: T-12` or `TASK: 03b/W2, T-3`). Use the brief template (2.3). Before dispatch, `rk brief-check` validates the brief and starts its tasks. The Claude hook runs it automatically; other adapters run it explicitly. Dispatch independent items in parallel and dependent ones in order.
-4. **Work**: route coordination via the lead unless the adapter supports direct messaging and the work overlaps. One writer per shared file. Respect harness concurrency limits (Claude Code: <= 7 sonnet + <= 5 opus at once).
+4. **Work**: route coordination via the lead unless the adapter supports direct messaging and the work overlaps. One writer per shared file. Respect the active adapter's concurrency limits.
 5. **Review**: when workers report, the lead opens one review task for the round if there is a ledger (`rk add task "review <what> r<k>" --owner lead --note "<what is reviewed, round k>"`), then briefs the staffed loop critics and a fresh `blind<k>` if staffed. Each critic brief uses the review `TASK: T-<n>`, never the work task under review. Both lenses get the user's request verbatim and goal statement; `crit1` also gets worker report paths, `blind<k>` only the diff or deliverable paths. Close the completed review task with its verdicts and review paths (`rk close T-<n> --note "<verdicts>" --ref <review file>`). Each critic writes ONE review file:
    ```
    VERDICT (each: YES / PARTIAL / NO + evidence)

@@ -15,9 +15,15 @@ Apply `AGENTS.md` §2 for roles, roster confirmation, briefs, review and
 verification, and §7 for git and waste. For a repo without kit rules, use
 §2 of the installed core's `template/AGENTS.md` and omit ledger operations
 if no ledger exists. Use the installed adapter transport in place of any
-Claude-specific tools or hooks, including in an older project; suggest
+Claude-specific tools, model names or hooks, including in an older project; suggest
 sync between stages.
 
+- Resolve staffing against the active transport before dispatch. Show each
+  staffed role's profile or route, and model if the harness exposes it.
+  Say when all roles share one model; separate critic sessions are not
+  separate models. Show the mapping even when staffing was already given.
+  If an explicit choice is unavailable, or the project requires different
+  models and you cannot verify the distinction, ask before dispatching.
 - Confirm scope and staffing before delegation unless explicitly selected.
   State the acceptance check. For the optional architect, read
   `references/architect.md`; get the design before dispatching implementers.
@@ -43,7 +49,7 @@ sync between stages.
   If a child completed without the report or failed, surface the blocker;
   don't close that task. End the turn while waiting for background results.
   On resume reconcile files, ledger and live handles; if uncertain, ask
-   before retrying work that might still be running.
+  before retrying work that might still be running.
 - Review only after the relevant reports arrive. Use a separate ledger
   task for the review; give each critic an exact review path and the
   verdict format from §2.2. `crit1` may see prior reports and re-review

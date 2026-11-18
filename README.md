@@ -81,7 +81,7 @@ by the installer.
 | Preview template updates | `/rk-sync` | `/research-kit sync` |
 | Other workflows (e.g. `doctor`, `viewer`, `close`) | `/rk <operation>` | `/research-kit <operation>` |
 | Delegate and review | `/team <task>` | `/team <task>` |
-| Role-specific models | Optional `rk-junior`, `rk-senior`, `rk-expert`, `rk-architect`, `rk-critic` [subagent profiles](https://opencode.ai/docs/agents/); otherwise `general` | Default [delegation](https://hermes-agent.nousresearch.com/docs/user-guide/features/delegation) uses one model for all roles; per-role routes require advanced delegation configuration |
+| Role-specific models | Optional OpenCode subagent profiles | Optional Hermes advanced delegation routes |
 
 Try `/team seniors=1 critics=1 write a two-line project summary in notes.md`.
 Role names identify work owners, not native teammate names. OpenCode uses
@@ -89,6 +89,54 @@ child session IDs; Hermes uses delegation handles. The lead resumes a
 worker or loop critic if supported, otherwise re-briefs a fresh child from
 the previous files. A blind critic is always fresh. Briefs, reports and
 ledger entries remain the record across harnesses.
+
+#### Configure `/team` models
+
+Roles aren't model names. `/team` shows the selected profiles or routes
+before starting, even if you supplied the roster. Both critic lenses use
+the critic role; they still review in separate sessions.
+
+**OpenCode:** Add subagents named `rk-junior`, `rk-senior`, `rk-expert`,
+`rk-architect` and `rk-critic` in your [OpenCode config](https://opencode.ai/docs/agents/).
+Only define the roles you want to pin; others use `general`. For example,
+merge this into `opencode.jsonc` and replace the example model ID with one
+from `opencode models`:
+
+```jsonc
+{
+  "agents": {
+    "rk-critic": {
+      "mode": "subagent",
+      "description": "Independent research-kit reviewer",
+      "model": "your-provider/your-review-model"
+    }
+  }
+}
+```
+
+**Hermes:** With default [delegation](https://hermes-agent.nousresearch.com/docs/user-guide/features/delegation),
+`delegation.model` selects one model for all roles; unset, it inherits the
+lead's model. For per-role models, enable the advanced-delegation plugin
+and set up `model_map` options with `hermes delegation config`. Name each
+option for its role (`rk-junior`, `rk-senior`, `rk-expert`, `rk-architect`,
+`rk-critic`) and assign it a provider and model. For example, the critic
+option in your Hermes profile's `config.yaml` looks like this:
+
+```yaml
+delegation:
+  backend: model_map
+  backends:
+    model_map:
+      options:
+        - name: rk-critic
+          description: Independent research-kit reviewer
+          provider: your-provider
+          model: your-review-model
+```
+
+Configure a route for each role you plan to use, or supply the name of an
+existing route when `/team` asks. Start a new Hermes session after changing
+the delegation backend. No separate research-kit model config is needed.
 
 These adapters use `rk brief-check` before dispatch, not a tool hook.
 Startup checks, archive and compaction handoffs are manual; the Claude

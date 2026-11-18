@@ -9,10 +9,16 @@ child and delegation IDs with the role and expected report path in the
 handoff when waiting.
 
 With default delegation all children share the configured `delegation.model`
-or inherit the lead's model. Do not send imaginary per-task `model` values.
-If the operator configured role routes via advanced delegation, follow
-the exposed tool schema and confirm the route mapping. If the user required
-model separation and routes aren't configured, ask before proceeding.
+or inherit the lead's model. No per-task `model` argument is supported.
+With advanced delegation, use the exposed `option` (`model_map`) or
+`profile` (`profile_routes`) field. Resolve the roles against the route
+names advertised by the active tool: `rk-junior`, `rk-senior`, `rk-expert`,
+`rk-architect` and `rk-critic` (both critic lenses). Pass the selected
+route for each child, including in a batch. If a staffed role has no matching
+route under the advanced backend, ask which advertised route to use unless
+the user already supplied one. Don't silently rely on the backend default.
+Check the returned route metadata and report any fallback instead of
+claiming the requested model ran.
 
 For an idle worker or loop critic use `action: continue` with its
 `subagent_id` and the new gated brief when the tool allows it. Otherwise

@@ -510,6 +510,7 @@ def test_template_core() -> None:
     text: str = (REAL_TEMPLATE / "AGENTS.md").read_text()
     n: int = len(text.splitlines())
     assert n <= 300, f"core template has {n} lines (> 300)"
+    assert not re.search(r"\b(haiku|sonnet|opus|fable)\b", text, re.IGNORECASE)
     need: tuple[str, ...] = (
         "## Project appendix",
         "<!-- rk:kinds -->",
