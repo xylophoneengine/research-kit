@@ -7,10 +7,11 @@ Kind files pm/kinds/<kind>.md are generic as a whole.
 
 Usage:
   python3 -I rk.py init <repo_dir> --kinds paper,software --mode full --git user
-      [--pm local|tracked]
+      [--pm local|tracked] [--no-claude]
   python3 -I rk.py add-kind <repo_dir> <kind>
   python3 -I rk.py upgrade <repo_dir>
   python3 -I rk.py sync <repo_dir> [--write] [--accept-drop] [--pm local|tracked]
+      [--no-claude] (leave CLAUDE.md untouched)
       (--pm local: pm/ stays out of git: pm/config.json {"pm": "local"} and a
       block in git's exclude file instead of .gitignore/.gitattributes)
 
@@ -495,7 +496,8 @@ def _bad_kinds(kinds: list[str]) -> list[str]:
 
 
 def cmd_init(
-    repo_dir: Path, kinds: list[str], mode: str, git_policy: str, pm: str | None = None
+    repo_dir: Path, kinds: list[str], mode: str, git_policy: str, pm: str | None = None,
+    *, claude_files: bool = True,
 ) -> int:
     """`pm` None: pm/config.json decides (tracked without a file)."""
     target: Path = repo_dir / "AGENTS.md"
@@ -553,11 +555,13 @@ def cmd_init(
             repo_dir / ".gitattributes", ".gitattributes", "gitattributes",
             GI_START, GI_END, True,
         )  # fmt: skip
-    ensure_compact_block(repo_dir, True)
+    compact = ", CLAUDE.md Compact Instructions block" if claude_files else ""
+    if claude_files:
+        ensure_compact_block(repo_dir, True)
     print(f"created {target} (template {stamp(template)}), mode {mode}, "
           f"git policy '{GIT_POLICIES[git_policy]}', kinds {', '.join(kinds)}")
     print(f"created pm/ ({len(dirs)} dirs, {len(files)} skeleton files), "
-          f"{ignored}, CLAUDE.md Compact Instructions block")
+          f"{ignored}{compact}")
     return 0
 
 
@@ -625,7 +629,8 @@ def _diff(old: str, new: str, name: str) -> str:
 
 
 def cmd_sync(
-    repo_dir: Path, write: bool, accept_drop: bool, pm: str | None = None
+    repo_dir: Path, write: bool, accept_drop: bool, pm: str | None = None,
+    *, claude_files: bool = True,
 ) -> int:
     """Dry-run by default; one combined report and one write decision.
 
@@ -736,13 +741,15 @@ def cmd_sync(
                       "remove it by hand")
 
     claude: Path = repo_dir / "CLAUDE.md"
-    ptr_old: str = claude.read_bytes().decode() if claude.exists() else ""
+    ptr_old: str = claude.read_bytes().decode() if claude_files and legacy and claude.exists() else ""
     ptr_new: str = repoint_paper_readme(ptr_old) if legacy else ptr_old
     if ptr_new != ptr_old:
         print(f"\n== CLAUDE.md == pointer {LEGACY_README} -> {NEW_README}\n"
               f"{_diff(ptr_old, ptr_new, 'CLAUDE.md')}")
 
-    compact_changed, compact_diff = ensure_compact_block(repo_dir, False)
+    compact_changed, compact_diff = (
+        ensure_compact_block(repo_dir, False) if claude_files else (False, "")
+    )
     if compact_changed:
         print(f"\n== CLAUDE.md == Compact Instructions block\n{compact_diff}")
 
@@ -811,6 +818,9 @@ def main() -> int:
     ps.add_argument("--write", action="store_true")
     ps.add_argument("--accept-drop", action="store_true")
     ps.add_argument("--pm", choices=_PM_MODES)
+    for command in (pi, ps):
+        command.add_argument("--no-claude", action="store_true",
+                             help="leave CLAUDE.md untouched")
     pg: argparse.ArgumentParser = sub.add_parser("global-rules")
     pg.add_argument("--claude-md", type=Path, default=Path("~/.claude/CLAUDE.md"))
     pg.add_argument("--write", action="store_true")
@@ -820,14 +830,16 @@ def main() -> int:
     a: argparse.Namespace = p.parse_args()
     if a.cmd == "init":
         kinds: list[str] = [k.strip() for k in a.kinds.split(",") if k.strip()]
-        return cmd_init(a.repo_dir, kinds, a.mode, a.git, a.pm)
+        return cmd_init(a.repo_dir, kinds, a.mode, a.git, a.pm,
+                        claude_files=not a.no_claude)
     if a.cmd == "add-kind":
         return cmd_add_kind(a.repo_dir, a.kind)
     if a.cmd == "upgrade":
         return cmd_upgrade(a.repo_dir)
     if a.cmd == "global-rules":
         return cmd_global_rules(a.claude_md.expanduser(), a.write)
-    return cmd_sync(a.repo_dir, a.write, a.accept_drop, a.pm)
+    return cmd_sync(a.repo_dir, a.write, a.accept_drop, a.pm,
+                    claude_files=not a.no_claude)
 
 
 if __name__ == "__main__":

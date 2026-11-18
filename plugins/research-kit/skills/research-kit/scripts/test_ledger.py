@@ -1666,24 +1666,27 @@ def test_kit_and_sid_on_events() -> None:
     with tempfile.TemporaryDirectory() as d:
         root: Path = Path(d)
         repo: Path = new_repo(root)
-        with env(CLAUDE_CODE_SESSION_ID="sess-1"):
+        with env(CLAUDE_CODE_SESSION_ID="sess-1", OPENCODE_SESSION_ID="parent",
+                 RK_SESSION_ID=None):
             lrun(repo, "add", "task", "a", "--note", "n")
             rows: Path = write_rows(
                 root, [{"type": "task", "title": "i", "source": "x:1"}]
             )
             assert lrun(repo, "import", str(rows))[0] == 0
-        with env(CLAUDE_CODE_SESSION_ID=None):
+        with env(CLAUDE_CODE_SESSION_ID=None, OPENCODE_SESSION_ID="ses_opencode",
+                 RK_SESSION_ID=None):
             lrun(repo, "start", "T-1")
-        with env(CLAUDE_CODE_SESSION_ID=""):
+        with env(CLAUDE_CODE_SESSION_ID="", OPENCODE_SESSION_ID=None, RK_SESSION_ID=None):
             lrun(repo, "close", "T-1", "--note", "ok")
         evs: list[dict[str, Any]] = jl(repo)
         version: str = json.loads(L.KIT_JSON.read_text())["version"]
         assert all(e["kit"] == version for e in evs), evs
-        assert [e.get("sid") for e in evs] == ["sess-1", "sess-1", None, None], evs
-        assert "sid" not in evs[2] and "sid" not in evs[3], evs
+        assert [e.get("sid") for e in evs] == ["sess-1", "sess-1", "ses_opencode", None], evs
+        assert "sid" not in evs[3], evs
         out: str = lrun(repo, "show", "T-1")[1]
         assert f"    kit={version} sid=sess-1\n" in out, out
-        assert out.count(f"    kit={version}\n") == 2, out
+        assert f"    kit={version} sid=ses_opencode\n" in out, out
+        assert out.count(f"    kit={version}\n") == 1, out
 
 
 def test_old_ledger_without_new_keys() -> None:

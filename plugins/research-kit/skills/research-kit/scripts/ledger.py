@@ -392,7 +392,8 @@ def make_event(
     out: dict[str, object] = {
         "ts": ts, "who": who, "ev": ev, "id": eid, "f": fields, "kit": kit_version()
     }
-    sid: str = os.environ.get(SID_ENV, "").strip()
+    sid: str = next((value for key in ("RK_SESSION_ID", SID_ENV, "OPENCODE_SESSION_ID")
+                     if (value := os.environ.get(key, "").strip())), "")
     if sid:
         out["sid"] = sid
     return out

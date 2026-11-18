@@ -1,4 +1,4 @@
-<!-- research-kit: 2026-11-17c -->
+<!-- research-kit: 2026-11-18a -->
 # AGENTS.md - how we work on a research project (research-kit core)
 
 Generic working method for every project kind (paper, software, reverse engineering, experiment, thesis), distilled from completed projects. Installed and updated by the `research-kit` plugin (`/rk-init`, `/rk-add-kind`, `/rk-upgrade`, `/rk-sync`, `/rk-close`). Everything above "Project appendix" is generic and replaced on sync: never edit it in a repo copy; repo-specific lines go into the appendix. Kind rules live in `pm/kinds/<kind>.md`, one file per active kind, listed in the kinds block of the appendix; they add to this file, never relax it. Every rule carries a one-clause reason so a later session can judge an edge case instead of obeying blind. Placeholders: `<ID>` = short project id (session prefix, appendix), `NN` = stage number, `<kind>` = kind id, `<topic>` = stage topic.
@@ -9,12 +9,12 @@ Generic working method for every project kind (paper, software, reverse engineer
 
 1. Read every kind file named in the appendix kinds block. Why: kind rules are not loaded automatically.
 2. Read `pm/living/GOALS.md`, then `pm/README.md` "Load-bearing numbers" and "Do not quote / known traps". Why: facts established in later stages override earlier ones.
-3. Read the open list (4.2): the research-kit SessionStart hook prints it; else `rk list`; full view `pm/STATUS.md` (generated). After a compaction also the newest `pm/handoffs/compact/handoff-*.md`. Note the appendix `Mode:` and `Git policy:` values: sections 3, 7 and 9 branch on them.
+3. Read the open list (4.2): the research-kit SessionStart hook prints it; else `rk list`; full view `pm/STATUS.md` (generated). After a compaction also the newest `pm/handoffs/compact/handoff-*.md`. Note the appendix `Mode:` and `Git policy:` values: sections 3, 7 and 9 branch on them. **Harness:** Claude Code tool names, model pins, hooks and transcript paths below apply only there. In OpenCode or Hermes, load `research-kit` for the `rk` path and manual handoff/archive, and `/team` for delegation. Use the native question tool or chat, and leave `CLAUDE.md` untouched.
 
 ### 0.2 First session in a new repo
 
 1. `/rk-init` asks kinds, mode and git policy, and whether `pm/` stays local only, then creates the `pm/` tree, the appendix fields, the kinds block and the `.gitignore` block (local-only: the exclude block instead). Verify they exist; never hand-build a second tree.
-2. Root `CLAUDE.md` = two-line pointer: "read AGENTS.md and pm/README.md; AGENTS.md is the agent file, not CLAUDE.md". Add `**/.cache/` and credential files to `.gitignore` before the first fetch or import. Why: API keys land in caches and transcripts.
+2. In Claude Code, root `CLAUDE.md` = two-line pointer: "read AGENTS.md and pm/README.md; AGENTS.md is the agent file, not CLAUDE.md". Add `**/.cache/` and credential files to `.gitignore` before the first fetch or import. Why: API keys land in caches and transcripts.
 3. Skeleton file, headings only (lead): `pm/living/GOALS.md`.
 4. Fill the rest of the appendix with the user via AskUserQuestion; open questions (title) stay plain text. No silent defaults: an unanswered item -> `rk add deferred "<item>" --owner user` (title: one line, 160 characters at most). Why: a guessed default becomes an unrecorded decision.
 5. Run the first-session steps of each active kind file.
@@ -31,11 +31,11 @@ Generic working method for every project kind (paper, software, reverse engineer
 
 ## 2. Teams (replaces ad-hoc subagents)
 
-Team implicit: no `TeamCreate`. Teammates spawned in ONE parallel message, each with a `name`, addressable afterwards via `SendMessage`. Spawn without `name` = one-off subagent, unreachable later. Never do that for stage work.
+Load `/team` before dispatch. Names are stable work owners for briefs, reports and ledger entries; child handles are transport details. Briefs and reports on disk are the durable record. Claude Code uses named teammates (no `TeamCreate`); elsewhere the adapter specifies how to launch, receive completions and route follow-ups.
 
 ### 2.1 Roster (names fixed so briefs, logs, critic findings can point at an owner)
 
-| role | names | model | engineering work | research work |
+| role | names | Claude Code model | engineering work | research work |
 |------|-------|-------|------------------|---------------|
 | Junior | `jr1..jrN` | haiku | mechanical, spec'd, verifiable edits; run-and-report | look up one fact, fetch/extract from given source |
 | Senior | `sr1..srN` | sonnet | clear goal, some judgment on how | survey sub-area, run defined analysis, summarize source set |
@@ -43,21 +43,21 @@ Team implicit: no `TeamCreate`. Teammates spawned in ONE parallel message, each 
 | Architect | `arch1` (optional, one) | fable | interfaces between work items, rules a change touches; one design file, never code | shared output format, what each source set must answer, what counts as verified |
 | Critic | `crit1`, `blind<round>` | opus | review only, never implement | review only, never write the report |
 
-Spawn call: `Agent(name=<name>, model=<model column>, subagent_type="research-kit:worker-high")` for every teammate. User names effort level: use `subagent_type="research-kit:worker-<effort>"` instead (low/medium/high/xhigh). Model still from roster. Names unique per session. Name already taken (earlier team, setup helper): suffix the round (`jr1-2`) and record the mapping in the task entry (`rk set T-<n> --owner jr1-2`); `SendMessage` routes a reused name to the newest agent.
+Use the active `/team` implementation's model mapping and dispatch method. Name already taken: use the next free name (e.g. `jr1-2`) and record it on the task (`rk set T-<n> --owner jr1-2`).
 
 Tiering: by how defined item is. Between two tiers take higher. Anything where subtle error wouldn't surface as test failure goes to expert. Typing/format passes: senior, never junior. Min team: 2 jr, 2 sr, 1 exp, plus a loop critic and a disposable critic at review time. Sizes user types = final. `arch1` when the items of two or more workers meet at an interface, or the task changes or relaxes a rule that tests, code or texts already encode (else the lead writes INTERFACES and CHANGE IMPACT blocks into the briefs): it designs, delivers one design file (requirements and checks, interfaces, change impact, decisions) at the path the lead gives before any worker starts, never routes, spawns or implements, and after integration checks the result against its design and reports deviations to the lead. These triggers are the lead's recommendation in the design-step question (3.3), not the choice (question not asked, e.g. light mode or mid-stage: the lead asks it at team sizing); on a no the lead plans and writes the INTERFACES and CHANGE IMPACT blocks into the briefs itself.
 
-Critic lenses (always opus):
-- `crit1` = loop critic, correctness / evidence: bugs, tests. Every claim traced to source that says it. Numbers, citations and evidence tags checked. Stays for the whole loop and re-reviews the fixes with its memory.
+Critic lenses:
+- `crit1` = loop critic, correctness / evidence: bugs, tests. Every claim traced to source that says it. Numbers, citations and evidence tags checked. Re-reviews fixes with its memory when supported, or from the previous review file.
 - `blind<round>` = disposable critic, outcome and intent: design, over-engineering, coverage gaps, conclusions outrunning evidence, "did we solve neighbouring problem?". A fresh agent every round, never reused or messaged again; sees only the diff or deliverable, the user's request verbatim and the goal statement, no worker reports. Why: worker reports anchor a critic on their framing.
 
 ### 2.2 Lifecycle of a team task
 
 1. **Goal statement** (lead): problem or question, intended outcome, how to check (metric / test / observable behaviour; or question answered + decision it informs). Decompose into work items, tag each jr/sr/exp.
 2. **Size + confirm**: propose sizes via AskUserQuestion (first option = proposal, recommended, with work-item split; plus one smaller, one larger). Confirmation also authorizes team to read user's code and files for this task. No further ask inside task.
-3. **Spawn**: first one task per work item. An item the stage BRIEF lists already has its task (3.3): `rk set <label> --owner <name>`. Any other item: `rk add task "<item>" --owner <name> --note "<deliverable, scope>" [--label <stage code>/<item>] [--ref <brief file>] [--stage S-<n>]` (no `--note`: refused). Link every decision that binds the task (`--link D-<n>`); the brief's `TASK:` line names it by id or label, listed first (`TASK: T-12` or `TASK: 03b/W2, T-3`; a label after other words does not count). Then all workers in one message with brief template (2.3). A hook refuses a brief (a message with a `DELIVERABLE:` line, spawn or SendMessage) without an open task, and marks the task running.
-4. **Work**: teammates talk via `SendMessage` only when their work touches another's. One writer per shared file. Concurrency cap: <= 7 sonnet + <= 5 opus at once.
-5. **Review**: when workers report, the lead opens one review task for the round (`rk add task "review <what> r<k>" --owner lead --note "<what is reviewed, round k>"`), then briefs `crit1` and a fresh `blind<k>` in one message. Both critic briefs carry its `TASK: T-<n>`, never the work task under review. Both get user's original request verbatim and goal statement; `crit1` also worker report paths, `blind<k>` only the diff or deliverable paths. The lead closes the review task with the verdicts and review file paths (`rk close T-<n> --note "<verdicts>" --ref <review file>`). Each critic writes ONE review file:
+3. **Dispatch**: with a ledger, first one task per work item. An item the stage BRIEF lists already has its task (3.3): `rk set <label> --owner <name>`. Any other item: `rk add task "<item>" --owner <name> --note "<deliverable, scope>" [--label <stage code>/<item>] [--ref <brief file>] [--stage S-<n>]` (no `--note`: refused). Link binding decisions (`--link D-<n>`); the brief's `TASK:` names ids or labels, listed first (`TASK: T-12` or `TASK: 03b/W2, T-3`). Use the brief template (2.3). Before dispatch, `rk brief-check` validates the brief and starts its tasks. The Claude hook runs it automatically; other adapters run it explicitly. Dispatch independent items in parallel and dependent ones in order.
+4. **Work**: route coordination via the lead unless the adapter supports direct messaging and the work overlaps. One writer per shared file. Respect harness concurrency limits (Claude Code: <= 7 sonnet + <= 5 opus at once).
+5. **Review**: when workers report, the lead opens one review task for the round if there is a ledger (`rk add task "review <what> r<k>" --owner lead --note "<what is reviewed, round k>"`), then briefs the staffed loop critics and a fresh `blind<k>` if staffed. Each critic brief uses the review `TASK: T-<n>`, never the work task under review. Both lenses get the user's request verbatim and goal statement; `crit1` also gets worker report paths, `blind<k>` only the diff or deliverable paths. Close the completed review task with its verdicts and review paths (`rk close T-<n> --note "<verdicts>" --ref <review file>`). Each critic writes ONE review file:
    ```
    VERDICT (each: YES / PARTIAL / NO + evidence)
    - solves the stated problem / answers the question asked?
@@ -65,8 +65,8 @@ Critic lenses (always opus):
    - what was intended, or a neighbouring problem instead?
    FINDINGS: location (file:line or section), problem, BLOCKING or minor, concrete fix, owner (teammate name)
    ```
-   Evidence = command run or number measured (engineering). Source opened and passage checked (research). YES without evidence counts as PARTIAL. The review file (stage `notes/` while a stage is open, else `pm/logs/team/<run>/`; 4.4) IS the critic's report file: no second copy among the team reports. Then SendMessage to lead, max ~1k chars: verdict lines, blocking findings (location, owner), review path. Final text = single line "Reported to lead (report file: <path>)."
-6. **Fix loop**: only a BLOCKING finding reopens the loop (minor ones do not justify a round of every agent) -> lead re-plans work items (not just patches). Findings go to owner via `SendMessage`. Critics never fix. `crit1` re-reviews the fixes, a new `blind<k>` reviews the fixed result. Max 2 fix rounds, then escalate leftovers to user (5.3). Resume `crit1` via `SendMessage` for v2/v3 rounds (keeps its context); a re-review reuses the review task while it is open, else the lead opens a new one. Done = no BLOCKING finding open from either critic AND every remaining minor finding logged as a debt entry (`rk add debt "<finding>" --ref <review file>`) or dropped with a reason in the close note. Why: an unlogged minor finding is lost at compaction. Any edit made after a YES, even a minor fix, is listed in the close note of the task it belongs to (`after YES: <file, what, why>`) or re-checked by the critic. Why: a YES covers the state the critic read, and nobody reviewed the later edits.
+   Evidence = command run or number measured (engineering). Source opened and passage checked (research). YES without evidence counts as PARTIAL. The review file (stage `notes/` while a stage is open, else the run's report directory; 4.4) IS the critic's report: no second copy. Notify the lead via the active adapter with the verdicts, blocking findings (location, owner) and review path, max ~1k chars.
+6. **Fix loop**: only a BLOCKING finding reopens the loop -> lead re-plans work items (not just patches). Route findings to the owner using the review path; critics never fix. The loop critics re-review; if staffed, a new `blind<k>` reviews the fixed result. Max 2 fix rounds, then escalate leftovers to the user (5.3). A re-review reuses the review task while open, else opens a new one. Done = no open BLOCKING finding and every remaining minor finding logged as debt (`rk add debt "<finding>" --ref <review file>`) or dropped with a reason in the close note. Any edit after a YES is listed in its task's close note (`after YES: <file, what, why>`) or checked again. Why: a YES covers only the state the critic read.
 7. **Integrate + verify**: named teammate (jr for run-and-report, exp for judgment) runs checks and pastes tail. Lead reads it: an agent's success report is not evidence, the pasted output is. Teammate runs, not lead: deliberate, because of the lead rule in section 1. Research: lead spot-checks key claims by reading cited passage. Report: what built/found, verification, critic verdicts, open findings, roster used. The lead closes each task from its report: `rk close T-<n> --note "<outcome>" --ref <report path>`; a task whose work is not on the base branch is staged instead (`rk staged T-<n> --note "<branch, commit>" --ref <report path>`) and landed by id (`rk land T-<n>... --note "<merge commit>"`) when its branch lands; a bare `rk land` closes every staged entry.
 
 Why two critics + owner-fixes: one critic anchors on author's framing. Critic that also fixes marks own homework. In the source project critics found real errors every stage (e.g. 26 findings in one plan review). Rows a prior pass marked "verified unchanged" were refuted ~1 time in 5 on re-read.
@@ -82,17 +82,17 @@ TASK: T-<n>                                   <- open task; a brief without it i
 <output of `rk show T-<n>`: the task entry + one line per linked decision>
 NOT IN SCOPE: <what to leave alone, e.g. "do not investigate WHY the data looks like this">.
 DONE WHEN: <mechanical check from the stage BRIEF.md>.
-Team: <name: one-line task>, for every teammate. Coordinate via SendMessage only when your work touches a teammate's.
+Team: <name: one-line task>, for every teammate. Coordinate as the active adapter specifies.
 Run yourself only one-line read commands, the named check, one-line `rk` commands, and one-line writes inside your own scratch folder; anything else goes as plain lines in a file to the lead.
 Full report -> write to <REPORTS>/<name>-r<round>.md (required deliverable): what you produced (absolute paths), how verified, open points, every claim tagged CONFIRMED / LIKELY / GUESS with its cite, and one line per file to discard, at column 0, nothing before it (never move or delete it yourself):
 TO-WASTE: <repo-relative path> -- <reason>
-Then SendMessage to lead, max ~500 chars: DONE / BLOCKED, report path, blocking items only. Final text = single line "Reported to lead (report file: <path>)." (it reaches the lead too; never repeat the report).
-Subagents you start: research-kit:fetcher for lookups, else a type that can Write; in the foreground, full result to <REPORTS>/<name>-r<round>-sub<k>.md. The file is the result (the Agent call may return only "no report delivered"); read it yourself.
+Then notify the lead via the adapter, max ~500 chars: DONE / BLOCKED, report path, blocking items only. Never repeat the report in chat.
+Nested delegation only when the active adapter and brief allow it. Its full result goes to <REPORTS>/<name>-r<round>-sub<k>.md; read that file yourself.
 ```
 
 `<REPORTS>` (absolute path in the brief): full mode with a stage open = `pm/stages/<stage folder>/notes/team/`; light mode or no open stage = `pm/logs/team/<run>/` (`<run>` = `YYYY-MM-DD-HHMM` of the first spawn); repo without `pm/` = the lead's scratchpad. `<round>` = next free number for that name there: never overwrite a report. Reports are tracked with the repo, never in `pm/waste/` (the user empties it; a ref to a report must outlive it).
 
-Reusing an idle teammate via `SendMessage`: restate DELIVERABLE, TASK with its `rk show` lines, NOT IN SCOPE and the report lines with the new `<round>` (its first brief may predate them). Lead reads a report file only when a decision needs it. Report files are team comms (stage `notes/`: kept, never cited as a result), not deliverables.
+For a follow-up, restate DELIVERABLE, TASK with its `rk show` lines, NOT IN SCOPE and the report lines with the new `<round>`. If the child cannot resume, use the saved brief and relevant prior report to start a replacement only after checking the old child is not still writing. Report files are team comms (stage `notes/`: kept, never cited as a result), not deliverables.
 
 Append what applies:
 - One task per brief. Announce any bundling to user. No whole ledger, no whole BRIEF in a brief: the `rk show` lines carry the task and its decisions. Escalate with the ESCALATE block (5.3); no status narration.

@@ -521,7 +521,8 @@ def test_template_core() -> None:
         "rk stage-close",
         "rk stage-open",
         "TASK: T-",
-        "research-kit:worker-high",
+        "manual handoff/archive",
+        "Briefs and reports on disk",
     )
     missing: list[str] = [s for s in need if s not in text]
     assert not missing, f"core template lacks: {missing}"
@@ -1528,17 +1529,14 @@ def test_template_design_step_followup() -> None:
     assert "takeover prompt" not in text
     assert "NN of the stage folder" not in text
     assert len(lines) <= 300, f"core template has {len(lines)} lines (> 300)"
-    # (T-105, DB-70) the stamp is read from line 1, not named by a date: it has the
-    # stamp form and the software kind, which this batch changed too, carries the same
+    # Independently versioned rule files keep their own stamps.
     stamp_form: str = r"\d{4}-\d{2}-\d{2}[a-z]"
     tpl: re.Match[str] | None = re.fullmatch(
         rf"<!-- research-kit: ({stamp_form}) -->", lines[0]
     )
     assert tpl is not None, lines[0]
     kind_line: str = (REAL_TEMPLATE / "kinds/software.md").read_text().splitlines()[0]
-    assert kind_line == f"<!-- research-kit-kind software: {tpl.group(1)} -->", (
-        lines[0], kind_line,
-    )
+    assert re.fullmatch(rf"<!-- research-kit-kind software: {stamp_form} -->", kind_line)
 
 
 # T-105 (DB-70, crit1 F5 d): 2.1 and the team skill call the architect triggers a

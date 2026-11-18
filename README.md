@@ -2,7 +2,7 @@
 
 Built with AI assistance (Claude Code).
 
-A Claude Code marketplace for running science and lab projects with agent
+A toolkit for running science and lab projects with agent
 teams: papers, research software, driver reverse engineering, experiments and
 theses, alone or mixed in one repo. It ships a generic process file
 (`AGENTS.md`), one short rule file per project kind, a `pm/` process folder,
@@ -21,6 +21,7 @@ License: MIT (see `LICENSE`).
 
 - [Plugins](#plugins)
 - [Install](#install)
+  - [OpenCode and Hermes](#opencode-and-hermes)
   - [Quick start](#quick-start)
   - [Enable agent teams (needed by `/team`)](#enable-agent-teams-needed-by-team)
   - [Updating](#updating)
@@ -54,6 +55,56 @@ unless another command already uses that name; for commands and agents Claude
 Code's docs promise only the prefixed name.
 
 ## Install
+
+### OpenCode and Hermes
+
+From a stable clone of this repository, run one or both installers:
+
+```sh
+python3 -I scripts/install_adapter.py opencode
+python3 -I scripts/install_adapter.py hermes
+```
+
+Requires Python 3 and Git (Bash for the waste helper). The installer links
+entry points into OpenCode's user config or the active `HERMES_HOME` profile
+(`~/.hermes` by default). Both use the same core at
+`${XDG_DATA_HOME:-$HOME/.local/share}/research-kit/core`. It refuses to
+replace existing paths. Keep the checkout at the same location; after
+updating it, re-run the installer for any new entry points. If the earlier
+OpenCode prototype is installed, inspect and unlink its old adapter links
+before installing this one. No project or harness configuration is modified
+by the installer.
+
+| | OpenCode V2 | Hermes (local terminal backend) |
+|---|---|---|
+| Initialize from a target git repo | `/rk-init` | `/research-kit init` |
+| Preview template updates | `/rk-sync` | `/research-kit sync` |
+| Other workflows (e.g. `doctor`, `viewer`, `close`) | `/rk <operation>` | `/research-kit <operation>` |
+| Delegate and review | `/team <task>` | `/team <task>` |
+| Role-specific models | Optional `rk-junior`, `rk-senior`, `rk-expert`, `rk-architect`, `rk-critic` [subagent profiles](https://opencode.ai/docs/agents/); otherwise `general` | Default [delegation](https://hermes-agent.nousresearch.com/docs/user-guide/features/delegation) uses one model for all roles; per-role routes require advanced delegation configuration |
+
+Try `/team seniors=1 critics=1 write a two-line project summary in notes.md`.
+Role names identify work owners, not native teammate names. OpenCode uses
+child session IDs; Hermes uses delegation handles. The lead resumes a
+worker or loop critic if supported, otherwise re-briefs a fresh child from
+the previous files. A blind critic is always fresh. Briefs, reports and
+ledger entries remain the record across harnesses.
+
+These adapters use `rk brief-check` before dispatch, not a tool hook.
+Startup checks, archive and compaction handoffs are manual; the Claude
+ledger/deletion hooks are **not** enforced by these adapters. No Claude
+files are created or changed by portable init/sync (`--no-claude`). ARS
+and the Zotero plugin are not bundled or configured for these harnesses;
+paper/thesis users still need a compatible literature setup. Codex is not
+supported yet.
+
+The shared CLI also works without any harness, directly from the checkout:
+
+```sh
+python3 -I /path/to/research-kit/plugins/research-kit/skills/research-kit/scripts/rk.py --help
+```
+
+### Claude Code
 
 ```
 /plugin marketplace add xylophoneengine/research-kit
@@ -666,6 +717,14 @@ Not bundled; install what your kinds use.
 - rea (https://github.com/morluto/rea, MIT): static-analysis MCP for binaries and firmware, optional for `reverse-eng`. Vet it before installing.
 
 ## Development
+
+`plugins/research-kit/skills/research-kit/` is the canonical CLI, templates,
+ledger and viewer. It stays in the plugin tree so the Claude marketplace
+install remains self-contained. The existing Claude `/team` and hooks stay
+in `plugins/research-kit/`; `adapters/shared/` holds the portable skills,
+and `adapters/{opencode,hermes}/` describe only native entry points and
+delegation. The brief/report contract lives in the shared `AGENTS.md`
+template (§2), not a second ledger or agent runtime.
 
 ```
 git config core.hooksPath scripts/githooks   # once per clone: every push runs the gate

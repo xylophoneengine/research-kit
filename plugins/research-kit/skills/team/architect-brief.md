@@ -3,7 +3,7 @@
 Load this only when `arch1` is staffed (team skill, Roster). Fill the `<...>`
 slots and send the text below the rule as the brief. Add the standard lines
 of the team skill's brief template (TASK with `rk show`, Team, scratch
-folder, command line, Edit/Write line, report, SendMessage, TO-WASTE);
+folder, command line, file editing, report, completion notice, TO-WASTE);
 leave out the Coordinate and Subagents lines (arch1 talks to you only).
 `CHECK: none`. The design file is arch1's report file
 (`<REPORTS>/arch1-r<round>.md`): no second copy.
