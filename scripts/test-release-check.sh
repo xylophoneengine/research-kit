@@ -348,7 +348,7 @@ expect nz 'push refused' 'hook refuses a remote ref name with a term' \
 # the gate never acts on the repo named by inherited GIT_* variables: a suite
 # that runs git in its own temp dir must not commit into the pushing repo
 branch probe
-commit scripts/test-probe.sh 'cd "$(mktemp -d)" && git init -q && git commit -q --allow-empty -m junk && git checkout -q -b junk' 'scripts: probe suite'
+commit scripts/test-probe.sh 'cd "$(mktemp -d)" && git init -q && git -c user.name=pat -c user.email=pat@example.invalid commit -q --allow-empty -m junk && git checkout -q -b junk' 'scripts: probe suite'
 snap() { git rev-parse HEAD; git for-each-ref --format='%(refname) %(objectname)' refs/heads refs/tags; git status --porcelain; }
 before="$(snap)"
 expect 0 'suite ok scripts/test-probe.sh' 'gate with GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE set' \

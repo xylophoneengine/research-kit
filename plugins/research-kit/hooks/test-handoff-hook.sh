@@ -76,6 +76,19 @@ out="$(CLAUDE_PROJECT_DIR="$A3" bash "$H" post)"; has post-fresh "stamp 20300101
 printf '# h\n' > "$A3/pm/handoffs/compact/handoff-2026-01-01.md"
 out="$(CLAUDE_PROJECT_DIR="$A3" bash "$H" post)"
 has post-both "handoff-2026-01-01.md" "$out"; has post-both "auto-20300101T000000Z.md" "$out"
+# Simulate BSD stat: a failed GNU probe may still write to stdout.
+bsd="$(mktemp -d)"
+cat > "$bsd/stat" <<'EOF'
+#!/bin/sh
+case "$1:$2" in
+  -f:%m) echo 1700000000 ;;
+  *) echo 'partial output from failed probe'; exit 1 ;;
+esac
+EOF
+chmod +x "$bsd/stat"
+out="$(CLAUDE_PROJECT_DIR="$A3" PATH="$bsd:$PATH" bash "$H" post 2>&1)"
+has bsd-both "handoff-2026-01-01.md" "$out"; has bsd-both "auto-20300101T000000Z.md" "$out"
+lacks bsd-both "integer expression" "$out"
 # git status goes into the file in a git repo
 G="$(mktemp -d)"; mkdir -p "$G/pm"; : > "$G/pm/ledger.jsonl"; git init -q "$G" 2>/dev/null
 CLAUDE_PROJECT_DIR="$G" bash "$H" pre >/dev/null
@@ -102,6 +115,12 @@ python3 -I "$RK" add task "fresh in main" --note n --repo "$M" >/dev/null
 out="$(CLAUDE_PROJECT_DIR="$W" bash "$H" start)"; has wt-start "fresh in main" "$out"
 out="$(CLAUDE_PROJECT_DIR="$W" bash "$H" post)"
 has wt-post "fresh in main" "$out"; has wt-post "Decisions and done work" "$out"
+# Local-only worktree: pm is absent here, the .git file names .git/worktrees/: the main ledger still counts.
+W2="$(mktemp -d)"; cp "$W/.git" "$W2/.git"
+out="$(CLAUDE_PROJECT_DIR="$W2" bash "$H" start)"; has wt-local "fresh in main" "$out"
+# A submodule's .git file does not name .git/worktrees/: no ledger lines, even though rk could answer
+S2="$(mktemp -d)"; printf 'gitdir: %s/.git/modules/sub\n' "$M" > "$S2/.git"
+out="$(CLAUDE_PROJECT_DIR="$S2" bash "$H" start)"; lacks submodule-local "fresh in main" "$out"
 # stub plugin: doctor --start prints a stale-stamp report (a stub with a fixed output, so the cut at 3 lines is testable)
 P="$(mktemp -d)"; mkdir -p "$P/skills/research-kit/scripts"
 cat > "$P/skills/research-kit/scripts/rk.py" <<'EOF'

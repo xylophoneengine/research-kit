@@ -4,7 +4,7 @@
 #   handoff-hook.sh post   SessionStart, matcher "compact": stdout is added to the model's context
 #   handoff-hook.sh start  SessionStart, matcher "startup|resume|clear": ledger lines only
 # pre/post look for the newest handoff-YYYY-MM-DD.md within 4 levels of the project root.
-# In a repo with pm/ledger.jsonl all three also print research-kit ledger lines
+# In a repo with pm/ledger.jsonl (or a linked worktree whose main checkout has one) all three also print research-kit ledger lines
 # (the rk() function line, doctor --start output when rk.py has it, a notice when jq is
 # missing, the open list; after a compact the newest entries to compare with the summary).
 # In such a repo "pre" also writes pm/handoffs/compact/auto-<UTC stamp>.md (rk list, rk recent -n 30,
@@ -17,6 +17,11 @@ plugin="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)}"
 rk="$plugin/skills/research-kit/scripts/rk.py"
 ledger=""
 [ -f "$root/pm/ledger.jsonl" ] && ledger=1
+# A linked worktree of a repo whose pm/ is local-only has no pm/ledger.jsonl of its own; rk finds the
+# main checkout's ledger. Only a linked worktree (.git file naming .git/worktrees/), not a submodule.
+if [ -z "$ledger" ] && [ -f "$root/.git" ] && grep -q '^gitdir: .*/worktrees/' "$root/.git" 2>/dev/null; then
+  (cd "$root" && python3 -I "$rk" list --limit 1 >/dev/null 2>&1) && ledger=1
+fi
 
 ledger_block() {
   [ -n "$ledger" ] || return 0
@@ -61,8 +66,10 @@ newest=""
 newest_m=0
 if [ "$mode" = pre ] || [ "$mode" = post ]; then
   while IFS= read -r -d '' f; do
-    m="$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)"
-    if [ "$m" -gt "$newest_m" ]; then
+    # GNU stat first: on Linux "stat -f %m" is a valid filesystem query that prints junk and exits 0
+    m="$(stat -c %Y "$f" 2>/dev/null)" || m="$(stat -f %m "$f" 2>/dev/null)" || continue
+    [[ "$m" =~ ^[0-9]+$ ]] || continue
+    if [ -z "$newest" ] || [ "$m" -gt "$newest_m" ]; then
       newest="$f"
       newest_m="$m"
     fi
