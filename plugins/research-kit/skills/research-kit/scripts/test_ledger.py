@@ -282,6 +282,39 @@ def test_windows_lock_concurrent_appends() -> None:
         assert ids == sorted(f"T-{i}" for i in range(1, 21)), ids
 
 
+def test_windows_replace_retries() -> None:
+    """Windows refuses os.replace onto a file another process holds open:
+    retried. Held for good, the command raises after the ledger line is
+    written (STATUS.md stays old, its .tmp stays behind): documented, not hidden."""
+    real: Callable[[Any, Any], None] = os.replace
+    refusals: list[int] = [2]
+
+    def held(src: Any, dst: Any) -> None:
+        if refusals[0] > 0:
+            refusals[0] -= 1
+            raise PermissionError(13, "in use")
+        real(src, dst)
+
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        setattr(os, "replace", held)
+        try:
+            with as_windows(fake_msvcrt()[0]):
+                assert lrun(repo, "add", "task", "a", "--note", "n")[0] == 0
+                status: str = (repo / L.STATUS_REL).read_text(encoding="utf-8")
+                assert refusals == [0] and "T-1" in status, status
+                refusals[0] = L.WIN_REPLACE_TRIES + 1
+                raised: bool = False
+                try:
+                    lrun(repo, "add", "task", "b", "--note", "n")
+                except PermissionError:
+                    raised = True
+        finally:
+            setattr(os, "replace", real)
+        assert raised and [e["f"]["title"] for e in jl(repo)] == ["a", "b"]
+        assert (repo / "pm" / "STATUS.md.tmp").exists()
+
+
 def test_windows_refs_stored_with_slashes() -> None:
     """On Windows a ref given with \\ is stored with /, ..\\ and rooted or drive
     paths are outside the repo; elsewhere a backslash stays a name byte."""

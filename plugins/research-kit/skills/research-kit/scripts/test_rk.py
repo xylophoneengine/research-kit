@@ -1805,6 +1805,48 @@ def test_windows_text_io_and_stdio() -> None:
         sys.stdin, sys.stdout, sys.stderr = saved
 
 
+WIN_START: str = '''\
+"""rk.py with no fcntl at all (as on Windows, DB-81) and a no-op msvcrt:
+argv[1] = rk.py, argv[2] = an empty repo dir. Prints "<command> -> <rc>"."""
+import importlib.util, sys, types
+sys.modules["fcntl"] = None  # any "import fcntl" now raises ImportError
+rk_py, repo = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("rk", rk_py)
+rk = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(rk)  # first: subprocess takes a msvcrt for Windows
+m = types.ModuleType("msvcrt")
+m.LK_UNLCK, m.LK_LOCK, m.LK_NBLCK = 0, 1, 2
+m.locking = lambda fd, mode, n: None
+sys.modules["msvcrt"] = m
+rk.ledger.WINDOWS = True
+for argv in (["init", repo, "--kinds", "software", "--mode", "light"],
+             ["add", "task", "t", "--note", "n", "--repo", repo],
+             ["list", "--repo", repo], ["doctor", "--repo", repo],
+             ["ui", "--status"]):
+    sys.argv = [rk_py, *argv]
+    print(f"{argv[0]} -> {rk.main()}", flush=True)
+'''
+
+
+def test_windows_start_without_fcntl() -> None:
+    """DB-81: with fcntl unimportable and the Windows paths on, init, add,
+    list, doctor and ui --status run (simulated: no real Windows here)."""
+    with tempfile.TemporaryDirectory() as d:
+        sim: Path = Path(d) / "win_start.py"
+        sim.write_text(WIN_START, encoding="utf-8")
+        repo: Path = Path(d) / "repo"
+        repo.mkdir()
+        r: subprocess.CompletedProcess[str] = subprocess.run(
+            [sys.executable, "-I", str(sim), str(RK_PY), str(repo)],
+            capture_output=True, text=True, timeout=120,
+        )
+        rcs: list[str] = [ln for ln in r.stdout.splitlines() if " -> " in ln]
+        assert r.returncode == 0 and rcs == [
+            f"{c} -> 0" for c in ("init", "add", "list", "doctor", "ui")
+        ], (r.stdout, r.stderr)
+        assert b"\r" not in (repo / "pm" / "ledger.jsonl").read_bytes()
+
+
 def _ledger_tests() -> list[tuple[str, Callable[[], None]]]:
     """The test_* functions of test_ledger.py (loaded by path, like rk.py)."""
     spec: ModuleSpec | None = importlib.util.spec_from_file_location(
