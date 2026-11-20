@@ -1847,6 +1847,73 @@ def test_windows_start_without_fcntl() -> None:
         assert b"\r" not in (repo / "pm" / "ledger.jsonl").read_bytes()
 
 
+HOOKS: Path = RK_PY.parents[3] / "hooks"
+
+
+def _hook_module() -> ModuleType:
+    """hooks/rk_hook.py, loaded by path (D-131: the hooks' one implementation)."""
+    spec: ModuleSpec | None = importlib.util.spec_from_file_location(
+        "rk_hook", HOOKS / "rk_hook.py"
+    )
+    assert spec is not None and spec.loader is not None
+    mod: ModuleType = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_hook_windows_bash_rules() -> None:
+    """Simulated Windows (the hook's Python runs natively there): a Bash command with
+    py -3, cmd /c del or Remove-Item is denied; on macOS/Linux the same text is judged
+    as by the bash version (not denied)."""
+    h: ModuleType = _hook_module()
+    cases: list[str] = [
+        'py -3 -c "import shutil; shutil.rmtree(1)"', "cmd //c del x",
+        'pwsh -c "Remove-Item x"', "Remove-Item x",
+    ]
+    for windows in (True, False):
+        h.WINDOWS = windows
+        got: list[bool] = [h.deletes(c) for c in cases]
+        assert got == [windows] * len(cases), (windows, got)
+    assert h.deletes("rm -rf x") and not h.deletes("ls -la")
+    assert h.guarded_file("C:\\proj\\pat\\r\\PM\\Ledger.JSONL") == "ledger"
+    assert h.guarded_file("C:/r\\pm\\stages\\03b/LEDGER.md") == "record"
+    assert h.guarded_file("C:\\r\\pm\\README.md") is None
+
+
+def test_hook_stdout_utf8_on_a_cp1252_pipe() -> None:
+    """A Windows pipe defaults to cp1252: session start with a ledger title holding an
+    arrow must not crash the hook, and Claude Code gets UTF-8."""
+    h: ModuleType = _hook_module()
+    saved: TextIO = sys.stdout
+    old: dict[str, str | None] = {
+        k: os.environ.get(k) for k in ("CLAUDE_PROJECT_DIR", "CLAUDE_PLUGIN_ROOT")
+    }
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = Path(d)
+        (repo / "pm").mkdir()
+        (repo / "pm" / "ledger.jsonl").write_text("", encoding="utf-8")
+        assert rk.ledger.main(["add", "task", "a → b", "--note", "n",
+                               "--repo", str(repo)]) == 0
+        out: io.BytesIO = io.BytesIO()
+        pipe: io.TextIOWrapper = io.TextIOWrapper(out, encoding="cp1252")
+        got: bytes = b""
+        os.environ["CLAUDE_PROJECT_DIR"] = str(repo)
+        os.environ["CLAUDE_PLUGIN_ROOT"] = str(HOOKS.parent)
+        try:
+            sys.stdout = pipe
+            assert h.main(["handoff", "start"]) == 0
+            pipe.flush()
+            got = out.getvalue()
+        finally:
+            sys.stdout = saved
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        assert "a → b".encode("utf-8") in got, got[-300:]
+
+
 def _ledger_tests() -> list[tuple[str, Callable[[], None]]]:
     """The test_* functions of test_ledger.py (loaded by path, like rk.py)."""
     spec: ModuleSpec | None = importlib.util.spec_from_file_location(

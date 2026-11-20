@@ -108,7 +108,8 @@ t deny "{ echo 'a'; rm f; }"; t deny '(echo "a"; rm f)'; t deny "git -c alias.x=
 t deny "docker exec c sh -c 'x; rm y'"; t deny 'git commit -m "a; rm b" && rm c'; t deny "echo 'a' >&2; rm f"
 t deny "find . -name 'a;b' -delete"; t deny "git log --format='%h'; git clean -f"; t deny "git --no-pager log -S 'a; rm b' | sh"
 t deny "cat <<<'a; rm b'"; t deny "eval 'a; rm b'"; t deny "watch 'a; rm b'"; t deny "awk '{print}'; rm f"
-grep -q 'permissionDecision:"allow"' "$G" && { echo "FAIL guard still has an allow branch"; fail=1; }
+# the rules live in rk_hook.py (D-131): neither file may allow
+grep -qE 'permissionDecision(":|:) *"allow"' "$G" "${G%/*}/rk_hook.py" && { echo "FAIL guard still has an allow branch"; fail=1; }
 reason="$(jq -n --arg c 'rm f' '{tool_input:{command:$c}}' | "$BASH" "$G" | jq -r '.hookSpecificOutput.permissionDecisionReason')"
 case "$reason" in "Deleting is off. Subagent/teammate: put one line per item at column 0 of your report: TO-WASTE: <path> -- <reason>; the lead moves it. Lead: run the research-kit waste helper (bash /PLUG/skills/waste/waste.sh"*"it asks the user. Temp/scratchpad files: leave them. If the delete word is only text (a report, a doc, a commit message), write that file with the Write tool instead of a heredoc. Never rephrase the delete to get around this.") ;;
   *) echo "FAIL deny reason text: $reason"; fail=1;; esac
@@ -145,10 +146,63 @@ t deny "rm f; echo \"$long\""; t deny "rm f; grep -E 'a|b' \"$long\""; ta deny "
 t none "find . -name x; echo \"$long\""
 near="$(printf '%01940d' 0)"; t none "echo \"x; rm f $near\""; t none "find . -name 'x;$near'"; ta none "grep '$near' $W"
 [ $((SECONDS - s0)) -le 2 ] || { echo "FAIL long lines took $((SECONDS - s0)) s"; fail=1; }
+# D-131: Python's re backtracks where grep did not; these took seconds to minutes before
+# the patterns were made unambiguous (a timed-out hook gives no decision: the command runs)
+s0=$SECONDS
+cc="$(printf -- '-C %.0s' $(seq 60))"
+t deny "git ${cc}status; git clean -fd"; t none "git ${cc}status"
+t none "env $(printf 'A=b %.0s' $(seq 10000))ls"
+t none "$(printf '(xargs %.0s' $(seq 10000))"; t deny "$(printf '(xargs %.0s' $(seq 10000)) rm f"
+t none "$(printf '(xargs %.0s' $(seq 1400))"
+t none "$(printf '%040000d' 0 | tr 0 '\`')"
+# crit1 B2: cubic/quadratic lines under the old 10000 limit, and many such lines in one
+# command (the time added up per line): a line over 2000 or a command over 8000 characters
+# is judged by delete words
+t none "$(printf '(env find %.0s' $(seq 999))"; t none "$(printf '(xargs find %.0s' $(seq 830))"
+sp="$(printf '%9990s' '')"; t none "env${sp}x"
+t deny "$(for i in $(seq 20); do printf 'env%strue\n' "$sp"; done)"$'\nrm -rf x'
+t deny "$(for i in $(seq 4); do printf '%s\n' "$(printf '(env find %.0s' $(seq 190))"; done)"$'\nrm -rf x'
+[ $((SECONDS - s0)) -le 4 ] || { echo "FAIL backtracking cases took $((SECONDS - s0)) s"; fail=1; }
+# crit1 B1: bash splits words only at blank, tab, newline; a Unicode blank (U+0085, U+00A0,
+# U+2003, U+3000) or U+001C inside a word must not end it (Python's \s would)
+for u in '\302\205' '\302\240' '\342\200\203' '\343\200\200' '\034'; do
+  u="$(printf "$u")"
+  t deny "git -C a${u}b clean -fd"; t deny "A=b${u}c rm x"; t deny "env A=b${u}c rm x"
+  LANG=en_US.UTF-8 t deny "git -C a${u}b clean -fd"
+done
 # crit8 m1: if/elif/while/until/coproc/! put a delete at command position too
 t deny 'if rm f; then :; fi'; t deny 'while rm f; do :; done'; t deny 'until rm f; do :; done'; t deny '! rm f'
 t deny 'if true; then :; elif rm f; then :; fi'; t deny 'coproc rm f'; t deny 'if ! rm f; then :; fi'
 t none 'if grep -q rm f; then echo ok; fi'; t none 'while read -r l; do echo "$l"; done < f'
+# D-131: the Windows launcher py counts as Python only on Windows and in PowerShell (tp
+# below; Windows Bash in test_rk.py): a Bash command here is judged as before
+t none 'py -3 -c "import shutil; shutil.rmtree(1)"'
+# D-131: the PowerShell tool (Windows): Remove-Item and its aliases, cmd /c del|rd, .NET
+# Delete(); case-insensitive; no quote relaxation (PowerShell escapes with a backtick)
+tp() {
+  local got
+  got="$(jq -n --arg c "$2" '{tool_name:"PowerShell",tool_input:{command:$c}}' | "$BASH" "$G" | jq -r '.hookSpecificOutput.permissionDecision // empty')"
+  got="${got:-none}"
+  [ "$got" = "$1" ] || { echo "FAIL want=$1 got=$got PowerShell: $2"; fail=1; }
+}
+for c in 'Remove-Item -Recurse -Force x' 'remove-item x' 'ri x' 'del x' 'erase x' 'rd /s /q x' 'rmdir x' \
+  'rm -r x' 'Get-ChildItem *.tmp | Remove-Item' 'gci | % { Remove-Item $_ }' '& Remove-Item x' '. ri x' \
+  'Microsoft.PowerShell.Management\Remove-Item x' 'echo a; Remove-Item x' 'if ($true) { del x }' \
+  '$(Remove-Item x)' 'cmd /c del x' 'cmd.exe /c "rd /s /q x"' '[System.IO.File]::Delete("x")' \
+  '(Get-Item x).Delete()' 'git clean -fdx' 'git rm f' 'echo "a\"; rm b' 'py -3 -c "import shutil; shutil.rmtree(1)"' \
+  'powershell -Command "Remove-Item x"' 'pwsh -c "del x"' 'powershell "rm x"' 'iex "ri x"' \
+  'Invoke-Expression "Remove-Item x"' 'pwsh -EncodedCommand AAAA' 'powershell.exe -enc AAAA' 'bash -c "rm x"' \
+  '$null = Remove-Item x -Recurse' '$r = rm x' "Remove-Item('C:\\x')" 'cmd /s /c del x' 'cmd /q /c rd /s /q x' \
+  'cmd /r del x' 'Get-ChildItem *.tmp | % Delete' 'gci | ForEach-Object -MemberName Delete' 'gci | foreach Delete' \
+  'a, (rm x)'; do
+  tp deny "$c"
+done
+for c in 'Get-ChildItem' 'git status' 'Get-Content rm.txt' 'echo "Remove-Item"' 'Select-String -Pattern del f' \
+  'Write-Output "deleted 3 files"' 'Get-Item x | Format-List' 'git log -S rm' 'pwsh -File build.ps1' \
+  'powershell -ExecutionPolicy Bypass -File x.ps1' 'iex "Get-Date"' 'py -3 -c "print(1)"' \
+  '$x = Get-Item rm.txt' 'cmd /c dir' 'gci | % Name' 'Write-Output "% done, delete later"'; do
+  tp none "$c"
+done
 reason="$(jq -n '{tool_input:{command:"waste.sh a b c"},agent_id:"x"}' | "$BASH" "$G" | jq -r '.hookSpecificOutput.permissionDecisionReason')"
 case "$reason" in *"Lead:"*|"") echo "FAIL subagent reason text: $reason"; fail=1;; esac
 [ "$fail" = 0 ] && echo "guard tests ok"

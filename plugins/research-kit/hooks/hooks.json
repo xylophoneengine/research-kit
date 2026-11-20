@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r \".prompt // empty | select(length < 300)\" | grep -qiE \"get ready for (a |the )?compact|ready for compaction|prepare (for )?(a |the )?compact|i.?m stopping here\" && echo \"[surviving-compaction] The user announced a compact. Before anything else, invoke the Skill tool with skill \\\"research-kit:surviving-compaction\\\" and run its Prepare steps.\" || true"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/prompt-hook.sh\""
           }
         ]
       }
@@ -42,7 +42,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|PowerShell",
         "hooks": [
           {
             "type": "command",

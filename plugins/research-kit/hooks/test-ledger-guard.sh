@@ -100,6 +100,23 @@ t none Write file_path "$R/pm/stages/03b/notes.md"
 t none Write file_path "$R/xpm/stages/03b/LEDGER.md"
 t none Write file_path "$R/pm/stages/a/xpm/stages/b/LEDGER.md"
 
+# Windows spellings (D-131, PureWindowsPath): backslashes, drive letters, UNC, mixed
+# separators, any case, doubled separators and . components
+t deny Edit file_path 'C:\proj\pat\repo\pm\ledger.jsonl'
+t deny Write file_path 'C:/proj/pat/repo\PM\Status.MD'
+t deny MultiEdit file_path 'c:\r\pm\\.\ledger.jsonl'
+t deny Write file_path 'pm\ledger.jsonl'
+t deny Edit file_path '\\server\share\repo\pm\stages\03b\LEDGER.md'
+t deny Edit file_path 'C:\r\PM\Stages\03b\ledger.md'
+t deny Write file_path 'C:\r/pm\stages/03b\\LEDGER.md'
+t none Write file_path 'C:\proj\pat\repo\pm\README.md'
+t none Write file_path 'C:\r\pm\stages\03b\notes\LEDGER.md'
+t none Write file_path 'C:\r\xpm\ledger.jsonl'
+t none Write file_path 'C:\r\pm\stages\LEDGER.md'
+t none Write file_path 'C:\r\pm\ledger.jsonl.bak'
+case "$(reason Edit file_path 'C:\r\pm\ledger.jsonl')" in
+  *"python3 -I \"$RK\" doctor"*) ;; *) echo "FAIL windows path: reason text"; fail=1;; esac
+
 # tabs and CRLF in a brief: open T-3 passes (and runs), done T-2 is refused
 python3 -I "$RK" add task "crlf" --note n --repo "$R" >/dev/null
 t none Agent prompt $'\t\tDELIVERABLE: x\r\n\tTASK: T-3\r\n'

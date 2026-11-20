@@ -176,21 +176,71 @@ out="$(CLAUDE_PLUGIN_ROOT="$NOPLUG" bash "$H" start)"; rc=$?
 [ "$rc" = 0 ] || { echo "FAIL missing rk.py exit $rc"; fail=1; }; has no-rk "rk() " "$out"
 out="$(CLAUDE_PLUGIN_ROOT="$NOPLUG" bash "$H" post)"; rc=$?
 [ "$rc" = 0 ] || { echo "FAIL missing rk.py post exit $rc"; fail=1; }; has no-rk-post "[surviving-compaction]" "$out"
-# PATH without jq: the notice appears, nothing else breaks
+# PATH without jq (D-131: the hooks no longer use it): no notice, and both guards still decide
 NJ="$(mktemp -d)"
 for t in python3 dirname find stat date head tail cat grep wc tr sed awk; do ln -s "$(command -v $t)" "$NJ/$t" 2>/dev/null; done
 out="$(PATH="$NJ" /bin/bash "$H" start)"; rc=$?
-has no-jq "jq not found: delete guard and brief check are OFF" "$out"; has no-jq "T-1" "$out"
+lacks no-jq "jq not found" "$out"; has no-jq "T-1" "$out"
 [ "$rc" = 0 ] || { echo "FAIL no-jq exit $rc"; fail=1; }
-out="$(PATH="$NJ" /bin/bash "$H" post)"; has no-jq-post "jq not found" "$out"
-# the claim behind the notice: both guards exit 0 and print nothing without jq
-g="$(PATH="$NJ" /bin/bash "$HOOKS/guard-delete.sh" <<<'{"tool_input":{"command":"git clean -fd"}}'; echo "rc=$?")"
-[ "$g" = "rc=0" ] || { echo "FAIL guard-delete without jq: $g"; fail=1; }
-g="$(PATH="$NJ" /bin/bash "$HOOKS/ledger-guard.sh" <<<'{"tool_name":"Write","tool_input":{"file_path":"x/pm/ledger.jsonl"}}'; echo "rc=$?")"
-[ "$g" = "rc=0" ] || { echo "FAIL ledger-guard without jq: $g"; fail=1; }
-# no ledger: no function line, no jq notice
+out="$(PATH="$NJ" /bin/bash "$H" post)"; lacks no-jq-post "jq not found" "$out"; has no-jq-post "T-1" "$out"
+g="$(PATH="$NJ" /bin/bash "$HOOKS/guard-delete.sh" <<<'{"tool_input":{"command":"git clean -fd"}}')"
+has guard-delete-no-jq '"permissionDecision": "deny"' "$g"
+g="$(PATH="$NJ" /bin/bash "$HOOKS/ledger-guard.sh" <<<'{"tool_name":"Write","tool_input":{"file_path":"x/pm/ledger.jsonl"}}')"
+has ledger-guard-no-jq '"permissionDecision": "deny"' "$g"
+# the UserPromptSubmit hook (was an inline jq | grep in hooks.json)
+g="$(PATH="$NJ" /bin/bash "$HOOKS/prompt-hook.sh" <<<'{"prompt":"ok, Get ready for the compact"}')"
+has prompt-no-jq "research-kit:surviving-compaction" "$g"
+g="$(PATH="$NJ" /bin/bash "$HOOKS/prompt-hook.sh" <<<'{"prompt":"compact the table"}')"
+[ -z "$g" ] || { echo "FAIL prompt hook fired on: compact the table"; fail=1; }
+long="$(printf '%0300d' 0)"
+g="$(PATH="$NJ" /bin/bash "$HOOKS/prompt-hook.sh" <<<"{\"prompt\":\"get ready for compact $long\"}")"
+[ -z "$g" ] || { echo "FAIL prompt hook fired on a prompt of 300+ characters"; fail=1; }
+# no ledger: no function line
 out="$(CLAUDE_PROJECT_DIR="$(mktemp -d)" PATH="$NJ" /bin/bash "$H" start)"; [ -z "$out" ] || { echo "FAIL no ledger, no jq printed: $out"; fail=1; }
 out="$(CLAUDE_PROJECT_DIR="$(mktemp -d)" PATH="$NJ" /bin/bash "$H" post)"; lacks no-ledger-post "jq not found" "$out"; lacks no-ledger-post "rk() " "$out"
+# no Python at all: never a silent guard. start, post and pre tell the session the tools and
+# guards are OFF (exit 0); the guards print it as a systemMessage (exit 0: on Windows any
+# other code than 0 or 2 can block the tool call).
+NP="$(mktemp -d)"   # an empty PATH dir: the wrappers need only bash builtins to get there
+for m in start post pre; do
+  out="$(PATH="$NP" /bin/bash "$H" $m)"; rc=$?
+  has "no-python-$m" "No Python 3.9+ found" "$out"; [ "$rc" = 0 ] || { echo "FAIL no-python $m exit $rc"; fail=1; }
+done
+for g in guard-delete ledger-guard; do
+  out="$(PATH="$NP" /bin/bash "$HOOKS/$g.sh" <<<'{"tool_name":"Write","tool_input":{"command":"rm f","file_path":"x/pm/ledger.jsonl"}}' 2>/dev/null)"; rc=$?
+  has "no-python-$g" '{"systemMessage": "[research-kit] No Python 3.9+ found' "$out"
+  has "no-python-$g" "the delete guard, the ledger guard" "$out"; [ "$rc" = 0 ] || { echo "FAIL no-python $g exit $rc"; fail=1; }
+  printf '%s' "$out" | jq -e .systemMessage >/dev/null || { echo "FAIL no-python $g not JSON: $out"; fail=1; }
+done
+# the finder on Windows (simulated: OSTYPE=msys): python3 is the Microsoft Store alias stub
+# (install hint on stderr, nothing on stdout), there is no python, py -3 works: py -3 is
+# used, in the rk() line and the deny texts too, and the hooks run through it
+FB="$(mktemp -d)"; FS="$(mktemp -d)"; REALPY="$(command -v python3)"
+printf '#!/bin/sh\necho "Python was not found; run without arguments to install from the Microsoft Store" >&2\nexit 9009\n' > "$FB/python3"
+# py acts as a native Windows Python for the probe: print() ends lines with \r\n in a pipe
+cat > "$FB/py" <<EOF
+#!/bin/sh
+[ "\$1" = -3 ] && shift
+case "\$*" in
+  *version_info*) "$REALPY" "\$@" | "$REALPY" -c 'import sys; sys.stdout.buffer.write(sys.stdin.buffer.read().replace(b"\\n", b"\\r\\n"))' ;;
+  *) exec "$REALPY" "\$@" ;;
+esac
+EOF
+cp "$FB/python3" "$FS/python3"; chmod +x "$FB/python3" "$FB/py" "$FS/python3"
+out="$(OSTYPE=msys PATH="$FB" /bin/bash "$H" start)"
+fl="$(printf '%s\n' "$out" | grep -m1 '^rk() ')"
+[ "$fl" = 'rk() { py -3 -I "'"$RK"'" "$@"; }' ] || { echo "FAIL finder: rk() line is not py -3: $fl"; fail=1; }
+has finder-list "T-1" "$out"; lacks finder-stub "Microsoft Store" "$out"
+g="$(OSTYPE=msys PATH="$FB" /bin/bash "$HOOKS/guard-delete.sh" <<<'{"tool_input":{"command":"rm f"}}')"
+has finder-guard '"permissionDecision": "deny"' "$g"
+g="$(OSTYPE=msys PATH="$FB" /bin/bash "$HOOKS/ledger-guard.sh" <<<'{"tool_name":"Edit","tool_input":{"file_path":"C:\\r\\pm\\ledger.jsonl"}}')"
+has finder-ledger-text 'py -3 -I' "$g"
+# only the stub on PATH: no Python, said so
+out="$(OSTYPE=msys PATH="$FS" /bin/bash "$H" start)"; has finder-stub-only "No Python 3.9+ found" "$out"
+# not on Windows: python3 on PATH is taken without a probe (no extra process per hook)
+printf '#!/bin/sh\necho x >> "%s/probes"\nexec "%s" "$@"\n' "$FS" "$REALPY" > "$FS/python3"
+out="$(OSTYPE=darwin23 PATH="$FS" /bin/bash -c '. "$1/find-python.sh"; rk_find_python; echo "$RK_PY_CMD"' _ "$HOOKS")"
+[ "$out" = python3 ] && [ ! -e "$FS/probes" ] || { echo "FAIL finder off Windows: $out, probes: $(cat "$FS/probes" 2>/dev/null)"; fail=1; }
 bash "$H" bogus >/dev/null 2>&1 && { echo "FAIL unknown mode exits 0"; fail=1; }
 
 [ "$fail" = 0 ] && echo "handoff hook tests ok"

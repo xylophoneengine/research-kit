@@ -103,8 +103,9 @@ record only, no ledger line. Why: the stage's record on one page, read without
 the ledger.
 `doctor --start` feeds the SessionStart block (`kit <version>`, `pm: local only` in a local-only repo, a line per stale
 rule file: run `/rk-sync` between stages, not inside one); the block also prints
-the line `rk() { python3 -I "<path>/rk.py" "$@"; }` and a notice when `jq` is
-missing. Design step (AGENTS.md 3.3): the user's yes to a stage's spec is a user decision labelled `<stage code>/SPEC` (e.g. `03/SPEC`); while an open stage has none, the session start block prints `spec: S-<n> <stage> has no user decision labelled <stage code>/SPEC (AGENTS.md 3.3)`. No command is refused. A Bash call keeps no shell state: start each call that uses `rk` with
+the line `rk() { python3 -I "<path>/rk.py" "$@"; }` (on Windows the Python the hooks
+found: `python3`, `python` or `py -3`) and a notice when no Python 3.9+ is found (then
+the ledger tool and all hooks are off). Design step (AGENTS.md 3.3): the user's yes to a stage's spec is a user decision labelled `<stage code>/SPEC` (e.g. `03/SPEC`); while an open stage has none, the session start block prints `spec: S-<n> <stage> has no user decision labelled <stage code>/SPEC (AGENTS.md 3.3)`. No command is refused. A Bash call keeps no shell state: start each call that uses `rk` with
 that line joined to the command by `;` (`rk() {...}; rk list`); `rk` in rule
 text means that command.
 

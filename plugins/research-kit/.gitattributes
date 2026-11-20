@@ -1,0 +1,3 @@
+# bash reads a CRLF script as commands ending in \r: keep the hooks and helpers LF on a
+# Windows checkout with core.autocrlf=true (the plugin is installed by a git clone)
+*.sh text eol=lf
