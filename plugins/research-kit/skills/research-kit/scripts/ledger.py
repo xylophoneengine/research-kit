@@ -500,7 +500,7 @@ def append(
             fh.flush()
             written = True
             os.fsync(fh.fileno())
-            write_status(repo, new_state)
+            write_status(repo, new_state, after_write=True)
         finally:
             if not written and undo is not None:
                 undo()
@@ -1185,11 +1185,30 @@ def render_status(state: dict[str, Entry], now: datetime) -> str:
     return "\n".join(out) + "\n"
 
 
-def write_status(repo: Path, state: dict[str, Entry]) -> None:
+def write_status(
+    repo: Path, state: dict[str, Entry], after_write: bool = False
+) -> None:
+    """Regenerate STATUS.md. `after_write`: ledger lines were just written. Then
+    on Windows a STATUS.md another process keeps locked past replace_file's
+    retries (a sync client such as OneDrive, an editor, a scanner) is a warning on
+    stderr, not an error: the ledger is right and `rk render` catches up (D-130)."""
     path: Path = repo / STATUS_REL
     tmp: Path = path.with_name(path.name + ".tmp")
     write_utf8(tmp, render_status(state, datetime.now().astimezone()))
-    replace_file(tmp, path)
+    try:
+        replace_file(tmp, path)
+    except PermissionError:
+        if not (WINDOWS and after_write):
+            raise
+        try:
+            tmp.unlink(missing_ok=True)  # ours, written just above
+        except OSError:
+            pass
+        print(
+            f"warning: ledger written, but {STATUS_REL} is locked by another "
+            "process and was not refreshed; run rk render later",
+            file=sys.stderr,
+        )
 
 
 def _list_key(

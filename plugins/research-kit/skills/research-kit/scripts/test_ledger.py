@@ -284,8 +284,9 @@ def test_windows_lock_concurrent_appends() -> None:
 
 def test_windows_replace_retries() -> None:
     """Windows refuses os.replace onto a file another process holds open:
-    retried. Held for good, the command raises after the ledger line is
-    written (STATUS.md stays old, its .tmp stays behind): documented, not hidden."""
+    retried. Held for good after a ledger write: a warning on stderr, the
+    receipt, exit 0, no .tmp left (D-130); `rk render` then catches up. Held for
+    `rk render` itself (nothing written), or off Windows: still an error."""
     real: Callable[[Any, Any], None] = os.replace
     refusals: list[int] = [2]
 
@@ -295,24 +296,40 @@ def test_windows_replace_retries() -> None:
             raise PermissionError(13, "in use")
         real(src, dst)
 
+    def raises(*argv: str) -> bool:
+        try:
+            lrun(repo, *argv)
+        except PermissionError:
+            return True
+        return False
+
     with tempfile.TemporaryDirectory() as d:
         repo: Path = new_repo(Path(d))
+        status: Path = repo / L.STATUS_REL
+        tmp: Path = repo / "pm" / "STATUS.md.tmp"
         setattr(os, "replace", held)
         try:
             with as_windows(fake_msvcrt()[0]):
                 assert lrun(repo, "add", "task", "a", "--note", "n")[0] == 0
-                status: str = (repo / L.STATUS_REL).read_text(encoding="utf-8")
-                assert refusals == [0] and "T-1" in status, status
+                text: str = status.read_text(encoding="utf-8")
+                assert refusals == [0] and "T-1" in text, text
                 refusals[0] = L.WIN_REPLACE_TRIES + 1
-                raised: bool = False
-                try:
-                    lrun(repo, "add", "task", "b", "--note", "n")
-                except PermissionError:
-                    raised = True
+                err: io.StringIO = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    code, out = lrun(repo, "add", "task", "b", "--note", "n")
+                assert code == 0 and out.startswith("logged T-2: b"), out
+                assert "STATUS.md is locked" in err.getvalue(), err.getvalue()
+                assert "rk render" in err.getvalue() and not tmp.exists()
+                assert "T-2" not in status.read_text(encoding="utf-8")
+                refusals[0] = L.WIN_REPLACE_TRIES + 1
+                assert raises("render")  # nothing written: the error stays
+                assert lrun(repo, "render")[0] == 0  # released: catches up
+                assert "T-2" in status.read_text(encoding="utf-8")
+            refusals[0] = 1
+            assert raises("add", "task", "c", "--note", "n")  # POSIX unchanged
         finally:
             setattr(os, "replace", real)
-        assert raised and [e["f"]["title"] for e in jl(repo)] == ["a", "b"]
-        assert (repo / "pm" / "STATUS.md.tmp").exists()
+        assert [e["f"]["title"] for e in jl(repo)] == ["a", "b", "c"]
 
 
 def test_windows_refs_stored_with_slashes() -> None:
@@ -5259,7 +5276,7 @@ def test_list_planned_line() -> None:
         assert len(shown) >= 2 and len(shown) + k == 12, (shown, k)  # R13: longer cut
 
 
-def _injected(*args: Any) -> None:
+def _injected(*args: Any, **kwargs: Any) -> None:
     raise OSError(28, "injected: no space left on device")
 
 

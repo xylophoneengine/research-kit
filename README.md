@@ -66,6 +66,12 @@ From a local clone instead: `/plugin marketplace add /path/to/research-kit`.
 Then restart Claude Code (or `/reload-plugins`). Requirements: `bash`, `jq`,
 `python3` (stdlib only), `git`.
 
+Windows: `rk` (ledger, doctor, viewer) runs there; verified in simulation, not
+yet on a Windows machine. A repo inside a cloud-synced folder (OneDrive, Dropbox and the like)
+can keep `pm/STATUS.md` locked while the sync client reads it. Then `rk` still
+writes the ledger and prints `warning: ledger written, but pm/STATUS.md is
+locked ...`; `rk render` refreshes `STATUS.md` once the lock is gone.
+
 ### Quick start
 
 1. Enable agent teams (below), restart.
