@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -143,6 +144,166 @@ def test_concurrent_appends() -> None:
         assert all(rc == 0 for rc in rcs), rcs
         ids: list[str] = sorted(e["id"] for e in jl(repo))
         assert ids == sorted(f"T-{i}" for i in range(1, 21)), ids
+
+
+# ---- Windows, simulated (DB-81): no Windows here, so L.WINDOWS is switched on
+# and a fake msvcrt is put where `import msvcrt` finds it.
+
+MSVCRT_SIM: str = '''\
+"""rk.py on the Windows lock path: argv[1] = rk.py, the rest its arguments.
+msvcrt.locking is simulated by a POSIX record lock on the same byte range at
+the fd's current position, which is how the real one picks its range."""
+import errno, fcntl, importlib.util, os, sys, types
+
+def locking(fd: int, mode: int, n: int) -> None:
+    pos: int = os.lseek(fd, 0, os.SEEK_CUR)
+    if mode == 0:  # LK_UNLCK
+        fcntl.lockf(fd, fcntl.LOCK_UN, n, pos)
+        return
+    try:
+        fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB, n, pos)
+    except BlockingIOError:
+        raise OSError(errno.EACCES, "locked") from None
+
+spec = importlib.util.spec_from_file_location("rk", sys.argv[1])
+rk = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(rk)  # first: subprocess takes a msvcrt for Windows
+m = types.ModuleType("msvcrt")
+m.LK_UNLCK, m.LK_LOCK, m.LK_NBLCK, m.locking = 0, 1, 2, locking
+sys.modules["msvcrt"] = m
+rk.ledger.WINDOWS = True
+sys.argv = sys.argv[1:]
+sys.exit(rk.main())
+'''
+
+
+def fake_msvcrt(
+    busy: int = 0, fail: int | None = None
+) -> tuple[ModuleType, list[tuple[int, int, int]]]:
+    """A recording msvcrt: (mode, fd position, bytes) per locking() call. The
+    first `busy` LK_NBLCK tries find the lock taken; `fail`: every call raises
+    that errno."""
+    calls: list[tuple[int, int, int]] = []
+
+    def locking(fd: int, mode: int, n: int) -> None:
+        calls.append((mode, os.lseek(fd, 0, os.SEEK_CUR), n))
+        if fail is not None:
+            raise OSError(fail, os.strerror(fail))
+        if mode == 2 and sum(1 for c in calls if c[0] == 2) <= busy:
+            raise OSError(errno.EACCES, "locked")
+
+    m: ModuleType = ModuleType("msvcrt")
+    consts: dict[str, object] = {"LK_UNLCK": 0, "LK_LOCK": 1, "LK_NBLCK": 2}
+    for k, v in {**consts, "locking": locking}.items():
+        setattr(m, k, v)
+    return m, calls
+
+
+@contextlib.contextmanager
+def as_windows(msvcrt: ModuleType | None = None) -> Iterator[None]:
+    """The ledger's Windows paths for the block, with no wait between tries."""
+    old: tuple[bool, float] = (L.WINDOWS, L.WIN_POLL_S)
+    saved: ModuleType | None = sys.modules.get("msvcrt")
+    L.WINDOWS, L.WIN_POLL_S = True, 0.0
+    if msvcrt is not None:
+        sys.modules["msvcrt"] = msvcrt
+    try:
+        yield
+    finally:
+        L.WINDOWS, L.WIN_POLL_S = old
+        if saved is None:
+            sys.modules.pop("msvcrt", None)
+        else:
+            sys.modules["msvcrt"] = saved
+
+
+def test_windows_lock_polls_one_byte_past_the_data() -> None:
+    """LK_NBLCK is retried while taken (no ~10 s LK_LOCK give-up), on one byte
+    far past the ledger's end (Windows locks are mandatory: unlocked readers
+    must not touch it), and released at the same byte."""
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        m, calls = fake_msvcrt(busy=2)
+        with as_windows(m):
+            code, out = lrun(repo, "add", "task", "on windows", "--note", "n")
+        assert code == 0, out
+        assert [e["f"]["title"] for e in jl(repo)] == ["on windows"]
+        off: int = L.WIN_LOCK_OFFSET
+        assert calls == [(2, off, 1)] * 3 + [(0, off, 1)], calls
+        assert (repo / L.LEDGER_REL).stat().st_size < off < 2**31
+
+
+def test_windows_lock_error_and_failed_build() -> None:
+    """Only a lock violation means busy: another error is raised, nothing is
+    written. A build that fails still releases the lock."""
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        m, calls = fake_msvcrt(fail=errno.EBADF)
+        raised: OSError | None = None
+        with as_windows(m):
+            try:
+                lrun(repo, "add", "task", "x", "--note", "n")
+            except OSError as e:
+                raised = e
+        assert raised is not None and raised.errno == errno.EBADF, raised
+        assert len(calls) == 1 and jl(repo) == [], calls
+
+        def build(_state: dict[str, Any]) -> list[dict[str, object]]:
+            raise L.LedgerError("refused")
+
+        m, calls = fake_msvcrt()
+        with as_windows(m):
+            try:
+                L.append(repo, build)
+            except L.LedgerError:
+                pass
+        off: int = L.WIN_LOCK_OFFSET
+        assert calls == [(2, off, 1), (0, off, 1)], calls
+
+
+def test_windows_lock_concurrent_appends() -> None:
+    """test_concurrent_appends on the Windows lock path, msvcrt simulated by a
+    record lock on the same byte (MSVCRT_SIM): 20 writers, no line lost."""
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        sim: Path = Path(d) / "msvcrt_sim.py"
+        sim.write_text(MSVCRT_SIM, encoding="utf-8")
+        procs: list[subprocess.Popen[bytes]] = [
+            subprocess.Popen(
+                [sys.executable, "-I", str(sim), str(RK_PY), "add", "task", f"p{i}",
+                 "--note", "n", "--repo", str(repo)],
+                stdout=subprocess.DEVNULL,
+            )
+            for i in range(20)
+        ]
+        rcs: list[int] = [p.wait() for p in procs]
+        assert all(rc == 0 for rc in rcs), rcs
+        ids: list[str] = sorted(e["id"] for e in jl(repo))
+        assert ids == sorted(f"T-{i}" for i in range(1, 21)), ids
+
+
+def test_windows_refs_stored_with_slashes() -> None:
+    """On Windows a ref given with \\ is stored with /, ..\\ and rooted or drive
+    paths are outside the repo; elsewhere a backslash stays a name byte."""
+    with tempfile.TemporaryDirectory() as d:
+        repo: Path = new_repo(Path(d))
+        (repo / "pm" / "notes").mkdir()
+        (repo / "pm" / "notes" / "a.md").write_text("a", encoding="utf-8")
+        (repo / "pm" / "b.md").write_text("b", encoding="utf-8")
+        with as_windows(fake_msvcrt()[0]):
+            code, out = lrun(repo, "add", "task", "t", "--note", "n",
+                             "--ref", "pm\\notes\\a.md")
+            assert code == 0, out
+            assert L.load(repo)["T-1"].refs == ["pm/notes/a.md"]
+            code, out = lrun(repo, "reref", "pm\\notes\\a.md", "pm\\b.md")
+            assert code == 0, out
+            assert L.load(repo)["T-1"].refs == ["pm/b.md"]
+            for bad in ("..\\x.md", "/x.md", "C:x.md", "C:/x.md", "c:\\x.md"):
+                code, out = lrun(repo, "set", "T-1", "--ref", bad)
+                assert code == 1 and "outside the repo" in out, (bad, out)
+            assert L._rel_refs(repo, ["doi:10.1\\x"]) == ["doi:10.1\\x"]
+        assert L._posix_ref("a\\b") == "a\\b" and not L._outside("C:x.md")
+        assert L._outside("../x.md") and not L._outside("pm/../pm/x.md")
 
 
 def test_no_git_call() -> None:

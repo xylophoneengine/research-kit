@@ -41,6 +41,12 @@ DIST: Path = Path(__file__).resolve().parent.parent / "ui" / "dist"
 # One <port>.json per running viewer, for --status and --statusline.
 STATE_DIR: Path = Path.home() / ".cache" / "research-kit" / "ui"
 RK_PATH_FILE: str = "rk_path"  # in STATE_DIR: absolute path of rk.py, one line
+# Fixed types for what the bundle holds: on Windows mimetypes reads the registry,
+# where .js is often text/plain, and a browser refuses that as a module script.
+BUNDLE_TYPES: dict[str, str] = {
+    ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
+    ".svg": "image/svg+xml", ".woff2": "font/woff2",
+}
 MAX_REPO_CHARS: int = 4096  # longest repo path --status will print
 STATE_BYTES: int = 1 << 16  # a state file is a few hundred bytes; read at most this
 DEFAULT_PORT: int = 8765  # first port tried when no --port is given
@@ -187,7 +193,9 @@ def make_handler(repo: Path, dist: Path) -> type[BaseHTTPRequestHandler]:
             if not ok:
                 self.send_error(404)
                 return
-            guess: str | None = mimetypes.guess_type(target.name)[0]
+            guess: str | None = BUNDLE_TYPES.get(target.suffix.lower()) or (
+                mimetypes.guess_type(target.name)[0]
+            )
             ctype: str = guess or "application/octet-stream"
             self._send(200, ctype, target.read_bytes())
 

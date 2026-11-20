@@ -13,26 +13,39 @@ from __future__ import annotations
 
 import argparse
 import difflib
-import fcntl
+import errno
 import functools
+import importlib
 import itertools
 import json
 import math
 import os
+import posixpath
 import re
 import shutil
 import string
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from fractions import Fraction
 from pathlib import Path
+from types import ModuleType
+from typing import BinaryIO
 
 LEDGER_REL: str = "pm/ledger.jsonl"
 STATUS_REL: str = "pm/STATUS.md"
 STAGE_RECORD: str = "LEDGER.md"  # in the stage folder, written by stage-close
+WINDOWS: bool = sys.platform == "win32"  # tests set it to run the Windows paths
+# Windows locks byte ranges, and such a lock is mandatory: another handle cannot
+# read the locked bytes. So the ledger lock is one byte far past any real ledger
+# size (load() and the viewer read without the lock), below 2**31 in case the C
+# runtime takes a 32-bit offset.
+WIN_LOCK_OFFSET: int = 2**31 - 2
+WIN_POLL_S: float = 0.05  # wait between tries for a Windows lock or replace
+WIN_REPLACE_TRIES: int = 40  # about 2 s for an editor or scanner to let go
 # line 2 of the record of a reopened stage: which close the record is of
 RECORD_MARK: str = "<!-- rk:stage-record {sid} close {end} -->"
 RECORD_MARK_RE: re.Pattern[str] = re.compile(
@@ -368,7 +381,8 @@ def rule_stamps(repo: Path) -> dict[str, str]:
         repo / "AGENTS.md", *(sorted(kinds.glob("*.md")) if kinds.is_dir() else [])
     ]
     return {
-        str(p.relative_to(repo)): s for p in files if (s := _line1_stamp(p)) is not None
+        p.relative_to(repo).as_posix(): s
+        for p in files if (s := _line1_stamp(p)) is not None
     }
 
 
@@ -398,6 +412,59 @@ def make_event(
     return out
 
 
+def _lock(fh: BinaryIO) -> None:
+    """Exclusive lock on the open ledger; waits as long as another holder has it.
+
+    POSIX: flock. Windows: msvcrt.locking of one byte at WIN_LOCK_OFFSET. Its
+    blocking LK_LOCK gives up after about 10 s, so LK_NBLCK is tried every
+    WIN_POLL_S with no deadline, like flock; Windows frees the lock when its
+    holder exits. Only a lock-violation error means busy; any other is raised."""
+    if not WINDOWS:
+        fcntl: ModuleType = importlib.import_module("fcntl")
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        return
+    msvcrt: ModuleType = importlib.import_module("msvcrt")
+    while True:
+        fh.seek(WIN_LOCK_OFFSET)  # locking() starts at the current position
+        try:
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            return
+        except OSError as e:
+            if e.errno not in (errno.EACCES, errno.EDEADLK):
+                raise
+        time.sleep(WIN_POLL_S)
+
+
+def _unlock(fh: BinaryIO) -> None:
+    """Release what _lock took (the same byte on Windows)."""
+    if not WINDOWS:
+        fcntl: ModuleType = importlib.import_module("fcntl")
+        fcntl.flock(fh, fcntl.LOCK_UN)
+        return
+    msvcrt: ModuleType = importlib.import_module("msvcrt")
+    fh.seek(WIN_LOCK_OFFSET)
+    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def replace_file(src: Path, dst: Path) -> None:
+    """os.replace. On Windows it fails while another process has `dst` open (an
+    editor, an indexer, a virus scanner): retried for about two seconds."""
+    for _ in range(WIN_REPLACE_TRIES if WINDOWS else 0):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            time.sleep(WIN_POLL_S)
+    os.replace(src, dst)
+
+
+def write_utf8(path: Path, text: str) -> None:
+    """`text` as UTF-8 with \\n line ends on every OS. Path.write_text would use
+    the Windows code page and \\r\\n there (its newline= needs Python 3.10)."""
+    with path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+
+
 def append(
     repo: Path,
     build: Callable[[dict[str, Entry]], list[dict[str, object]]],
@@ -414,7 +481,7 @@ def append(
     if not path.is_file():
         raise LedgerError(f"no {LEDGER_REL} in {repo}; run rk.py init")
     with path.open("ab+") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+        _lock(fh)
         written: bool = False
         try:
             fh.seek(0)
@@ -437,7 +504,7 @@ def append(
         finally:
             if not written and undo is not None:
                 undo()
-            fcntl.flock(fh, fcntl.LOCK_UN)
+            _unlock(fh)
     return new_state
 
 
@@ -617,10 +684,21 @@ def _abs_rel(r: str, roots: list[Path]) -> str | None:
     return None
 
 
+def _posix_ref(ref: str) -> str:
+    """A path ref with Windows separators turned into /, the one form the ledger
+    stores. Only on Windows: elsewhere a backslash is a legal file name byte."""
+    return ref.replace("\\", "/") if WINDOWS and _is_path(ref) else ref
+
+
 def _outside(ref: str) -> bool:
-    """A stored path ref that breaks in a clone: absolute, or above the root."""
+    """A stored path ref that breaks in a clone: absolute, or above the root.
+    On Windows also /x (rooted, no drive) and C:x (a drive prefix): `repo / ref`
+    leaves the repo for both, though Path.is_absolute() is False for them."""
     return _is_path(ref) and (
-        Path(ref).is_absolute() or os.path.normpath(ref).split("/")[0] == ".."
+        Path(ref).is_absolute()
+        or ref.startswith("/")
+        or (WINDOWS and re.match(r"[A-Za-z]:", ref) is not None)
+        or posixpath.normpath(ref).split("/")[0] == ".."
     )
 
 
@@ -631,19 +709,20 @@ def _rel_refs(
     cwd is in) made repo-relative (the ledger is committed: no home paths in
     it). `strict`: refuse an empty ref and a path outside the repo (absolute or
     ../); else such a ref stays as given (--ref-drop must be able to name an
-    old bad ref)."""
+    old bad ref). Windows separators become / first (_posix_ref)."""
     wt: Path | None = _worktree(repo)
     roots: list[Path] = [repo] if wt is None else [repo, wt]
     out: list[str] = []
-    for r in refs:
-        if strict and not r.strip():
+    for given in refs:
+        if strict and not given.strip():
             raise LedgerError(f"{flag} '': empty; give a path, a URL or doi:...")
+        r: str = _posix_ref(given)
         rel: str = r
         if _is_path(r) and Path(r).is_absolute():
             rel = _abs_rel(r, roots) or r
         if strict and _outside(rel):
             raise LedgerError(
-                f"{flag} {r}: outside the repo {repo.resolve()}; a ref is a path "
+                f"{flag} {given}: outside the repo {repo.resolve()}; a ref is a path "
                 "relative to the repo root, a URL (://) or doi:..."
             )
         out.append(rel)
@@ -1109,10 +1188,8 @@ def render_status(state: dict[str, Entry], now: datetime) -> str:
 def write_status(repo: Path, state: dict[str, Entry]) -> None:
     path: Path = repo / STATUS_REL
     tmp: Path = path.with_name(path.name + ".tmp")
-    tmp.write_text(
-        render_status(state, datetime.now().astimezone()), encoding="utf-8"
-    )
-    os.replace(tmp, path)
+    write_utf8(tmp, render_status(state, datetime.now().astimezone()))
+    replace_file(tmp, path)
 
 
 def _list_key(
@@ -2039,7 +2116,7 @@ def _moved_ref(repo: Path, r: str, old: str, new: str) -> str | None:
     and `new`: normpath'd repo paths."""
     if not _is_path(r):
         return None
-    n: str = os.path.normpath(_rel_refs(repo, [r], strict=False)[0])
+    n: str = posixpath.normpath(_rel_refs(repo, [r], strict=False)[0])
     if n != old and not n.startswith(old + "/"):
         return None
     return new + n[len(old):] + ("/" if r.endswith("/") else "")
@@ -2242,8 +2319,8 @@ def _cmd_reref(a: argparse.Namespace) -> int:
         raise LedgerError("reref needs a non-empty OLD and NEW")
     # NEW as any --ref (absolute inside the repo made relative; outside refused);
     # OLD made relative the same way, but may name an old ref outside the repo
-    old: str = os.path.normpath(_rel_refs(repo, [a.old], "OLD", strict=False)[0])
-    new: str = os.path.normpath(_rel_refs(repo, [a.new], "NEW")[0])
+    old: str = posixpath.normpath(_rel_refs(repo, [a.old], "OLD", strict=False)[0])
+    new: str = posixpath.normpath(_rel_refs(repo, [a.new], "NEW")[0])
     if new == old or new.startswith(old + "/"):
         raise LedgerError(
             f"reref: NEW {a.new} lies inside OLD {a.old}; a second run would apply "
@@ -2742,8 +2819,8 @@ def _write_stage_record(repo: Path, st: Entry) -> str:
                 f"record: not overwritten; move it away{again}"
             )
         folder.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, folder / STAGE_RECORD)
+        write_utf8(tmp, text)
+        replace_file(tmp, folder / STAGE_RECORD)
     except OSError as err:
         try:
             tmp.unlink(missing_ok=True)
@@ -2926,7 +3003,7 @@ def read_config(repo: Path) -> dict[str, object]:
 
 def _under_pm(ref: str) -> bool:
     """`ref` lies under pm/ (design I7)."""
-    p: str = os.path.normpath(ref)
+    p: str = posixpath.normpath(ref)
     return p == "pm" or p.startswith("pm/")
 
 
@@ -3075,7 +3152,7 @@ def _ignored(repo: Path, refs: list[str]) -> set[str]:
 
 
 def _waste(ref: str) -> bool:
-    return (os.path.normpath(ref) + "/").startswith(WASTE_DIRS)
+    return (posixpath.normpath(ref) + "/").startswith(WASTE_DIRS)
 
 
 def _findings(
@@ -3145,7 +3222,7 @@ def _findings(
         txt: str = _clip(f"{i} {r}", TITLE_MAX)
         if local_pm(r):
             out.append((True, G_REF, txt))
-        elif r in ign or KIT_IGNORED_RE.match(os.path.normpath(r)):
+        elif r in ign or KIT_IGNORED_RE.match(posixpath.normpath(r)):
             out.append((False, G_IGNORED_GONE, txt))
         else:
             out.append((True, G_REF, txt))
@@ -3155,7 +3232,7 @@ def _findings(
     ]
     cand: list[tuple[str, str]] = [  # the kit's own ignored places: by design
         (i, r) for i, r in present
-        if not _waste(r) and not KIT_IGNORED_RE.match(os.path.normpath(r))
+        if not _waste(r) and not KIT_IGNORED_RE.match(posixpath.normpath(r))
         and not local_pm(r)
     ]
     if not skip and cand:

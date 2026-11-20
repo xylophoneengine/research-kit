@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import importlib.util
 import io
@@ -19,6 +20,7 @@ from collections.abc import Iterator
 from importlib.machinery import ModuleSpec
 from pathlib import Path
 from types import ModuleType
+from typing import TextIO
 
 # -I drops the script dir from sys.path, so load rk.py by path.
 _spec: ModuleSpec | None = importlib.util.spec_from_file_location(
@@ -1738,6 +1740,69 @@ def test_local_sync_note_only_for_tracked_files() -> None:
         _g(repo, "add", ".gitattributes")
         code, out = run(rk.cmd_sync, repo, False, False)
         assert "note: .gitattributes holds a research-kit block; remove it" in out, out
+
+
+def test_text_io_names_utf8() -> None:
+    """Every text read names encoding=, every text write goes through the UTF-8
+    LF helper: the Windows default is the code page (cp1252) and \\r\\n. A source
+    check, because here (UTF-8 mode, \\n) a missing encoding= cannot fail."""
+    names: list[str] = ["rk.py", "ledger.py", "ui.py"]
+    for name in names:
+        tree: ast.Module = ast.parse(RK_PY.with_name(name).read_text("utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)):
+                continue
+            attr: str = node.func.attr
+            kws: set[str | None] = {k.arg for k in node.keywords}
+            where: str = f"{name}:{node.lineno}"
+            if attr == "read_text":
+                assert "encoding" in kws, where
+            elif attr == "write_text":
+                raise AssertionError(f"{where}: write_text; use write_utf8")
+            elif attr == "open" and not (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id in ("os", "webbrowser")
+            ):
+                mode: object = next(
+                    (a.value for a in node.args[:1] if isinstance(a, ast.Constant)),
+                    "r",
+                )
+                assert (isinstance(mode, str) and "b" in mode) or "encoding" in kws, (
+                    where
+                )
+
+
+def test_windows_text_io_and_stdio() -> None:
+    """Simulated Windows: files are written UTF-8 with \\n; a cp1252 pipe on
+    stdin/stdout becomes UTF-8 (a title with an arrow would not encode); off
+    Windows the streams are left alone."""
+    led: ModuleType = rk.ledger
+    with tempfile.TemporaryDirectory() as d:
+        f: Path = Path(d) / "x.md"
+        rk._write(f, "a\nü →\n")
+        assert f.read_bytes() == "a\nü →\n".encode("utf-8"), f.read_bytes()
+        assert rk._read(f) == "a\nü →\n"
+    saved: tuple[TextIO, TextIO, TextIO] = (sys.stdin, sys.stdout, sys.stderr)
+    old: bool = led.WINDOWS
+    try:
+        for windows in (True, False):
+            led.WINDOWS = windows
+            out: io.BytesIO = io.BytesIO()
+            sys.stdout = io.TextIOWrapper(out, encoding="cp1252")
+            sys.stdin = io.TextIOWrapper(io.BytesIO("T-1 →".encode()), "cp1252")
+            sys.stderr = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+            rk._utf8_stdio()
+            if windows:
+                assert sys.stdin.read() == "T-1 →"
+                print("T-1 → ü", end="")
+                sys.stdout.flush()
+                assert out.getvalue() == "T-1 → ü".encode("utf-8"), out.getvalue()
+            else:
+                assert sys.stdout.encoding == "cp1252" == sys.stdin.encoding
+    finally:
+        led.WINDOWS = old
+        sys.stdin, sys.stdout, sys.stderr = saved
 
 
 def _ledger_tests() -> list[tuple[str, Callable[[], None]]]:

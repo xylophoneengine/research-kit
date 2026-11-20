@@ -374,6 +374,25 @@ def test_post_405() -> None:
                 assert status == 405, (method, path, status)
 
 
+def test_bundle_types_beat_the_registry() -> None:
+    """Windows (simulated): mimetypes reads the registry, where .js is often
+    text/plain, which a browser refuses as a module script."""
+
+    def registry(url: str, strict: bool = True) -> tuple[str | None, str | None]:
+        return "text/plain", None
+
+    real: Callable[..., tuple[str | None, str | None]] = ui.mimetypes.guess_type
+    setattr(ui.mimetypes, "guess_type", registry)
+    try:
+        with running(TWO) as (_repo, _dist, base):
+            for path, want in (("/assets/app.js", "text/javascript"),
+                               ("/", "text/html")):
+                status, headers, _b = req(base, path)
+                assert status == 200 and headers["content-type"] == want, headers
+    finally:
+        setattr(ui.mimetypes, "guess_type", real)
+
+
 def test_static_and_traversal() -> None:
     with running(TWO) as (_repo, dist, base):
         status, _h, body = req(base, "/")

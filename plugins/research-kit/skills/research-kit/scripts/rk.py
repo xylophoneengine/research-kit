@@ -93,6 +93,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import importlib.util
+import io
 import json
 import re
 import sys
@@ -155,6 +156,26 @@ def _load_sibling(name: str, file: str) -> ModuleType:
 
 ledger: ModuleType = _load_sibling("rk_ledger", "ledger.py")
 STAMP_RE: re.Pattern[str] = ledger.STAMP_RE  # one pattern for sync and doctor
+
+
+def _read(path: Path) -> str:
+    """UTF-8 on every OS (the Windows default is its code page, e.g. cp1252)."""
+    return path.read_text(encoding="utf-8")
+
+
+def _write(path: Path, text: str) -> None:
+    ledger.write_utf8(path, text)
+
+
+def _utf8_stdio() -> None:
+    """Windows: a pipe (a hook, a status line) gets the code page by default,
+    which cannot print most ledger titles, and stdin (the brief check's JSON) is
+    decoded with it. UTF-8 both ways there; elsewhere the streams stay as set."""
+    if not ledger.WINDOWS:
+        return
+    for s in (sys.stdin, sys.stdout, sys.stderr):
+        if isinstance(s, io.TextIOWrapper):
+            s.reconfigure(encoding="utf-8", errors="replace")
 
 
 # ---- text helpers -----------------------------------------------------------
@@ -261,7 +282,7 @@ def _marked_block(old: str, start: str, lines: list[str]) -> str:
 
 def gitignore_text(old: str) -> str:
     """`old` with the research-kit block added once or refreshed in place."""
-    lines: list[str] = (TEMPLATE_DIR / "gitignore").read_text().splitlines()
+    lines: list[str] = _read(TEMPLATE_DIR / "gitignore").splitlines()
     return _marked_block(old, GI_START, lines)
 
 
@@ -276,7 +297,7 @@ def _exclude_state(repo_dir: Path) -> tuple[Path, str, str] | None:
     prefix: str | None = ledger.git_prefix(repo_dir)  # anchors the lines (D-76)
     if path is None or prefix is None:
         return None
-    old: str = path.read_text(encoding="utf-8") if path.exists() else ""
+    old: str = _read(path) if path.exists() else ""
     anchor: str = re.sub(r"([\\*?\[\]])", r"\\\1", prefix)  # glob characters
     lines: list[str] = [f"/{anchor}{ln}" for ln in _EXCL_LINES]
     return path, old, _marked_block(old, _excl_start(prefix), lines)
@@ -292,7 +313,7 @@ def _ensure_exclude(repo_dir: Path) -> Path | None:
     path, old, new = state
     if new != old:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(new, encoding="utf-8")
+        _write(path, new)
     return path
 
 
@@ -321,11 +342,11 @@ def _config_text(cfg: dict[str, object], pm: str) -> str:
 def ensure_gitignore(repo_dir: Path) -> bool:
     """Add or refresh the research-kit block in .gitignore; True if changed."""
     path: Path = repo_dir / ".gitignore"
-    old: str = path.read_text() if path.exists() else ""
+    old: str = _read(path) if path.exists() else ""
     new: str = gitignore_text(old)
     if new == old:
         return False
-    path.write_text(new)
+    _write(path, new)
     return True
 
 
@@ -340,7 +361,7 @@ def compact_text(
     end: str = CB_END,
 ) -> str:
     """`old` with the marked template block added once or refreshed."""
-    body: str = (TEMPLATE_DIR / tpl).read_text().rstrip("\n")
+    body: str = _read(TEMPLATE_DIR / tpl).rstrip("\n")
     block: str = f"{start}\n{body}\n{end}\n"
     pat: re.Pattern[str] = re.compile(
         rf"^{re.escape(start)}$.*?^{re.escape(end)}$\n?", re.M | re.S
@@ -357,13 +378,13 @@ def ensure_block(
     path: Path, name: str, tpl: str, start: str, end: str, write: bool
 ) -> tuple[bool, str]:
     """Add/refresh a marked block in `path`; (changed, unified diff)."""
-    old: str = path.read_text() if path.exists() else ""
+    old: str = _read(path) if path.exists() else ""
     new: str = compact_text(old, tpl, start, end)
     if new == old:
         return False, ""
     if write:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(new)
+        _write(path, new)
     return True, _diff(old, new, name)
 
 
@@ -476,7 +497,7 @@ def _create(dirs: list[Path], files: list[tuple[Path, Path]]) -> None:
         d.mkdir(parents=True, exist_ok=True)
     for src, dst in files:
         dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_text(src.read_text())
+        _write(dst, _read(src))
 
 
 def _read_agents(repo_dir: Path) -> str | None:
@@ -484,7 +505,7 @@ def _read_agents(repo_dir: Path) -> str | None:
     if not path.exists():
         print(f"{path} missing; run: init {repo_dir}")
         return None
-    return path.read_text()
+    return _read(path)
 
 
 def _bad_kinds(kinds: list[str]) -> list[str]:
@@ -526,22 +547,20 @@ def cmd_init(
     if pm == "local" and ledger.git_tracked(repo_dir, "pm/"):
         print(_REFUSAL)
         return 1
-    template: str = (TEMPLATE_DIR / "AGENTS.md").read_text()
+    template: str = _read(TEMPLATE_DIR / "AGENTS.md")
     head, app = split(template, "template")
     app = set_field(app, "Mode", mode)
     app = set_field(app, "Git policy", GIT_POLICIES[git_policy])
     app = set_kinds(app, kinds)
-    target.write_text(head + app)
+    _write(target, head + app)
     dirs, files = _missing(repo_dir, mode)
     _create(dirs, files)
     for k in kinds:
         kpath: Path = repo_dir / "pm" / "kinds" / f"{k}.md"
         if not kpath.exists():
-            kpath.write_text(_kind_template(k).read_text())
+            _write(kpath, _read(_kind_template(k)))
     if pm is not None and pm != cfg["pm"]:
-        (repo_dir / "pm" / "config.json").write_text(
-            _config_text(cfg, pm), encoding="utf-8"
-        )
+        _write(repo_dir / "pm" / "config.json", _config_text(cfg, pm))
     ignored: str = ".gitignore, .gitattributes"
     if local:
         ignored = "pm/config.json" + (
@@ -582,13 +601,13 @@ def cmd_add_kind(repo_dir: Path, kind: str) -> int:
     if not _kind_template(kind).exists():
         print(f"template missing for kind '{kind}'")
         return 1
-    (repo_dir / "AGENTS.md").write_text(head + set_kinds(app, [*kinds, kind]))
+    _write(repo_dir / "AGENTS.md", head + set_kinds(app, [*kinds, kind]))
     kpath: Path = repo_dir / "pm" / "kinds" / f"{kind}.md"
     if kpath.exists():
         print(f"{kpath} exists; kept (run sync to compare with the template)")
     else:
         kpath.parent.mkdir(parents=True, exist_ok=True)
-        kpath.write_text(_kind_template(kind).read_text())
+        _write(kpath, _read(_kind_template(kind)))
         print(f"created {kpath}")
     _ensure_ignore(repo_dir, cfg["pm"] == "local")
     print(f"kind '{kind}' added to AGENTS.md appendix")
@@ -609,7 +628,7 @@ def cmd_upgrade(repo_dir: Path) -> int:
     if get_field(app, "Mode") == "full":
         print("already full; nothing to do")
         return 0
-    (repo_dir / "AGENTS.md").write_text(head + set_field(app, "Mode", "full"))
+    _write(repo_dir / "AGENTS.md", head + set_field(app, "Mode", "full"))
     (repo_dir / "pm" / "stages").mkdir(parents=True, exist_ok=True)
     _ensure_ignore(repo_dir, cfg["pm"] == "local")
     print("upgraded to full: Mode: full, pm/stages/ created")
@@ -643,7 +662,7 @@ def cmd_sync(
     if pm == "local" and ledger.git_tracked(repo_dir, "pm/"):
         print(_REFUSAL)
         return 1
-    template: str = (TEMPLATE_DIR / "AGENTS.md").read_text()
+    template: str = _read(TEMPLATE_DIR / "AGENTS.md")
     writes: dict[Path, str] = {}
     drops: list[tuple[str, str]] = []
     legacy: bool = is_legacy(repo)
@@ -657,7 +676,7 @@ def cmd_sync(
         waste: str | None = "WASTE/" if (repo_dir / "WASTE").is_dir() else None
         new: str = migrate_text(repo, template, stages, waste)
         paper: Path = _kind_template("paper")
-        extra: str = paper.read_text() if paper.exists() else ""
+        extra: str = _read(paper) if paper.exists() else ""
         agent_drops: list[str] = dropped_lines(template, repo, extra=extra)
         print(f"legacy paper-playbook repo: migrating (Legacy stages: {stages}, "
               f"Legacy waste: {waste}); nothing is moved")
@@ -676,13 +695,13 @@ def cmd_sync(
         if not tpath.exists():
             print(f"\n== {rel} == no template for kind '{k}'; skipped")
             continue
-        ktpl: str = tpath.read_text()
+        ktpl: str = _read(tpath)
         kpath: Path = repo_dir / rel
         if not kpath.exists():
             writes[kpath] = ktpl
             print(f"\n== {rel} == new file ({len(ktpl.splitlines())} lines)")
             continue
-        krepo: str = kpath.read_text()
+        krepo: str = _read(kpath)
         knew: str = merge(ktpl, krepo, f"kind:{k}")
         drops += [(rel, ln) for ln in dropped_lines(ktpl, krepo, f"kind:{k}")]
         if knew != krepo:
@@ -708,19 +727,19 @@ def cmd_sync(
                 print(f"\n== {_EXCL_LABEL} == research-kit block added/refreshed")
         for name in (".gitignore", ".gitattributes"):  # only to find a 0.2.5 block
             f: Path = repo_dir / name
-            if (f.exists() and GI_START in f.read_text().splitlines()
+            if (f.exists() and GI_START in _read(f).splitlines()
                     and ledger.git_tracked(repo_dir, name)):
                 print(f"\nnote: {name} holds a research-kit block; remove it by hand")
     else:
         gi: Path = repo_dir / ".gitignore"
-        gi_old: str = gi.read_text() if gi.exists() else ""
+        gi_old: str = _read(gi) if gi.exists() else ""
         gi_new: str = gitignore_text(gi_old)
         if gi_new != gi_old:
             writes[gi] = gi_new
             print("\n== .gitignore == research-kit block added/refreshed")
 
         ga: Path = repo_dir / ".gitattributes"
-        ga_old: str = ga.read_text() if ga.exists() else ""
+        ga_old: str = _read(ga) if ga.exists() else ""
         ga_new: str = compact_text(ga_old, "gitattributes", GI_START, GI_END)
         if ga_new != ga_old:
             writes[ga] = ga_new
@@ -731,7 +750,7 @@ def cmd_sync(
             prefix: str | None = ledger.git_prefix(repo_dir)
             if (old_excl is not None and prefix is not None and old_excl.exists()
                     and _excl_start(prefix)
-                    in old_excl.read_text(encoding="utf-8").splitlines()):
+                    in _read(old_excl).splitlines()):
                 print(f"\nnote: {_EXCL_LABEL} holds a research-kit block; "
                       "remove it by hand")
 
@@ -779,13 +798,13 @@ def cmd_sync(
         print("wrote CLAUDE.md")
     for path, content in writes.items():
         path.parent.mkdir(parents=True, exist_ok=True)
-        utf8: bool = path == excl or path == cfg_path
-        path.write_text(content, encoding="utf-8" if utf8 else None)
+        _write(path, content)
         print(f"wrote {_EXCL_LABEL if path == excl else path.relative_to(repo_dir)}")
     return 0
 
 
 def main() -> int:
+    _utf8_stdio()
     if len(sys.argv) > 1 and sys.argv[1] == "ui":
         return _load_sibling("rk_ui", "ui.py").main(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] in ledger.COMMANDS:
